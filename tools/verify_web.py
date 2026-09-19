@@ -247,6 +247,17 @@ def main(docs):
             tbad += 1
             if tbad <= 5:
                 err(f"task {tkey}: {'missing' if ent is None else 'n ' + str(ent.get('n')) + '/' + str(len(ent['b'])) + ' vs ' + str(len(keys)) + ' or order/root mismatch'}")
+            continue
+        # pin tuples carry 11 fields (desc last); vd = descriptions of every variable referenced by the task's pins
+        bad_len = sum(1 for rec in ent["b"].values() for p in rec.get("pins", []) if len(p) != 11)
+        want_vd = {r[0]: r[1].split("\n")[0].strip() for r in conn.execute(
+            """SELECT DISTINCT v.full_name, v.description FROM pin p JOIN block b ON b.id=p.block_id JOIN variable v ON v.id=p.var_id
+               WHERE b.task_id=? AND v.description IS NOT NULL AND v.description<>''""", (tid,)) if r[1].strip()}
+        got_vd = ent.get("vd", {})
+        if bad_len or got_vd != want_vd:
+            tbad += 1
+            if tbad <= 5:
+                err(f"task {tkey}: {bad_len} pins not 11 fields; vd {len(got_vd)} vs {len(want_vd)} expected")
     (ok if not tbad else err)(f"sampled 30 task entries, {tbad} mismatches")
     if (data / "block").exists():
         err("legacy data/block directory still present")

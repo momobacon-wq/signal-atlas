@@ -79,16 +79,18 @@ docs/data/                     export-web 的輸出（下）
 ## `task/<hhh>.json` — 一個 Task 的全部方塊（key = `CTRL|Program/Task`，shard = sha1(key) 前 3 hex；取代舊的 `block/` 分片）
 
 ```json
-{"t":{"G11|LubeOil/Alarm":{"n":76,"b":{
+{"t":{"G11|LubeOil/Alarm":{"n":76,"vd":{"G11.L27QE1":"27QE1 - DC Emergency Lube Oil Pump motor Undervoltage Relay","G11.L27QE1_A":"Emergency lube oil pump motor undervoltage"},"b":{
   "G11|LubeOil/Alarm":          {"kind":"task","pins":[…介面腳…],…},
   "G11|LubeOil/Alarm/_COMMENT": {"kind":"block","type":"_COMMENT","lay":1,"attrs":{"Description":"…"}},
   "G11|LubeOil/Alarm/MOVE_21":  {"ctrl":"G11","program":"LubeOil","path":"LubeOil/Alarm/MOVE_21","name":"MOVE_21","type":"MOVE","kind":"block",
-     "lay":60,"attrs":{},"pins":[[name, dir, src, conn_kind, connection, var_full_name|null, tgt_block_key|null, tgt_pin|null, address, alias]],
+     "lay":60,"attrs":{},"pins":[[name, dir, src, conn_kind, connection, var_full_name|null, tgt_block_key|null, tgt_pin|null, address, alias, desc|null]],
      "line":16036,"file":"G11/_LubeOil.xml"}
 }}}}
 ```
 - `b` 的鍵順序 = 原始 XML 文件順序，第一筆是 task 根（`kind:"task"`，其 `pins` 為介面腳）；巢狀 UserBlock 內的方塊同在此 entry（同 task）。
 - 方塊記錄欄位同前（`ctrl program path name type kind ver opaque desc drg pid device hmi attrs pins line file`），新增可選 `lay`（`BlockLayoutData`，同層的 1-based 繪圖順序，含 UserBlock；缺值省略）。空欄位/空陣列/0 一律省略。
+- 腳位 tuple 第 11 欄 `desc` = 腳位自身的描述（`Pin@Description` 第一行；無則 `null`），例如產生器方塊 `L4TTRP_OVR.IN1` = "Generator LCI Trip"。
+- `vd` = 該 task 所有腳位參照到的變數的描述（第一行；無描述者不列），供圖上標籤與腳位旁顯示說明；變數完整描述仍以訊號卡為準。
 - 單一方塊 = `task` entry 的 `b[key]`；前端 `D.block(key)` 先算 `D.taskKeyOf(key)`（路徑前兩段）再查。加密程式的 task 沒有 entry（前端以 `program/<CTRL>.json` 的 `enc` 解釋）。
 - 尺寸：6,261 個 entry，明文 p50 9 KB、p95 61 KB；兩個 MIS 資料表 task 約 2 MB（前端以規模分級處理）。
 
@@ -111,6 +113,7 @@ docs/data/                     export-web 的輸出（下）
 - 走線只畫資料裡確定的關係：同 task 內 `L:` 接線（消費端指向來源）、同 task 內一寫（≤2）多讀（≤4）的變數；其他變數以腳位旁的 xref 標籤呈現（左入右出），點標籤高亮同名所有端點；`P` 介面腳標籤 `⟨pin⟩`；`N/E` 常數為腳位行內文字；`A/D` 預設隱藏。
 - 方向來自索引的推斷值（腳位徽章顯示來源字母）；`?` 方向腳以虛線/灰色；多寫入者變數走線為紅色虛線；不透明 UserBlock 斜紋框、不可展開。
 - 規模：Task 圖 ≤300 方塊全畫，301–1000 依連通群組分頁，>1000 先篩選；訊號圖由 BFS 的 200 節點上限保護。
+- 說明顯示（預設開、工具列「說明」可關、`?desc=0`）：xref 標籤與變數 pill 下方一行變數描述（36/40 字截斷）、方塊內腳位名旁的腳位描述（28 字）、方塊型別下方的方塊描述（36 字）；tooltip 一律全文。
 追蹤在前端 BFS：由訊號卡的 `w`/`r` 取 ref → 載入 `block/` 分片取該 block 其他腳 → 再載入相連變數的 `var/` 分片；
 預設深度 3、節點上限 200、記憶體快取分片、顯示載入進度、可中止；加密邊界標「加密 — 無法追蹤」；`?` 方向的腳不追。
 

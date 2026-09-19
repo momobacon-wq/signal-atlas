@@ -1,5 +1,6 @@
-/* Signal Atlas — Task 邏輯圖 #/d/<CTRL>/<Program>/<Task>?ub=<block_path>&f=&pins=1&cm=0|1&sel=<CTRL.VAR>&b=<key>&page=k&all=1
+/* Signal Atlas — Task 邏輯圖 #/d/<CTRL>/<Program>/<Task>?ub=<block_path>&f=&pins=1&cm=0|1&sel=<CTRL.VAR>&b=<key>&page=k&all=1&desc=0|1
  * 由 task/<hhh>.json 的整份 task 記錄建圖（buildGraph，規則見 plan §二），交給 D.dg（diagram.js）排版／渲染／互動。
+ * 說明：腳位 tuple 第 11 欄 → port.desc；entry.vd[varFull] → port.varDesc / tag.desc / graph.varDesc（舊資料 10 欄／無 vd → 無描述）。
  * 規模分級：≤300 方塊全畫；301–1000 依連通群組分頁；>1000 拒絕並提供篩選／型別 chips／分頁。 */
 'use strict';
 (function () {
@@ -16,6 +17,7 @@
   /** 建圖：t = task 記錄 {n,b}；rootKey = task key 或 ?ub= 的 userblock key；q = {pins, cm, f} */
   function buildGraph(t, ctrl, rootKey, q) {
     const b = t.b;
+    const vd = t.vd || {}; // {varFull: description}（舊資料無 → 空）
     const root = b[rootKey] || {};
     const prefix = rootKey + '/';
     const members = [];
@@ -46,7 +48,8 @@
         const [pin, dir, src, ck, conn, varFull, tgtKey, tgtPin] = p;
         const shown = ck === 'V' || ck === 'L' || ck === 'P' || ck === 'N' || ck === 'E' || q.pins || (need && need.has(pin));
         if (!shown) { meta.nHiddenPins++; continue; }
-        const port = { id: k + '#' + pin, pin, dir: dir || '?', src, ck, conn, varFull: varFull || null, tgtKey, tgtPin, inline: null };
+        const port = { id: k + '#' + pin, pin, dir: dir || '?', src, ck, conn, varFull: varFull || null, tgtKey, tgtPin, inline: null,
+          desc: (p.length > 10 && p[10]) || null, varDesc: (varFull && vd[varFull]) || null };
         if (ck === 'N' || ck === 'E') {
           const txt = stripK(conn);
           if ((rec.type === 'RUNG' || rec.type === 'CALC') && (pin === 'EQN' || pin === 'EQUAT')) node.body = D.dg.wrapText(pin + ' = ' + txt, 240, 3);
@@ -69,7 +72,7 @@
     const portOf = (nodeId, pin) => { const n = nodes.get(nodeId); if (!n) return null; return n.left.find((p) => p.pin === pin) || n.right.find((p) => p.pin === pin) || null; };
     const ifaceTag = (node, port, tgtPin) => {
       const v = rootVar.get(tgtPin) || null;
-      tags.push({ port: port.id, side: port.dir === 'O' ? 'R' : 'L', text: '⟨' + tgtPin + '⟩' + (v ? ' = ' + shortVar(v) : ''), varFull: v, cls: 'iface', title: '介面腳 ' + tgtPin + (v ? '（' + v + '）' : '') });
+      tags.push({ port: port.id, side: port.dir === 'O' ? 'R' : 'L', text: '⟨' + tgtPin + '⟩' + (v ? ' = ' + shortVar(v) : ''), varFull: v, desc: (v && vd[v]) || null, cls: 'iface', title: '介面腳 ' + tgtPin + (v ? '（' + v + '）' : '') });
       covered.add(port.id);
     };
     for (const n of nodes.values()) {
@@ -112,19 +115,21 @@
           wired.add(w.id); wired.add(r.id);
         }
       }
-      for (const p of g.W) if (!wired.has(p.id)) tags.push({ port: p.id, side: 'R', text: shortVar(v), varFull: v, cls: 'out', title: v });
-      for (const p of g.R) if (!wired.has(p.id)) tags.push({ port: p.id, side: 'L', text: shortVar(v), varFull: v, cls: 'in', title: v });
+      const dv = vd[v] || null;
+      for (const p of g.W) if (!wired.has(p.id)) tags.push({ port: p.id, side: 'R', text: shortVar(v), varFull: v, desc: dv, cls: 'out', title: v });
+      for (const p of g.R) if (!wired.has(p.id)) tags.push({ port: p.id, side: 'L', text: shortVar(v), varFull: v, desc: dv, cls: 'in', title: v });
     }
     // 註解顯示規則
     const cmOn = q.cm === '1' ? true : q.cm === '0' ? false : comments.length <= CM_HIDE;
     if (!cmOn) { for (const c of comments) nodes.delete(c.id); meta.nHiddenComment = comments.length; }
     meta.cmOn = cmOn;
-    let graph = { nodes, edges, tags, meta };
+    let graph = { nodes, edges, tags, meta, varDesc: vd };
     D.dg.prepare(graph); // 過濾掉指向已刪節點的邊／標籤
-    // 篩選：名稱／型別／說明／腳位變數含關鍵字 + 一跳鄰居
+    // 篩選：名稱／型別／說明／腳位變數（含腳位描述、變數描述）含關鍵字 + 一跳鄰居
     if (q.f) {
       const kw = q.f.toLowerCase();
-      const hit = (n) => [n.name, n.type, n.desc].some((s) => s && String(s).toLowerCase().includes(kw)) || n.left.concat(n.right).some((p) => (p.varFull && p.varFull.toLowerCase().includes(kw)) || (p.conn && String(p.conn).toLowerCase().includes(kw)));
+      const has = (s) => !!s && String(s).toLowerCase().includes(kw);
+      const hit = (n) => [n.name, n.type, n.desc].some(has) || n.left.concat(n.right).some((p) => has(p.varFull) || has(p.conn) || has(p.desc) || has(p.varDesc));
       const keep = new Set();
       for (const n of nodes.values()) if (hit(n)) keep.add(n.id);
       const nodeOf = (pid) => { const p = graph.ports.get(pid); return p ? p.node : pid; };
@@ -155,7 +160,7 @@
     const set = new Set(ids);
     const nodes = new Map();
     for (const id of ids) nodes.set(id, graph.nodes.get(id));
-    const g = { nodes, edges: graph.edges, tags: graph.tags, meta: graph.meta };
+    const g = { nodes, edges: graph.edges, tags: graph.tags, meta: graph.meta, varDesc: graph.varDesc };
     return D.dg.prepare(g);
   }
   const nBlocks = (graph) => Array.from(graph.nodes.values()).filter((n) => n.kind !== 'comment').length;
@@ -208,12 +213,13 @@
     const rootKey = q.ub ? ctrl + '|' + q.ub : tkey;
     const rootPath = rootKey.slice(rootKey.indexOf('|') + 1);
     const cur = { ctrl, program, task, tkey, rootKey };
-    const href = (patch) => D.hrefD(ctrl, program, task, Object.assign({ ub: q.ub, f: q.f, pins: q.pins, cm: q.cm, page: q.page, all: q.all }, patch));
+    const href = (patch) => D.hrefD(ctrl, program, task, Object.assign({ ub: q.ub, f: q.f, pins: q.pins, cm: q.cm, page: q.page, all: q.all, desc: q.desc }, patch));
     D.setTitle('邏輯圖 ' + rootPath + ' (' + ctrl + ')');
     const crumbs = [D.link('#/', '搜尋'), ' › ', D.mono(ctrl), ' › ', D.link(D.hrefP(ctrl, program), program, 'lk mono'), ' › ', D.link(D.hrefB(ctrl, program + '/' + task), task, 'lk mono'), ' › 邏輯圖'];
     if (q.ub) crumbs.push(' › ', D.mono(q.ub.split('/').slice(2).join('/'), 'b'));
     const inst = D.dg.create(view, {
       crumbs, title: rootPath, fileName: ctrl + '_' + rootPath.replace(/\//g, '_'),
+      showDesc: D.dg.descPref(q), // ?desc=0|1 只影響本次；否則 localStorage／預設開
       varHint: '雙擊變數標籤：輸入 → 展開到寫入者所在 task；輸出 → 讀取者所在 task。',
       onDblVar: (v, ctx, i) => { expandVar(v, ctx, i, cur).catch((e) => console.warn(e)); },
       nodeActions: (n) => (n.kind === 'ub' && !n.opaque ? D.link(href({ ub: n.key.slice(n.key.indexOf('|') + 1), page: null, f: null }), '展開內部', 'btn sm') : null),

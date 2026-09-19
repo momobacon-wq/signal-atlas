@@ -2,7 +2,9 @@
  * 鏡射 trace.js 的 BFS（pinsOf / expand）成一張圖：變數 pill（v:<full>）、方塊（b:<key>，多次觸及＝同一節點、腳位取聯集）、
  * 葉節點（現場 I/O、EGD、加密、常數、無寫入者…文案同 trace.js）；邊以 from>to 去重；EGD 邊虛線藍；多寫入者變數入邊 .multi；
  * L: 鏈沿同 task 方塊延伸（≤12、不算跳數）；上限 200 節點（未展開者 .capped）、深度截止（.cut）。交給 D.dg（diagram.js）排版／渲染／互動。
- * 雙擊變數：從該變數再展一層（依其所在側；根節點雙向），整圖重排但保留 viewBox 與選取，新節點 .new。 */
+ * 雙擊變數：從該變數再展一層（依其所在側；根節點雙向），整圖重排但保留 viewBox 與選取，新節點 .new。
+ * 說明：變數節點 desc 取自訊號卡 d.desc（已展開者；截止／上限節點在 fillDesc 補抓自身卡片，EGD 副本亦用自身卡片）；
+ * 方塊腳位 desc 取 tuple 第 11 欄；graph.varDesc 供側欄腳位表；?desc=0|1 / localStorage 由 D.dg.descPref 解析。 */
 'use strict';
 (function () {
   const D = window.DC;
@@ -66,7 +68,8 @@
     const pins = n.pins || [];
     const t = tuple || pins.find((x) => x[0] === pin) || null;
     const idx = t ? pins.indexOf(t) : -1;
-    p = { id, pin, dir: (t && t[1]) || (side === 'R' ? 'O' : 'I'), src: t ? t[2] : '-', ck: t ? t[3] : '-', conn: t ? t[4] : null, varFull: (t && t[5]) || null, inline: null, pinIdx: idx < 0 ? 1e6 : idx };
+    p = { id, pin, dir: (t && t[1]) || (side === 'R' ? 'O' : 'I'), src: t ? t[2] : '-', ck: t ? t[3] : '-', conn: t ? t[4] : null, varFull: (t && t[5]) || null, inline: null, pinIdx: idx < 0 ? 1e6 : idx,
+      desc: (t && t.length > 10 && t[10]) || null, varDesc: null };
     (side === 'R' ? n.right : n.left).push(p);
     return p;
   }
@@ -215,16 +218,30 @@
     const S = newState(full, signal);
     const rec = await D.varCard(full, signal);
     if (!rec) { S.rootMissing = true; return S; }
+    S.root.desc = (rec.d && rec.d.desc) || '';
+    S.root.flag = flagText(rec.d && rec.d.flags) || '';
     const frontier = [];
     if (up > 0) frontier.push([S.root, 'up']);
     if (down > 0) frontier.push([S.root, 'down']);
     await bfs(S, frontier, (dir) => (dir === 'up' ? up : down), onProgress);
+    await fillDesc(S);
     S.bfsMs = performance.now() - t0;
     return S;
   }
+  /** 未展開（截止／上限／EGD 副本）的變數節點沒載過卡片 → 平行補抓自身卡片只為描述與旗標（分片有快取；失敗即略過） */
+  async function fillDesc(S) {
+    const todo = Array.from(S.nodes.values()).filter((n) => n.kind === 'var' && n.desc == null && !n.missing);
+    if (!todo.length) return;
+    await Promise.all(todo.map((n) => D.varCard(n.varFull, S.signal).then((rec) => {
+      n.desc = (rec && rec.d && rec.d.desc) || '';
+      if (rec && rec.d && !n.flag) n.flag = flagText(rec.d.flags) || '';
+    }).catch((e) => { if (e && e.name === 'AbortError') throw e; n.desc = ''; })));
+  }
 
-  /** 整理成引擎可吃的 Graph：腳位依原 pin 順序、cls 依狀態（root / capped / cut / opaque / new） */
+  /** 整理成引擎可吃的 Graph：腳位依原 pin 順序、cls 依狀態（root / capped / cut / opaque / new）；graph.varDesc / port.varDesc 供側欄 */
   function finalize(S, newIds) {
+    const varDesc = {};
+    for (const n of S.nodes.values()) if (n.kind === 'var' && n.desc) varDesc[n.varFull] = n.desc;
     for (const n of S.nodes.values()) {
       const cls = [];
       if (n.kind === 'var') {
@@ -237,11 +254,12 @@
       else {
         if (n.opaque) cls.push('opaque');
         n.left.sort((a, b) => a.pinIdx - b.pinIdx); n.right.sort((a, b) => a.pinIdx - b.pinIdx);
+        for (const p of n.left.concat(n.right)) if (p.varFull && varDesc[p.varFull]) p.varDesc = varDesc[p.varFull];
       }
       if (newIds && newIds.has(n.id)) cls.push('new');
       n.cls = cls.join(' ');
     }
-    return { nodes: S.nodes, edges: S.edges, tags: S.tags, meta: { title: '訊號圖 ' + S.full, warn: [] } };
+    return { nodes: S.nodes, edges: S.edges, tags: S.tags, meta: { title: '訊號圖 ' + S.full, warn: [] }, varDesc };
   }
 
   /* ------------------------------------------------------------------ 頁面 */
@@ -268,6 +286,7 @@
       const f0 = D.fetchCount, t0 = performance.now();
       try {
         for (const d of todo) { if (signal.aborted) return; await expandVar(S, n, d); }
+        await fillDesc(S);
       } catch (e) { if (e && e.name === 'AbortError') return; throw e; }
       if (!alive()) return;
       const newIds = new Set(Array.from(S.nodes.keys()).filter((id) => !before.has(id)));
@@ -290,6 +309,7 @@
 
     inst = D.dg.create(view, {
       crumbs, title: full, fileName: 'signal_' + full,
+      showDesc: D.dg.descPref(q),
       varHint: '雙擊變數 pill（或按「展開」）：從該變數再展開一層——上游側展寫入者、下游側展讀取者，根節點雙向。',
       onDblVar: (v) => { expandNode('v:' + v).catch((e) => console.warn(e)); },
       varActions: (v) => (S && S.nodes.has('v:' + v) ? D.h('button', { type: 'button', class: 'btn sm', text: '展開', title: '從此變數再展開一層', onclick: () => expandNode('v:' + v).catch((e) => console.warn(e)) }) : null),

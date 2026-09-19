@@ -4,14 +4,21 @@
  *   Graph { nodes: Map<id,Node>, edges: Edge[], tags: Tag[], meta:{title,warn:[]…} }
  *   Node  { id, kind:'block'|'ub'|'comment'|'var'|'leaf', key, name, type, sub, desc, attrs, pins(原始 pin tuple), ord,
  *           left:[Port], right:[Port], body:[lines], cls, varFull(var 節點), href(leaf 連結) }
- *   Port  { id:'<node>#<pin>', pin, dir, src, ck, conn, varFull, inline(行內常數文字) }   // side 由所在陣列決定
+ *           desc：方塊描述（型別行下方一行 .bdesc）／var 節點的變數描述（pill 第二行）
+ *   Port  { id:'<node>#<pin>', pin, dir, src, ck, conn, varFull, inline(行內常數文字), desc(腳位自身描述), varDesc(所接變數描述) }   // side 由所在陣列決定
  *   Edge  { id, from:portId, to:portId, kind:'L'|'V'|'P'|'EGD'|'IO'|'sticky', varFull, label, cls, multi }
  *           kind:'sticky' 只影響分群／排版（註解黏到方塊），不畫線
- *   Tag   { port:portId, side:'L'|'R', text, varFull, cls:'in'|'out'|'iface'|'warn'|'ext-l'… }
+ *   Tag   { port:portId, side:'L'|'R', text, varFull, desc(變數描述→第二行), cls:'in'|'out'|'iface'|'warn'|'ext-l'… }
+ *   graph.varDesc { varFull: description }（選用；側欄腳位表「說明」欄的後備來源）
+ *
+ * 說明顯示（showDesc）：預設開；`?desc=0|1` 只影響本次（頁面以 D.dg.descPref(query) 解析）、工具列「說明」切換並記在
+ *   localStorage `atlas.dg.desc`（'0'/'1'）。開啟時：腳位列「pin␣␣描述(28)」、xref 標籤第二行描述(36)、var pill 第二行(40)、
+ *   方塊型別下一行方塊描述(36)；描述一律只取第一行；tooltip <title> 含全文。切換 → 重新 size→layout→route→render，保留 viewBox／選取／高亮。
+ *   有描述標籤的腳位列高 16 → 28（否則兩行標籤會互相重疊）；其餘列維持 16。
  *
  * 管線（全部掛在 D.dg）：
  *   D.dg.prepare(graph)          正規化：graph.ports Map、port.node/side、varIndex
- *   D.dg.size(graph)             measureText 量測 → node.w/h/boxW/tagL/tagR、port.y（相對 node 頂）
+ *   D.dg.size(graph, {showDesc}) measureText 量測 → node.w/h/boxW/tagL/tagR/titleH/pinsH、port.y（相對 node 頂）；graph.showDesc
  *   D.dg.layout(graph, opts)     連通群組 → 各群組 dagre（只排節點）→ 依 ord 欄式打包 → node.x/y、graph.bounds；回傳 {ms, comps}
  *   D.dg.route(graph)            正交走線 → edge.path、edge.labelXY
  *   D.dg.render(graph, opts)     → <svg class="dg-svg">（g.wires / g.nodes / g.tags）
@@ -20,11 +27,12 @@
  *       inst.fit(pad) / zoom(f, cx, cy) / pan(dx, dy) / centerNode(id) / centerVar(varFull)
  *       inst.select(nodeId) / highlight(varFull) / clear() / showSide(el, title) / hideSide() / status(text)
  *       inst.addTool(el) 工具列加按鈕；inst.setLoading(msg)；inst.print()；inst.exportSvg(name)；inst.destroy()
+ *       inst.showDesc（目前狀態）／inst.setDesc(on)（切換說明顯示；重排但保留 viewBox／選取）
  *       opts: { crumbs:[el], title:string, nodeActions(node, inst)→[el], varActions(varFull, inst)→[el],
  *               onSelect(node, inst), onVar(varFull, inst), onDblNode(node, inst), onDblVar(varFull, ctx, inst),
- *               varHint:string（變數面板提示，例「雙擊標籤展開到寫入者所在 task」）}
+ *               varHint:string（變數面板提示，例「雙擊標籤展開到寫入者所在 task」）, showDesc:boolean（省略 → localStorage／預設開）}
  *   D.dg.blockPanel(node, inst) / D.dg.varPanel(varFull, inst)   預設側欄內容（可被 opts 取代）
- *   D.dg.wrapText(text, maxW, maxLines) / D.dg.measure(text) / D.dg.trunc(s, n)
+ *   D.dg.wrapText(text, maxW, maxLines) / D.dg.measure(text) / D.dg.trunc(s, n) / D.dg.firstLine(s) / D.dg.descPref(query)
  * 需先 D.loadScript('dagre.min.js')（全域 dagre）。CSP：無 inline script；SVG 文字皆走 textContent。 */
 'use strict';
 (function () {
@@ -34,7 +42,11 @@
   /* ------------------------------------------------------------------ 常數 */
   const PIN_H = 16, TITLE_H = 26, BODY_LH = 14, BOX_MIN = 110, BOX_MAX = 260, PORT_R = 3;
   const TAG_GAP = 10, TAG_PAD = 4, SHEET_H = 1500, GAP_X = 60, GAP_Y = 40;
-  dg.C = { PIN_H, TITLE_H, BODY_LH, BOX_MIN, BOX_MAX, SHEET_H };
+  // 說明顯示：方塊寬上限、有兩行標籤的腳位列高、兩行標籤高、pill 高、方塊描述行高、描述字（9.5px）相對量測字（11px）的寬度比
+  const BOX_MAX_D = 340, PIN_H_D = 28, TAG_H = 16, TAG_H_D = 27, VAR_H = 24, VAR_H_D = 34, BDESC_H = 12, DESC_K = 0.87;
+  const DESC_LS = 'atlas.dg.desc';
+  const TR_PIN = 28, TR_TAG = 36, TR_PILL = 40, TR_BLK = 36; // 各處描述截斷字數
+  dg.C = { PIN_H, TITLE_H, BODY_LH, BOX_MIN, BOX_MAX, BOX_MAX_D, SHEET_H, PIN_H_D, TAG_H_D, VAR_H_D };
 
   /* ------------------------------------------------------------------ 文字量測 */
   let ctx = null, fontStr = '';
@@ -58,6 +70,19 @@
     return w;
   };
   dg.trunc = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+  /** 描述只取第一個非空行（警報描述可達數百字／多行） */
+  dg.firstLine = (s) => { if (s == null) return ''; const m = String(s).split(/\r?\n/).find((x) => x.trim()); return m ? m.trim() : ''; };
+  const dline = (s, n) => dg.trunc(dg.firstLine(s), n);
+  const dmeasure = (s) => dg.measure(s) * DESC_K; // 描述字較小
+  /** 解析說明顯示偏好：query.desc '0'/'1' 只影響本次；否則 localStorage atlas.dg.desc；預設開 */
+  dg.descPref = function (query) {
+    const q = query && query.desc;
+    if (q === '0' || q === 0 || q === false) return false;
+    if (q === '1' || q === 1 || q === true) return true;
+    try { const v = localStorage.getItem(DESC_LS); if (v === '0') return false; if (v === '1') return true; } catch (e) { /* 私密模式 */ }
+    return true;
+  };
+  dg.saveDescPref = function (on) { try { localStorage.setItem(DESC_LS, on ? '1' : '0'); } catch (e) { /* ignore */ } };
   /** 依像素寬換行（先照 \n 切，再貪婪切字；單字過長則逐字切）；最多 maxLines 行（最後一行加 …） */
   dg.wrapText = function (text, maxW, maxLines) {
     const out = [];
@@ -103,9 +128,17 @@
     return graph;
   };
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-  dg.size = function (graph) {
+  /** 腳位列文字寬（含腳位描述；描述字較小） */
+  const pinTextW = (p, sd) => dg.measure(dg.trunc(p.pin, 12)) + (sd && p.desc ? dmeasure('  ' + dline(p.desc, TR_PIN)) : 0);
+  dg.size = function (graph, opts) {
+    const sd = graph.showDesc = !!(opts && opts.showDesc);
     const tagW = new Map(); // portId -> 標籤寬（含間距）
-    for (const t of graph.tags) tagW.set(t.port, Math.max(tagW.get(t.port) || 0, dg.measure(t.text) + TAG_PAD * 2 + TAG_GAP + 6));
+    const tagD = new Set(); // 有描述（兩行）標籤的 portId
+    for (const t of graph.tags) {
+      let w = dg.measure(t.text);
+      if (sd && t.desc) { w = Math.max(w, dmeasure(dline(t.desc, TR_TAG))); tagD.add(t.port); }
+      tagW.set(t.port, Math.max(tagW.get(t.port) || 0, w + TAG_PAD * 2 + TAG_GAP + 6));
+    }
     for (const n of graph.nodes.values()) {
       if (n.kind === 'comment') {
         n.tagL = n.tagR = 0;
@@ -116,28 +149,40 @@
       }
       if (n.kind === 'var' || n.kind === 'leaf') {
         const label = n.label || n.name || n.varFull || '';
-        n.boxW = clamp(dg.measure(label) + 22 + (n.flag ? dg.measure(n.flag) + 8 : 0), 60, 360);
-        n.h = 24;
-        n.left.forEach((p) => { p.y = 12; p.noLabel = true; });
-        n.right.forEach((p) => { p.y = 12; p.noLabel = true; });
+        const d = sd && n.kind === 'var' ? dline(n.desc, TR_PILL) : '';
+        n.descLine = d;
+        n.boxW = clamp(Math.max(dg.measure(label) + 22 + (n.flag ? dg.measure(n.flag) + 8 : 0), d ? dmeasure(d) + 22 : 0), 60, 360);
+        n.h = d ? VAR_H_D : VAR_H;
+        const py = n.h / 2;
+        n.left.forEach((p) => { p.y = py; p.noLabel = true; });
+        n.right.forEach((p) => { p.y = py; p.noLabel = true; });
         n.tagL = Math.max(0, ...n.left.map((p) => tagW.get(p.id) || 0));
         n.tagR = Math.max(0, ...n.right.map((p) => tagW.get(p.id) || 0));
         n.w = n.tagL + n.boxW + n.tagR;
         continue;
       }
       const rows = Math.max(n.left.length, n.right.length);
-      let need = Math.max(dg.measure(n.name) + 16, dg.measure(n.type || '') + 16);
+      const bd = sd ? dline(n.desc, TR_BLK) : '';
+      n.descLine = bd;
+      n.titleH = TITLE_H + (bd ? BDESC_H : 0);
+      let need = Math.max(dg.measure(n.name) + 16, dg.measure(n.type || '') + 16, bd ? dmeasure(bd) + 16 : 0);
+      let pinsH = 0;
       for (let i = 0; i < rows; i++) {
         const l = n.left[i], r = n.right[i];
-        const lw = l ? dg.measure(dg.trunc(l.pin, 12)) + 7 : 0, rw = r ? dg.measure(dg.trunc(r.pin, 12)) + 7 : 0;
+        const lw = l ? pinTextW(l, sd) + 7 : 0, rw = r ? pinTextW(r, sd) + 7 : 0;
         need = Math.max(need, lw + rw + (l && r ? 14 : 8));
+        const rh = sd && ((l && tagD.has(l.id)) || (r && tagD.has(r.id))) ? PIN_H_D : PIN_H;
+        if (l) l.y = n.titleH + pinsH + 8;
+        if (r) r.y = n.titleH + pinsH + 8;
+        pinsH += rh;
       }
+      n.pinsH = pinsH;
       for (const b of n.body) need = Math.max(need, dg.measure(b) + 16);
-      n.boxW = clamp(need, BOX_MIN, BOX_MAX);
-      n.h = TITLE_H + rows * PIN_H + (n.body.length ? 6 + n.body.length * BODY_LH : 0) + 6;
+      n.boxW = clamp(need, BOX_MIN, sd ? BOX_MAX_D : BOX_MAX);
+      n.h = n.titleH + pinsH + (n.body.length ? 6 + n.body.length * BODY_LH : 0) + 6;
       let tl = 0, tr = 0;
-      n.left.forEach((p, i) => { p.y = TITLE_H + i * PIN_H + 8; tl = Math.max(tl, tagW.get(p.id) || 0, p.inline ? dg.measure(dg.trunc(p.inline, 18)) + TAG_GAP + 4 : 0); });
-      n.right.forEach((p, i) => { p.y = TITLE_H + i * PIN_H + 8; tr = Math.max(tr, tagW.get(p.id) || 0, p.inline ? dg.measure(dg.trunc(p.inline, 18)) + TAG_GAP + 4 : 0); });
+      n.left.forEach((p) => { tl = Math.max(tl, tagW.get(p.id) || 0, p.inline ? dg.measure(dg.trunc(p.inline, 18)) + TAG_GAP + 4 : 0); });
+      n.right.forEach((p) => { tr = Math.max(tr, tagW.get(p.id) || 0, p.inline ? dg.measure(dg.trunc(p.inline, 18)) + TAG_GAP + 4 : 0); });
       n.tagL = tl; n.tagR = tr;
       n.w = tl + n.boxW + tr;
     }
@@ -263,7 +308,7 @@
       marker('dg-arrow', 'mk-l'), marker('dg-arrow-v', 'mk-v'), marker('dg-arrow-multi', 'mk-multi'), marker('dg-arrow-egd', 'mk-egd'), marker('dg-arrow-hl', 'mk-hl'),
       D.svg('pattern', { id: 'dg-hatch', width: '7', height: '7', patternUnits: 'userSpaceOnUse' }, D.svg('path', { d: 'M0 7 L7 0', class: 'hatch' })));
   }
-  function renderNode(n) {
+  function renderNode(graph, n) {
     const cls = ['node', n.kind === 'ub' ? 'blk ub' : n.kind === 'block' ? 'blk' : n.kind, n.cls || ''].join(' ').trim();
     const g = D.svg('g', { class: cls, 'data-id': n.id, 'data-key': n.key || null, 'data-var': n.kind === 'var' ? n.varFull : null, tabindex: '0', transform: 'translate(' + r1(n.x) + ' ' + r1(n.y) + ')' });
     const tt = [n.key || n.name || '', n.type ? '[' + n.type + ']' : '', n.sub || '', n.desc || ''].filter(Boolean).join('\n');
@@ -275,44 +320,62 @@
       return g;
     }
     if (n.kind === 'var' || n.kind === 'leaf') {
+      const two = !!n.descLine;
       g.appendChild(D.svg('rect', { class: 'box', x: r1(bx), y: 0, width: r1(n.boxW), height: r1(n.h), rx: 12 }));
-      g.appendChild(D.svg('text', { class: 'name', x: r1(bx + 11), y: 16, text: dg.trunc(n.label || n.name || n.varFull || '', 34) }));
-      if (n.flag) g.appendChild(D.svg('text', { class: 'flag', x: r1(bx + n.boxW - 8), y: 16, 'text-anchor': 'end', text: n.flag }));
+      g.appendChild(D.svg('text', { class: 'name', x: r1(bx + 11), y: two ? 14 : 16, text: dg.trunc(n.label || n.name || n.varFull || '', 34) }));
+      if (n.flag) g.appendChild(D.svg('text', { class: 'flag', x: r1(bx + n.boxW - 8), y: two ? 14 : 16, 'text-anchor': 'end', text: n.flag }));
+      if (two) g.appendChild(D.svg('text', { class: 'desc', x: r1(bx + 11), y: 27, text: n.descLine }));
       for (const p of n.left) g.appendChild(D.svg('circle', { class: 'port dir-' + (p.dir || 'q'), cx: r1(bx), cy: p.y, r: PORT_R, 'data-port': p.id, 'data-var': p.varFull || null }));
       for (const p of n.right) g.appendChild(D.svg('circle', { class: 'port dir-' + (p.dir || 'q'), cx: r1(bx + n.boxW), cy: p.y, r: PORT_R, 'data-port': p.id, 'data-var': p.varFull || null }));
       return g;
     }
+    const sd = !!graph.showDesc;
     g.appendChild(D.svg('rect', { class: 'box', x: r1(bx), y: 0, width: r1(n.boxW), height: r1(n.h), rx: 4 }));
     if (n.kind === 'ub') g.appendChild(D.svg('rect', { class: 'box2', x: r1(bx + 3), y: 3, width: r1(n.boxW - 6), height: r1(n.h - 6), rx: 3 }));
     g.appendChild(D.svg('text', { class: 'name', x: r1(bx + 7), y: 12, text: dg.trunc(n.name || '', 30) }));
     if (n.type || n.sub) g.appendChild(D.svg('text', { class: 'type', x: r1(bx + 7), y: 23, text: dg.trunc((n.type || '') + (n.sub ? '  ' + n.sub : ''), 40) }));
+    if (n.descLine) g.appendChild(D.svg('text', { class: 'bdesc', x: r1(bx + 7), y: 35, text: n.descLine }));
     const dirCls = (p) => 'dir-' + (p.dir === '?' || !p.dir ? 'q' : p.dir);
+    // 腳位列：左側「pin␣␣描述」、右側「描述␣␣pin」（腳位名貼近腳位）；描述用 .pdesc tspan（nbsp 不會被折疊）
+    const pinText = (p, right) => {
+      const name = dg.trunc(p.pin, 12);
+      const d = sd && p.desc ? dline(p.desc, TR_PIN) : '';
+      const attrs = right ? { class: 'pin', x: r1(bx + n.boxW - 7), y: p.y + 3.5, 'text-anchor': 'end' } : { class: 'pin', x: r1(bx + 7), y: p.y + 3.5 };
+      if (!d) { attrs.text = name; return D.svg('text', attrs); }
+      const t = D.svg('text', attrs, right ? [D.svg('tspan', { class: 'pdesc', text: d + '  ' }), D.svg('tspan', { text: name })] : [D.svg('tspan', { text: name }), D.svg('tspan', { class: 'pdesc', text: '  ' + d })]);
+      t.appendChild(D.svg('title', { text: p.pin + '\n' + p.desc }));
+      return t;
+    };
     for (const p of n.left) {
       g.appendChild(D.svg('circle', { class: 'port ' + dirCls(p), cx: r1(bx), cy: p.y, r: PORT_R, 'data-port': p.id, 'data-var': p.varFull || null }));
-      g.appendChild(D.svg('text', { class: 'pin', x: r1(bx + 7), y: p.y + 3.5, text: dg.trunc(p.pin, 12) }));
+      g.appendChild(pinText(p, false));
       if (p.inline) g.appendChild(D.svg('text', { class: 'inline', x: r1(bx - TAG_GAP), y: p.y + 3.5, 'text-anchor': 'end', text: dg.trunc(p.inline, 18) }, D.svg('title', { text: p.inline })));
     }
     for (const p of n.right) {
       g.appendChild(D.svg('circle', { class: 'port ' + dirCls(p), cx: r1(bx + n.boxW), cy: p.y, r: PORT_R, 'data-port': p.id, 'data-var': p.varFull || null }));
-      g.appendChild(D.svg('text', { class: 'pin', x: r1(bx + n.boxW - 7), y: p.y + 3.5, 'text-anchor': 'end', text: dg.trunc(p.pin, 12) }));
+      g.appendChild(pinText(p, true));
       if (p.inline) g.appendChild(D.svg('text', { class: 'inline', x: r1(bx + n.boxW + TAG_GAP), y: p.y + 3.5, text: dg.trunc(p.inline, 18) }, D.svg('title', { text: p.inline })));
     }
     const rows = Math.max(n.left.length, n.right.length);
-    n.body.forEach((line, i) => g.appendChild(D.svg('text', { class: 'body', x: r1(bx + 7), y: TITLE_H + rows * PIN_H + 12 + i * BODY_LH, text: line })));
+    const bodyY = (n.titleH == null ? TITLE_H : n.titleH) + (n.pinsH == null ? rows * PIN_H : n.pinsH);
+    n.body.forEach((line, i) => g.appendChild(D.svg('text', { class: 'body', x: r1(bx + 7), y: bodyY + 12 + i * BODY_LH, text: line })));
     return g;
   }
   function renderTag(graph, t) {
     const a = dg.portXY(graph, t.port);
     if (!a) return null;
     const text = dg.trunc(t.text, 28);
-    const tw = dg.measure(text) + TAG_PAD * 2;
+    const d = graph.showDesc && t.desc ? dline(t.desc, TR_TAG) : '';
+    const tw = Math.max(dg.measure(text), d ? dmeasure(d) : 0) + TAG_PAD * 2;
     const left = t.side === 'L';
     const x0 = left ? a.x - TAG_GAP - tw : a.x + TAG_GAP;
     const g = D.svg('g', { class: 'tag ' + (t.cls || ''), 'data-var': t.varFull || null, 'data-port': t.port, tabindex: t.varFull ? '0' : null });
-    g.appendChild(D.svg('title', { text: (t.title || t.text) + (t.varFull ? '\n' + t.varFull : '') }));
+    const tt = t.title || t.text;
+    g.appendChild(D.svg('title', { text: tt + (t.varFull && t.varFull !== tt ? '\n' + t.varFull : '') + (t.desc ? '\n' + t.desc : '') }));
     g.appendChild(D.svg('line', { class: 'tag-ln', x1: r1(left ? a.x - TAG_GAP : a.x), y1: a.y, x2: r1(left ? a.x : a.x + TAG_GAP), y2: a.y }));
-    g.appendChild(D.svg('rect', { x: r1(x0), y: a.y - 8, width: r1(tw), height: 16, rx: 3 }));
+    g.appendChild(D.svg('rect', { x: r1(x0), y: a.y - 8, width: r1(tw), height: d ? TAG_H_D : TAG_H, rx: 3 }));
     g.appendChild(D.svg('text', { x: r1(x0 + TAG_PAD), y: a.y + 3.5, text }));
+    if (d) g.appendChild(D.svg('text', { class: 'desc', x: r1(x0 + TAG_PAD), y: a.y + 15.5, text: d }));
     return g;
   }
   dg.render = function (graph) {
@@ -326,9 +389,12 @@
       const p = D.svg('path', { class: cls, d: e.path, 'data-var': e.varFull || null, 'data-edge': e.id });
       p.appendChild(D.svg('title', { text: (e.label || e.varFull || e.kind) + '\n' + e.from + ' → ' + e.to }));
       wires.appendChild(p);
-      if (e.label && e.labelXY) labels.appendChild(D.svg('text', { class: 'wlabel', x: r1(e.labelXY.x), y: r1(e.labelXY.y + (e.labelXY.mid ? 0 : 3.5)), 'text-anchor': 'middle', 'data-var': e.varFull || null, tabindex: e.varFull ? '0' : null, text: dg.trunc(e.label, 24) }, D.svg('title', { text: e.varFull || e.label })));
+      if (e.label && e.labelXY) {
+        const vd = (e.varFull && graph.varDesc && graph.varDesc[e.varFull]) || '';
+        labels.appendChild(D.svg('text', { class: 'wlabel', x: r1(e.labelXY.x), y: r1(e.labelXY.y + (e.labelXY.mid ? 0 : 3.5)), 'text-anchor': 'middle', 'data-var': e.varFull || null, tabindex: e.varFull ? '0' : null, text: dg.trunc(e.label, 24) }, D.svg('title', { text: (e.varFull || e.label) + (vd ? '\n' + vd : '') })));
+      }
     }
-    for (const n of graph.nodes.values()) nodes.appendChild(renderNode(n));
+    for (const n of graph.nodes.values()) nodes.appendChild(renderNode(graph, n));
     for (const t of graph.tags) { const g = renderTag(graph, t); if (g) tags.appendChild(g); }
     svg.append(wires, nodes, tags, labels);
     return svg;
@@ -340,6 +406,7 @@
     fit: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5', plus: 'M12 5v14M5 12h14', minus: 'M5 12h14',
     print: 'M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v7H6z',
     save: 'M12 3v12M7 10l5 5 5-5M4 21h16', close: 'M6 6l12 12M18 6L6 18', block: 'M4 5h16v14H4zM4 10h16', pins: 'M4 7h6M4 12h6M4 17h6M14 7h6M14 12h6M14 17h6', cm: 'M4 5h16v10H8l-4 4z',
+    desc: 'M4 6h16M4 11h10M4 16h13M17 11h3',
   };
   dg.tool = function (name, text, onclick, opt) {
     opt = opt || {};
@@ -368,10 +435,23 @@
     document.body.classList.add('wide');
     D.set(view, root);
 
+    inst.showDesc = opts.showDesc == null ? dg.descPref() : !!opts.showDesc;
+    const descBtn = dg.tool('desc', '說明', () => inst.setDesc(!inst.showDesc), { pressed: inst.showDesc, cls: inst.showDesc ? 'on' : '', title: '顯示／隱藏說明（變數、腳位、方塊描述；?desc=0 關）' });
+    /** 切換說明顯示：記到 localStorage、更新按鈕，重新 size→layout→route→render（保留 viewBox／選取／高亮） */
+    inst.setDesc = (on) => {
+      on = !!on;
+      inst.showDesc = on;
+      dg.saveDescPref(on);
+      descBtn.classList.toggle('on', on);
+      descBtn.setAttribute('aria-pressed', String(on));
+      if (inst.graph && inst.svg) inst.setGraph(inst.graph, Object.assign({}, inst.lastSetOpts || {}, { keepViewport: true }));
+      return on;
+    };
     tools.append(
       dg.tool('fit', '適應', () => inst.fit(), { title: '適應視窗（0 / F）' }),
       dg.tool('plus', '放大', () => inst.zoom(1.25), { title: '放大（+）' }),
-      dg.tool('minus', '縮小', () => inst.zoom(0.8), { title: '縮小（−）' }));
+      dg.tool('minus', '縮小', () => inst.zoom(0.8), { title: '縮小（−）' }),
+      descBtn);
     const extra = D.h('span', { class: 'dg-tools-x' });
     tools.append(extra,
       dg.tool('print', '列印', () => inst.print(), { title: '列印（先適應視窗）' }),
@@ -571,9 +651,10 @@
     /* ---- 圖載入 */
     inst.setGraph = (graph, o) => {
       o = o || {};
+      inst.lastSetOpts = { layout: o.layout };
       const t = {};
       let t0 = performance.now();
-      dg.prepare(graph); dg.size(graph); t.size = performance.now() - t0;
+      dg.prepare(graph); dg.size(graph, { showDesc: inst.showDesc }); t.size = performance.now() - t0;
       const lay = dg.layout(graph, o.layout); t.layout = lay.ms; t.comps = lay.comps;
       t0 = performance.now(); dg.route(graph); t.route = performance.now() - t0;
       t0 = performance.now();
@@ -652,6 +733,7 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
 .tag.iface rect{fill:var(--accent-soft);stroke:var(--accent-2)}
 .tag.warn rect,.tag.ext-l rect{fill:var(--warn-bg);stroke:var(--warn-bd)}.tag.warn text,.tag.ext-l text{fill:var(--warn)}
 .tag .tag-ln{stroke:var(--muted);stroke-width:1}
+.node .desc,.node .pdesc,.node .bdesc,.tag text.desc{font-size:9.5px;fill:var(--muted);font-weight:400}
 `;
   function exportCss() {
     const cs = getComputedStyle(document.documentElement);
@@ -682,8 +764,16 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
     if (attrs.length) out.push(D.h('h4', { text: '屬性' }), D.h('table', { class: 'kv' }, D.h('tbody', null, attrs.map(([k, v]) => D.kv(k, D.mono(v == null ? '—' : String(v)))))));
     const pins = n.pins || [];
     if (pins.length) {
-      // compact 3-column table for the narrow side panel (full 8-column table lives on the block page)
+      // compact 4-column table for the narrow side panel (full 8-column table lives on the block page)
+      // 說明 = 腳位自身描述（tuple 第 11 欄）|| 所接變數的描述（port.varDesc → graph.varDesc）；舊資料（10 欄、無 vd）→ 空
       const CK = { V: '變數', L: '同 task', P: '介面腳', D: 'device', N: '常數', E: '列舉', A: '位址', '-': '—' };
+      const vdMap = (inst.graph && inst.graph.varDesc) || {};
+      const portByPin = new Map(n.left.concat(n.right).map((p) => [p.pin, p]));
+      const descCell = (name, varFull, pinDesc) => {
+        const port = portByPin.get(name);
+        const d = dg.firstLine(pinDesc || (port && (port.desc || port.varDesc)) || (varFull && vdMap[varFull]) || '');
+        return d ? D.h('td', { class: 'pdesc-cell', title: d, text: dg.trunc(d, 60) }) : D.h('td', { class: 'muted', text: '—' });
+      };
       const rows = pins.map((p) => {
         const [name, dir, src, ck, conn, varFull, tgtKey, tgtPin] = p;
         let to;
@@ -691,11 +781,14 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
         else if ((ck === 'L' || ck === 'P') && tgtKey) to = D.h('a', { href: D.hrefBKey(tgtKey), class: 'lk mono', text: tgtKey.slice(tgtKey.lastIndexOf('/') + 1) + '.' + (tgtPin || ''), title: conn || '' });
         else if (ck === 'N' || ck === 'E') to = D.mono(conn || '', 'const');
         else to = D.mono(conn || '—');
-        return [D.frag(D.mono(name, 'b'), ' ', D.dirBadge(dir), D.srcBadge(src)), CK[ck] || ck || '—', to];
+        return [D.frag(D.mono(name, 'b'), ' ', D.dirBadge(dir), D.srcBadge(src)), CK[ck] || ck || '—', to, descCell(name, varFull, p.length > 10 ? p[10] : null)];
       });
-      out.push(D.h('h4', { text: '腳位（' + pins.length + '）' }), D.table(['腳位', '種類', '連到'], rows, 'pins compact'));
+      out.push(D.h('h4', { text: '腳位（' + pins.length + '）' }), D.table(['腳位', '種類', '連到', '說明'], rows, 'pins compact'));
     } else if (n.left.length || n.right.length) {
-      out.push(D.h('h4', { text: '腳位' }), D.table(['腳位', '方向', '連線'], n.left.concat(n.right).map((p) => [D.mono(p.pin, 'b'), D.dirBadge(p.dir), p.varFull ? D.h('a', { href: D.hrefV(p.varFull), class: 'lk mono', text: p.varFull }) : D.mono(D.val(p.conn))])));
+      out.push(D.h('h4', { text: '腳位' }), D.table(['腳位', '方向', '連線', '說明'], n.left.concat(n.right).map((p) => {
+        const d = dg.firstLine(p.desc || p.varDesc || '');
+        return [D.mono(p.pin, 'b'), D.dirBadge(p.dir), p.varFull ? D.h('a', { href: D.hrefV(p.varFull), class: 'lk mono', text: p.varFull }) : D.mono(D.val(p.conn)), d ? D.h('td', { class: 'pdesc-cell', title: d, text: dg.trunc(d, 60) }) : D.h('td', { class: 'muted', text: '—' })];
+      })));
     }
     return D.frag(out);
   };

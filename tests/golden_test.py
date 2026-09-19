@@ -48,6 +48,10 @@ def main():
     wf = one(conn, "SELECT count(DISTINCT watch_file) FROM watch")
     check("watch files >= 100 (171 incl. empty stubs)", (wf or 0) >= 100, str(wf))
 
+    nb = one(conn, "SELECT count(*) FROM block WHERE kind='block'")
+    nl = one(conn, "SELECT count(*) FROM block WHERE kind='block' AND layout IS NULL")
+    check("block.layout (BlockLayoutData) present for >99% of blocks", nb and nl / nb < 0.01, f"{nl}/{nb} null")
+
     # ---- chain A: G11 L27QE1_A -> EGD -> BOPE1
     v = conn.execute("SELECT * FROM variable WHERE ctrl='G11' AND name='L27QE1_A'").fetchone()
     check("A1 G11.L27QE1_A exists BOOL 01005DE1 LVL_1", v is not None and v["datatype"] == "BOOL" and v["address"] == "01005DE1"

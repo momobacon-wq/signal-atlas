@@ -5,7 +5,7 @@ Layout (all JSON compact, UTF-8, no local absolute paths — the exporter aborts
   manifest.json                 build hash, source info, controllers, shard config, encrypted programs, block types
   names/<CTRL>.json             {ctrl, rows:[[name, desc, flags, alias, datatype]]}   (search index, lazy per controller)
   var/<hhh>.json                {v:{full_name: card}}     shard = sha1(full_name)[:3]  (4096 shards)
-  block/<hhh>.json              {b:{key: block}}          key = ctrl|path, shard = sha1(key)[:3]
+  task/<hhh>.json               {t:{tkey:{n, b:{key: block}}}}  tkey = ctrl|Program/Task, shard = sha1(tkey)[:3]; b in document order, root first
   program/<CTRL>.json           {ctrl, programs:[{name, lib, file, enc, help, tasks:[{name, type, drg, blocks:[[key,name,type,kind,opaque]]}]}]}
   io/<CTRL>.json                {ctrl, modules:[{name, id, cabinet, red, boards:[{name, hw, pos, points:[[name, dir, conn, tag, addr, type, lo, hi, screws]]}]}]}
   screen/<hh>.json              {s:{screen: {menu:[...], points:[[full_name, source]]}}}  shard = sha1(screen)[:2]
@@ -107,6 +107,11 @@ def _compact(o):
     if isinstance(o, list):
         return [_compact(x) if isinstance(x, (dict, list)) else x for x in o]
     return o
+
+
+def task_key(ctrl: str, path: str) -> str:
+    """'CTRL|Program/Task' for any block path ('Program/Task/UB/Block' -> first two segments)."""
+    return f"{ctrl}|{'/'.join(path.split('/', 2)[:2])}"
 
 
 def _ref(r):
@@ -285,9 +290,11 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     del shards, writers, readers, unknown
     log(f"    {n_vars} variables, {time.time()-t0:.0f}s")
 
-    # ---------------------------------------------------------------- blocks + pins -> block shards, program trees
-    log("  writing block shards")
-    bshards = defaultdict(list)
+    # ---------------------------------------------------------------- blocks + pins -> task shards, program trees
+    log("  writing task shards")
+    task_items = defaultdict(list)     # tkey -> ['"key":{record}', ...] in document order (root first)
+    task_n = defaultdict(int)
+    has_layout = bool(conn.execute("SELECT 1 FROM pragma_table_info('block') WHERE name='layout'").fetchone())
     pins_by_block = defaultdict(list)
     for r in conn.execute("""SELECT block_id,name,direction,dir_source,conn_kind,connection,var_id,tgt_block_id,tgt_pin,address,alias
                              FROM pin ORDER BY block_id,id"""):
@@ -300,22 +307,35 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     prog_tree = defaultdict(lambda: defaultdict(list))   # ctrl -> program -> tasks
     task_blocks = defaultdict(list)                        # task_id -> [key,name,type,kind,opaque]
     n_blocks = 0
-    for r in conn.execute("""SELECT id,ctrl,program_id,task_id,path,name,block_type,kind,version,is_opaque,description,logic_drg,p_id,device,
-                                    hmi_linked_object,line_no FROM block ORDER BY ctrl,program_id,id"""):
-        bid, ctrl, pid, tid, path, name, btype, kind, ver, opq, desc, ldrg, p_id, dev, hlo, ln = r
+    lay_col = ",layout" if has_layout else ",NULL"
+    for r in conn.execute(f"""SELECT id,ctrl,program_id,task_id,path,name,block_type,kind,version,is_opaque,description,logic_drg,p_id,device,
+                                    hmi_linked_object,line_no{lay_col} FROM block ORDER BY ctrl,program_id,id"""):
+        bid, ctrl, pid, tid, path, name, btype, kind, ver, opq, desc, ldrg, p_id, dev, hlo, ln, lay = r
         prog = prog_by_id.get(pid, ("", ""))[1]
         key = f"{ctrl}|{path}"
         b = {"ctrl": ctrl, "program": prog, "path": path, "name": name, "type": btype, "kind": kind, "ver": ver,
-             "opaque": opq, "desc": desc, "drg": ldrg, "pid": p_id, "device": dev, "hmi": hlo,
+             "opaque": opq, "desc": desc, "drg": ldrg, "pid": p_id, "device": dev, "hmi": hlo, "lay": lay,
              "attrs": attrs.get(bid, {}), "pins": pins_by_block.get(bid, []), "line": ln,
              "file": f"{ctrl}/_{prog}.xml"}
-        bshards[_shard(key)].append(_dump(key) + ":" + _dump(_compact(b)))
+        tkey = task_key(ctrl, path)
+        task_items[tkey].append(_dump(key) + ":" + _dump(_compact(b)))
+        task_n[tkey] += 1
         if tid is not None:
             task_blocks[tid].append([key, name, btype, kind, opq])
         n_blocks += 1
-    for sh, items in bshards.items():
-        w.write(f"block/{sh}.json", '{"b":{' + ",".join(items) + "}}")
-    del bshards, pins_by_block
+    tshards = defaultdict(list)
+    sizes = []
+    for tkey, items in task_items.items():
+        body = '{"n":%d,"b":{%s}}' % (task_n[tkey], ",".join(items))
+        sizes.append(len(body))
+        tshards[_shard(tkey)].append(_dump(tkey) + ":" + body)
+    for sh, items in tshards.items():
+        w.write(f"task/{sh}.json", '{"t":{' + ",".join(items) + "}}")
+    sizes.sort()
+    if sizes:
+        log(f"    {len(sizes)} task entries  p50 {sizes[len(sizes)//2]/1e3:.0f} KB  p95 {sizes[int(len(sizes)*.95)]/1e3:.0f} KB  "
+            f"max {sizes[-1]/1e6:.2f} MB  layout column: {has_layout}")
+    del task_items, tshards, pins_by_block
     tasks_by_prog = defaultdict(list)
     for r in conn.execute("SELECT id,program_id,name,block_type,logic_drg,is_task,line_no FROM task ORDER BY program_id,id"):
         tasks_by_prog[r[1]].append({"name": r[2], "type": r[3], "drg": r[4], "is_task": r[5], "line": r[6],
@@ -371,6 +391,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
             "n_pins": conn.execute("SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.ctrl=?", (c,)).fetchone()[0],
             "n_programs": conn.execute("SELECT count(*) FROM program WHERE ctrl=?", (c,)).fetchone()[0],
             "n_encrypted": conn.execute("SELECT count(*) FROM program WHERE ctrl=? AND encrypted=1", (c,)).fetchone()[0],
+            "n_tasks": conn.execute("SELECT count(*) FROM task t JOIN program p ON p.id=t.program_id WHERE p.ctrl=?", (c,)).fetchone()[0],
             "n_io": conn.execute("SELECT count(*) FROM io_point WHERE ctrl=? AND board_id IS NOT NULL", (c,)).fetchone()[0],
         }
     btypes = [[r[0], r[1]] for r in conn.execute(
@@ -381,7 +402,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
                    "controllers_minor_rev": {c["name"]: c["minor_rev"] for c in ctrls}},
         "controllers": [{"name": c["name"], "kind": c["kind"], "redundancy": c["redundancy"],
                          "product_version": c["product_version"], **counts[c["name"]]} for c in ctrls],
-        "shards": {"var": 16 ** VAR_SHARDS, "block": 16 ** VAR_SHARDS, "screen": 16 ** SCREEN_SHARDS},
+        "shards": {"var": 16 ** VAR_SHARDS, "task": 16 ** VAR_SHARDS, "screen": 16 ** SCREEN_SHARDS},
         "dir_legend": {"U": "介面腳 Usage", "T": "手冊表/人工覆寫", "C": "常數規則", "L": "連線投票", "H": "命名慣例", "?": "未知"},
         "flags": {"1": "has_writer", "2": "has_io", "4": "has_egd", "8": "has_hmi", "16": "has_alarm", "32": "const",
                   "64": "egd_copy", "128": "in_encrypted"},

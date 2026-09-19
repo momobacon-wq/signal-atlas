@@ -4,7 +4,7 @@
   const D = window.DC;
 
   /** 讀取者依 program → task 分組（block_path = Program/Task/…/Block，第二段是 task） */
-  function grouped(refs, dir) {
+  function grouped(refs, dir, full) {
     const byProg = new Map();
     for (const r of refs) {
       const prog = r[1] || '?';
@@ -22,7 +22,7 @@
       const body = [];
       for (const [task, list] of tasks) {
         body.push(D.h('details', { class: 'grp task', open: openAll || tasks.size === 1 },
-          D.h('summary', null, D.h('span', { class: 'mono', text: 'Task ' }), D.h('a', { href: D.hrefB(ctrl, prog + '/' + task), class: 'lk mono', text: task, onclick: (e) => e.stopPropagation() }), D.h('span', { class: 'sec-n', text: String(list.length) })),
+          D.h('summary', null, D.h('span', { class: 'mono', text: 'Task ' }), D.h('a', { href: D.hrefB(ctrl, prog + '/' + task), class: 'lk mono', text: task, onclick: (e) => e.stopPropagation() }), D.h('span', { class: 'sec-n', text: String(list.length) }), ' ', D.h('a', { href: D.hrefD(ctrl, prog, task, full ? { sel: full } : null), class: 'lk small', text: '圖', title: '在邏輯方塊圖中高亮此訊號', onclick: (e) => e.stopPropagation() })),
           D.h('div', { class: 'grp-body' }, list.map((r) => D.refRow(r, dir)))));
       }
       out.push(D.h('details', { class: 'grp prog', open: openAll || byProg.size === 1 },
@@ -57,13 +57,13 @@
     return D.section('定義', D.h('table', { class: 'kv' }, D.h('tbody', null, rows)));
   }
 
-  function sourceSection(rec) {
+  function sourceSection(rec, full) {
     const w = rec.w || [];
     const body = [];
     let note = '';
     if (w.length) {
       note = '邏輯寫入者';
-      body.push(w.map((r) => D.refRow(r, 'O')));
+      body.push(w.map((r) => D.refRow(r, 'O', { tail: D.h('a', { href: D.hrefD(r[0], r[1], D.taskOf(r[2]), { sel: full }), class: 'lk small', text: '圖', title: '在邏輯方塊圖中高亮此訊號' }) })));
       if (w.length > 1) body.push(D.h('p', { class: 'warn-text', text: '多個寫入者（' + w.length + '）— 可能是不同 task 交替寫入，或方向推斷有誤。' }));
       if (rec.w_more) body.push(D.h('p', { class: 'muted small', text: '另有 ' + D.int(rec.w_more) + ' 筆寫入者未列出（超過 400 筆）。' }));
     } else {
@@ -164,14 +164,15 @@
       D.h('div', { class: 'ph-actions' },
         D.link(D.hrefT(full, 'up', 3), '追蹤上游', 'btn primary'),
         D.link(D.hrefT(full, 'down', 3), '追蹤下游', 'btn primary'),
+        D.link(D.hrefG(full, 2, 2), '訊號圖', 'btn'),
         D.h('button', { type: 'button', class: 'btn', text: '複製深連結', onclick: () => D.copy(location.href.split('#')[0] + D.hrefV(full), '連結') }),
         D.h('button', { type: 'button', class: 'btn', text: '複製名稱', onclick: () => D.copy(full, full) })));
 
     const r = rec.r || [], u = rec.u || [];
     const secs = [
       defSection(full, ctrl, d),
-      sourceSection(rec),
-      D.section('去向（讀取者）', r.length ? D.frag(grouped(r, 'I'), rec.r_more ? D.h('p', { class: 'muted small', text: '另有 ' + D.int(rec.r_more) + ' 筆讀取者未列出（超過 400 筆）。' }) : null) : D.empty('沒有讀取者'), { count: r.length + (rec.r_more || 0) }),
+      sourceSection(rec, full),
+      D.section('去向（讀取者）', r.length ? D.frag(grouped(r, 'I', full), rec.r_more ? D.h('p', { class: 'muted small', text: '另有 ' + D.int(rec.r_more) + ' 筆讀取者未列出（超過 400 筆）。' }) : null) : D.empty('沒有讀取者'), { count: r.length + (rec.r_more || 0) }),
       u.length ? D.section('方向未知的腳', D.frag(D.h('p', { class: 'muted small', text: '這些腳位的方向推不出來（?），可能是寫入也可能是讀取。' }), u.map((x) => D.refRow(x, '?'))), { count: u.length, open: u.length <= 20 }) : null,
       egdSection(rec.egd, full),
       ioSection(rec.io),

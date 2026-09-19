@@ -13,7 +13,8 @@ tools/verify_web.py            獨立對帳：SQLite ⇄ docs/data（解密後�
 tools/stamp_assets.py          index.html 資產加 ?v=<hash>、version.json
 docs/index.html                單頁 App（vanilla JS，無 build step，CSP script-src 'self'，noindex）
 docs/robots.txt                Disallow: /
-docs/assets/                   boot.js、auth.js（員工代號閘門）、app.css、core.js、search.js、signal.js、trace.js、block.js、io.js、browse.js
+docs/assets/                   boot.js、auth.js（員工代號閘門）、app.css、core.js、search.js、signal.js、trace.js、block.js、io.js、browse.js、
+                               diagram.js（方塊圖引擎 D.dg）、dtask.js（Task 圖）、dsignal.js（訊號圖）、dagre.min.js（vendored 3.1.1，MIT，圖頁才載入）
 docs/data/                     export-web 的輸出（下）
 ```
 
@@ -39,8 +40,8 @@ docs/data/                     export-web 的輸出（下）
 ```json
 {"build":"a1b2c3d4e5","site":"Signal Atlas",
  "source":{"toolbox_version":"V07.10.07C","indexed_at":"2026-09-19T15:00:00+08:00","controllers_minor_rev":{"G11":"2026-08-10T08:05:01"}},
- "controllers":[{"name":"G11","kind":"controller","redundancy":"Triple","product_version":"V07.03.02C","n_vars":53561,"n_blocks":31417,"n_pins":223570,"n_programs":132,"n_encrypted":20,"n_io":11900}],
- "shards":{"var":4096,"block":4096,"screen":256},
+ "controllers":[{"name":"G11","kind":"controller","redundancy":"Triple","product_version":"V07.03.02C","n_vars":53561,"n_blocks":31417,"n_pins":223570,"n_programs":132,"n_encrypted":20,"n_io":11900,"n_tasks":1018}],
+ "shards":{"var":4096,"task":4096,"screen":256},
  "dir_legend":{"U":"介面腳 Usage","T":"手冊表/人工覆寫","C":"常數規則","L":"連線投票","H":"命名慣例","?":"未知"},
  "flags":{"1":"has_writer","2":"has_io","4":"has_egd","8":"has_hmi","16":"has_alarm","32":"const","64":"egd_copy","128":"in_encrypted"},
  "encrypted_programs":[["S1","TurbineATSMod"]],
@@ -75,14 +76,21 @@ docs/data/                     export-web 的輸出（下）
 前端「來源」判定：`w` 非空 → 邏輯寫入者；否則 `io` 有 `dir:"I"` → 「現場 I/O」；否則 `egd.src` → 「EGD 來自 …」；
 否則 `enc` 非空 → 「可能在加密程式內（不可追蹤）」。`egd.p` 非空而 `egd.c` 空 → 「consumer outside checkout」。
 
-## `block/<hhh>.json` — 方塊（key = `CTRL|block_path`，shard = sha1(key) 前 3 hex；空欄位省略）
+## `task/<hhh>.json` — 一個 Task 的全部方塊（key = `CTRL|Program/Task`，shard = sha1(key) 前 3 hex；取代舊的 `block/` 分片）
 
 ```json
-{"b":{"G11|Trip/FNCTN_ControlTripMaster/RUNG":{"ctrl":"G11","program":"Trip","path":"...","name":"RUNG","type":"RUNG","kind":"block|userblock|task",
-  "ver":"…","opaque":1,"desc":"…","drg":"…","pid":"…","device":"…","hmi":"…","attrs":{"Type":"TRP_OVR"},
-  "pins":[[name, dir, src, conn_kind, connection, var_full_name|null, tgt_block_key|null, tgt_pin|null, address, alias]],
-  "line":1234,"file":"G11/_Trip.xml"}}}
+{"t":{"G11|LubeOil/Alarm":{"n":76,"b":{
+  "G11|LubeOil/Alarm":          {"kind":"task","pins":[…介面腳…],…},
+  "G11|LubeOil/Alarm/_COMMENT": {"kind":"block","type":"_COMMENT","lay":1,"attrs":{"Description":"…"}},
+  "G11|LubeOil/Alarm/MOVE_21":  {"ctrl":"G11","program":"LubeOil","path":"LubeOil/Alarm/MOVE_21","name":"MOVE_21","type":"MOVE","kind":"block",
+     "lay":60,"attrs":{},"pins":[[name, dir, src, conn_kind, connection, var_full_name|null, tgt_block_key|null, tgt_pin|null, address, alias]],
+     "line":16036,"file":"G11/_LubeOil.xml"}
+}}}}
 ```
+- `b` 的鍵順序 = 原始 XML 文件順序，第一筆是 task 根（`kind:"task"`，其 `pins` 為介面腳）；巢狀 UserBlock 內的方塊同在此 entry（同 task）。
+- 方塊記錄欄位同前（`ctrl program path name type kind ver opaque desc drg pid device hmi attrs pins line file`），新增可選 `lay`（`BlockLayoutData`，同層的 1-based 繪圖順序，含 UserBlock；缺值省略）。空欄位/空陣列/0 一律省略。
+- 單一方塊 = `task` entry 的 `b[key]`；前端 `D.block(key)` 先算 `D.taskKeyOf(key)`（路徑前兩段）再查。加密程式的 task 沒有 entry（前端以 `program/<CTRL>.json` 的 `enc` 解釋）。
+- 尺寸：6,261 個 entry，明文 p50 9 KB、p95 61 KB；兩個 MIS 資料表 task 約 2 MB（前端以規模分級處理）。
 
 ## `program/<CTRL>.json`、`io/<CTRL>.json`、`screen/<hh>.json`、`screens.json`、`alarm/<CTRL>.json`
 
@@ -94,7 +102,15 @@ docs/data/                     export-web 的輸出（下）
 ## 前端路由（hash）
 
 `#/` 搜尋（`?q=&c=`）、`#/v/<CTRL.NAME>` 訊號、`#/t/<CTRL.NAME>?dir=up|down&hops=3` 追蹤、`#/b/<CTRL>/<block_path>` 方塊/Task、
-`#/p/<CTRL>?prog=` 程式瀏覽、`#/io/<CTRL>[/<module>]` I/O、`#/s` 畫面列表、`#/s/<screen.cim>` 畫面、`#/a/<CTRL>?q=` 警報清單。
+`#/p/<CTRL>?prog=` 程式瀏覽、`#/io/<CTRL>[/<module>]` I/O、`#/s` 畫面列表、`#/s/<screen.cim>` 畫面、`#/a/<CTRL>?q=` 警報清單、
+`#/d/<CTRL>/<Program>/<Task>?ub=&sel=&b=&f=&page=&all=&pins=&cm=` Task 方塊圖、`#/g/<CTRL.NAME>?up=N&down=N` 訊號方塊圖。
+
+## 方塊圖規則（`diagram.js` / `dtask.js` / `dsignal.js`）
+
+- 原始 ToolboxST 座標不可得（`DiagramXML` 為專有壓縮格式），用 dagre 自動排版；`lay`（缺值則文件順序）決定同層排序與「頁」的閱讀順序；孤立方塊依連通群組分別排版再依序打包成欄。
+- 走線只畫資料裡確定的關係：同 task 內 `L:` 接線（消費端指向來源）、同 task 內一寫（≤2）多讀（≤4）的變數；其他變數以腳位旁的 xref 標籤呈現（左入右出），點標籤高亮同名所有端點；`P` 介面腳標籤 `⟨pin⟩`；`N/E` 常數為腳位行內文字；`A/D` 預設隱藏。
+- 方向來自索引的推斷值（腳位徽章顯示來源字母）；`?` 方向腳以虛線/灰色；多寫入者變數走線為紅色虛線；不透明 UserBlock 斜紋框、不可展開。
+- 規模：Task 圖 ≤300 方塊全畫，301–1000 依連通群組分頁，>1000 先篩選；訊號圖由 BFS 的 200 節點上限保護。
 追蹤在前端 BFS：由訊號卡的 `w`/`r` 取 ref → 載入 `block/` 分片取該 block 其他腳 → 再載入相連變數的 `var/` 分片；
 預設深度 3、節點上限 200、記憶體快取分片、顯示載入進度、可中止；加密邊界標「加密 — 無法追蹤」；`?` 方向的腳不追。
 

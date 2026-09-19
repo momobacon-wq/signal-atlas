@@ -206,26 +206,52 @@ def main(docs):
                 err(f"writer ref not found {full}: {ctrl}|{path}.{pin}")
     (ok if not nbad else err)(f"sampled {len(sample)} cards, {nbad} mismatches")
 
-    # ---- blocks: sample 300 blocks, check shard + pin count
+    # ---- blocks: sample 300 blocks, check task shard + pin count
+    def tkey_of(ctrl, path):
+        return f"{ctrl}|{'/'.join(path.split('/', 2)[:2])}"
+    tcache = {}
+
+    def task_entry(tkey):
+        s = sh(tkey)
+        if s not in tcache:
+            try:
+                tcache[s] = load(data / "task" / f"{s}.json")["t"]
+            except FileNotFoundError:
+                tcache[s] = {}
+        return tcache[s].get(tkey)
     bids = [r[0] for r in conn.execute("SELECT id FROM block")]
     bsample = random.sample(bids, min(300, len(bids)))
-    bcache, bbad = {}, 0
+    bbad = 0
     for bid in bsample:
         b = conn.execute("SELECT ctrl,path FROM block WHERE id=?", (bid,)).fetchone()
         key = f"{b[0]}|{b[1]}"
-        s = sh(key)
-        if s not in bcache:
-            try:
-                bcache[s] = load(data / "block" / f"{s}.json")["b"]
-            except FileNotFoundError:
-                bcache[s] = {}
-        blkj = bcache[s].get(key)
+        ent = task_entry(tkey_of(b[0], b[1]))
+        blkj = ent["b"].get(key) if ent else None
         npins = conn.execute("SELECT count(*) FROM pin WHERE block_id=?", (bid,)).fetchone()[0]
         if blkj is None or len(blkj.get("pins", [])) != npins:
             bbad += 1
             if bbad <= 5:
                 err(f"block {key}: {'missing' if blkj is None else 'pins ' + str(len(blkj.get('pins', []))) + ' vs ' + str(npins)}")
     (ok if not bbad else err)(f"sampled {len(bsample)} blocks, {bbad} mismatches")
+    # ---- tasks: sample 30 task entries (root first, document order, counts)
+    tids = [r[0] for r in conn.execute("SELECT id FROM task")]
+    tbad = 0
+    for tid in random.sample(tids, min(30, len(tids))):
+        rows = conn.execute("SELECT ctrl||'|'||path, kind FROM block WHERE task_id=? ORDER BY id", (tid,)).fetchall()
+        if not rows:
+            continue
+        tkey = tkey_of(rows[0][0].split("|")[0], rows[0][0].split("|", 1)[1])
+        ent = task_entry(tkey)
+        keys = [r[0] for r in rows]
+        if ent is None or ent.get("n") != len(keys) or list(ent["b"].keys()) != keys or next(iter(ent["b"].values())).get("kind") != "task":
+            tbad += 1
+            if tbad <= 5:
+                err(f"task {tkey}: {'missing' if ent is None else 'n ' + str(ent.get('n')) + '/' + str(len(ent['b'])) + ' vs ' + str(len(keys)) + ' or order/root mismatch'}")
+    (ok if not tbad else err)(f"sampled 30 task entries, {tbad} mismatches")
+    if (data / "block").exists():
+        err("legacy data/block directory still present")
+    if man.get("shards", {}).get("task") != 4096:
+        err("manifest.shards.task != 4096")
 
     # ---- screens & alarms
     n_scr_db = conn.execute("SELECT count(*) FROM (SELECT lower(screen) FROM hmi_point UNION SELECT lower(screen) FROM hmi_menu)").fetchone()[0]

@@ -1,4 +1,4 @@
-/* Signal Atlas — 方塊頁 #/b/<CTRL>/<block_path>：block/<sha1('CTRL|path')[:3]>.json；task 節點另列該 task 的方塊清單 */
+/* Signal Atlas — 方塊頁 #/b/<CTRL>/<block_path>：task/<sha1('CTRL|Program/Task')[:3]>.json 內查 key；task 節點另列該 task 的方塊清單 */
 'use strict';
 (function () {
   const D = window.DC;
@@ -20,6 +20,9 @@
       D.h('td', { class: 'nowrap' }, addr ? D.mono(addr) : '—'),
       D.h('td', null, alias ? D.mono(alias) : '—'));
   }
+
+  D.pinRow = pinRow; // 邏輯圖側欄（diagram.js）重用
+  D.PIN_HEADS = ['腳位', '方向 / 來源', '連線種類', '連線', '變數', '目標方塊', '位址', '別名'];
 
   /** 程式樹中的 Task/UserBlock 節點（block_path 第二段）；供 task 頁列方塊、一般方塊頁補邏輯圖號 */
   async function taskEntry(ctrl, program, taskName) {
@@ -63,6 +66,7 @@
         parent && segs.length > 2 ? D.link(D.hrefB(ctrl, parent), '上一層', 'btn') : null,
         taskPath && segs.length > 2 ? D.link(D.hrefB(ctrl, taskPath), '所屬 Task ' + segs[1], 'btn') : null,
         D.link(D.hrefP(ctrl, program), '程式 ' + program, 'btn'),
+        segs.length > 1 ? D.link(D.hrefD(ctrl, program, segs[1], segs.length > 2 ? { b: key } : null), '邏輯圖', 'btn primary') : null,
         D.h('button', { type: 'button', class: 'btn', text: '複製深連結', onclick: () => D.copy(location.href.split('#')[0] + D.hrefB(ctrl, path), '連結') })));
     const entry = segs.length > 1 ? await taskEntry(ctrl, program, segs[1]).catch(() => null) : null;
     const meta = D.h('table', { class: 'kv' }, D.h('tbody', null,
@@ -82,7 +86,7 @@
     if (isTask && entry) {
       const rows = (entry.task.blocks || []).filter((r) => r[3] !== 'task' && r[0] !== key)
         .map(([k, name, type, kind, opaque]) => [D.h('a', { href: D.hrefBKey(k), class: 'lk mono b', text: name }), D.mono(type || ''), kind || '', opaque ? D.tag('不透明', 'warn') : '']);
-      secs.push(D.section('Task 內的方塊', D.frag(entry.task.drg ? D.h('p', { class: 'muted small' }, '邏輯圖 ', D.mono(entry.task.drg)) : null, rows.length ? D.table(['方塊', '型式', '種類', ''], rows) : D.empty('無')), { count: rows.length }));
+      secs.push(D.section('Task 內的方塊', D.frag(D.h('p', { class: 'muted small' }, D.link(D.hrefD(ctrl, program, segs[1]), '開啟邏輯方塊圖', 'lk'), entry.task.drg ? D.frag(' · 邏輯圖號 ', D.mono(entry.task.drg)) : null), rows.length ? D.table(['方塊', '型式', '種類', ''], rows) : D.empty('無')), { count: rows.length }));
     }
     D.set(view, head, D.h('div', { class: 'secs' }, secs));
   });

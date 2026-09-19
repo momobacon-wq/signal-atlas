@@ -284,3 +284,163 @@ body.auth-locked .app-header, body.auth-locked .app-body { filter: blur(3px); po
 }
 @media (prefers-reduced-motion: reduce) { .auth-gate { backdrop-filter: none; } .spinner { animation-duration: 2s; } }
 @media print { .app-header, .toast, .topbar-progress, .ph-actions { display: none !important; } .sec { break-inside: avoid; } }
+
+/* ---------------------------------------------------------------- 邏輯方塊圖（assets/diagram.js / dtask.js / dsignal.js） */
+body.wide .main { max-width: none; padding: 8px 12px 16px; }
+.dg { display: flex; flex-direction: column; height: calc(100vh - var(--hdr) - 30px); min-height: 420px; outline: none; }
+.dg-bar { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 2px 0 6px; }
+.dg-head { min-width: 0; }
+.dg-title { font-size: 16px; font-weight: 700; color: var(--accent-text); word-break: break-all; }
+.dg-tools { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.dg-tools-x { display: contents; }
+.btn.tb { height: 32px; padding: 0 8px; gap: 4px; }
+.btn.tb[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent-2); color: var(--accent-text); font-weight: 700; }
+.tb-ico { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.dg-wrap { flex: 1 1 auto; min-height: 0; display: flex; position: relative; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg); }
+.dg-canvas { flex: 1 1 auto; min-width: 0; position: relative; overflow: hidden; touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; }
+.dg.dragging .dg-canvas { cursor: grabbing; }
+.dg-canvas .loading-box, .dg-canvas .dg-msg { position: absolute; inset: 0; overflow: auto; padding: 20px; cursor: auto; user-select: text; }
+.dg-msg .error-box { margin: 10px auto; }
+.dg-refuse { max-width: 720px; margin: 0 auto; }
+.dg-refuse h4 { margin-top: 12px; }
+.dg-pages { display: flex; flex-wrap: wrap; gap: 4px; }
+.dg-banner { position: absolute; left: 8px; top: 8px; right: 8px; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; font-size: 12.5px; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; box-shadow: 0 2px 6px rgba(20, 30, 50, 0.08); cursor: auto; }
+.dg-banner.warn { color: var(--warn); border-color: var(--warn-bd); background: var(--warn-bg); }
+.dg-status { padding: 4px 2px 0; min-height: 20px; }
+/* 側欄 */
+.dg-side { flex: 0 0 320px; width: 320px; display: none; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--surface); }
+.dg-side.open { display: flex; }
+.dg-side-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.dg-side-title { flex: 1 1 auto; min-width: 0; font-size: 14px; word-break: break-all; }
+.dg-side-close { width: 30px; height: 30px; }
+.dg-side-body { flex: 1 1 auto; overflow: auto; padding: 8px 10px 14px; font-size: 13px; -webkit-overflow-scrolling: touch; }
+.dg-side-body h4 { margin: 10px 0 4px; }
+.dg-side-tags { margin-bottom: 4px; }
+.dg-side-desc { margin: 4px 0 6px; }
+.dg-side-desc .lines > div { white-space: pre-wrap; }
+.dg-side-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.dg-side-body table.mini { font-size: 11.5px; }
+.dg-side-body table.mini td { padding: 3px 5px; white-space: nowrap; word-break: normal; }
+.dg-endpoints li { padding: 1px 0; }
+.lk-btn { background: none; border: 0; padding: 0; color: var(--link); cursor: pointer; text-align: left; }
+.lk-btn:hover { text-decoration: underline; }
+.dg-hint { margin: 8px 0 0; }
+.dg-expand { padding: 6px 8px; margin-bottom: 8px; border: 1px solid var(--accent-2); border-radius: 6px; background: var(--accent-soft); }
+.dg-expand h4 { margin-top: 0; }
+/* SVG */
+.dg-svg { display: block; width: 100%; height: 100%; background: var(--bg); font: 11px var(--mono); color: var(--text); outline: none; }
+.dg-svg text { pointer-events: none; }
+.dg-svg .node { cursor: pointer; outline: none; }
+.dg-svg .node .box { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1; }
+.dg-svg .node:hover .box { stroke: var(--accent-2); }
+.dg-svg .node.sel .box { stroke: var(--accent-2); stroke-width: 2.2; }
+.dg-svg .node:focus-visible .box { stroke: var(--accent-2); stroke-width: 2; stroke-dasharray: 3 2; }
+.dg-svg .node.pulse .box { stroke: var(--warn); stroke-width: 3; transition: stroke-width 0.6s; }
+.dg-svg .node.ub .box2 { fill: none; stroke: var(--border-strong); stroke-width: 1; pointer-events: none; }
+.dg-svg .node.opaque .box { fill: url(#dg-hatch); stroke-dasharray: 4 3; }
+.dg-svg .hatch { stroke: var(--border); stroke-width: 1; }
+.dg-svg .node.root .box { stroke: var(--accent-2); stroke-width: 2; }
+.dg-svg .node.var .box { fill: var(--accent-soft); stroke: var(--accent-2); }
+.dg-svg .node.var.root .box { stroke-width: 2.5; }
+.dg-svg .node.var .name { fill: var(--accent-text); }
+.dg-svg .node.var.new .box { animation: dg-in 0.6s ease-out; }
+@keyframes dg-in { from { opacity: 0; } to { opacity: 1; } }
+.dg-svg .node.leaf .box { fill: var(--surface-3); stroke: var(--border); }
+.dg-svg .node.leaf .name { font-weight: 400; fill: var(--muted); }
+.dg-svg .node.leaf.enc .box, .dg-svg .node.leaf.warn .box { fill: var(--warn-bg); stroke: var(--warn-bd); }
+.dg-svg .node.leaf.enc .name, .dg-svg .node.leaf.warn .name { fill: var(--warn); }
+.dg-svg .node.leaf.const .box { fill: var(--const-bg); stroke: var(--const); }
+.dg-svg .node.leaf.const .name { fill: var(--const); }
+.dg-svg .node.leaf.io .box { fill: #dcfce7; stroke: #86efac; }
+.dg-svg .node.leaf.io .name { fill: #166534; }
+.dg-svg .node.comment .box { fill: var(--const-bg); stroke: var(--const); stroke-opacity: 0.5; }
+.dg-svg .node .name { font-weight: 700; fill: var(--text); }
+.dg-svg .node .type, .dg-svg .node .flag { font-size: 9.5px; fill: var(--muted); }
+.dg-svg .node .pin { fill: var(--text); font-size: 10px; }
+.dg-svg .node .body { fill: var(--muted); font-size: 10px; }
+.dg-svg .node.comment .body { fill: var(--const); }
+.dg-svg .node .inline { fill: var(--const); font-size: 10px; }
+.dg-svg .port { fill: var(--surface); stroke: var(--muted); stroke-width: 1.2; }
+.dg-svg .port.dir-I { stroke: #1e40af; }
+.dg-svg .port.dir-O { stroke: #166534; fill: #dcfce7; }
+.dg-svg .port.dir-S { stroke: var(--const); }
+.dg-svg .port.dir-q { stroke-dasharray: 2 1; }
+.dg-svg .port[data-var] { cursor: pointer; }
+.dg-svg .wire { fill: none; stroke: var(--muted); stroke-width: 1.4; marker-end: url(#dg-arrow); cursor: pointer; }
+.dg-svg .wire.kind-V { stroke: var(--accent-2); marker-end: url(#dg-arrow-v); }
+.dg-svg .wire.dir-q { stroke-dasharray: 3 2; }
+.dg-svg .wire.multi { stroke: var(--warn); stroke-dasharray: 5 3; marker-end: url(#dg-arrow-multi); }
+.dg-svg .wire.egd { stroke: #1e40af; stroke-dasharray: 6 3; marker-end: url(#dg-arrow-egd); }
+.dg-svg .wire:hover { stroke-width: 2.4; }
+.dg-svg .mk { fill: var(--muted); }
+.dg-svg .mk-v { fill: var(--accent-2); }
+.dg-svg .mk-multi { fill: var(--warn); }
+.dg-svg .mk-egd { fill: #1e40af; }
+.dg-svg .mk-hl { fill: var(--warn); }
+.dg-svg .wlabel { font-size: 10px; fill: var(--accent-text); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; pointer-events: auto; cursor: pointer; }
+.dg-svg .tag { cursor: default; outline: none; }
+.dg-svg .tag[data-var] { cursor: pointer; }
+.dg-svg .tag rect { fill: var(--surface-2); stroke: var(--border-strong); }
+.dg-svg .tag text { fill: var(--text); font-size: 10px; }
+.dg-svg .tag.in rect { fill: #dbeafe; stroke: #93c5fd; }
+.dg-svg .tag.out rect { fill: #dcfce7; stroke: #86efac; }
+.dg-svg .tag.in text { fill: #1e40af; }
+.dg-svg .tag.out text { fill: #166534; }
+.dg-svg .tag.iface rect { fill: var(--accent-soft); stroke: var(--accent-2); }
+.dg-svg .tag.iface text { fill: var(--accent-text); }
+.dg-svg .tag.warn rect, .dg-svg .tag.ext-l rect { fill: var(--warn-bg); stroke: var(--warn-bd); }
+.dg-svg .tag.warn text, .dg-svg .tag.ext-l text { fill: var(--warn); }
+.dg-svg .tag .tag-ln { stroke: var(--muted); stroke-width: 1; }
+.dg-svg .tag:hover rect, .dg-svg .tag:focus-visible rect { stroke: var(--accent-2); stroke-width: 1.6; }
+/* 高亮 */
+.dg-svg.has-hl .wire:not(.hl), .dg-svg.has-hl .tag:not(.hl), .dg-svg.has-hl .wlabel:not(.hl), .dg-svg.has-hl .node.var:not(.hl) { opacity: 0.22; }
+.dg-svg.has-hl .node:not(.var) { opacity: 0.75; }
+.dg-svg .wire.hl { stroke: var(--warn); stroke-width: 2.4; marker-end: url(#dg-arrow-hl); }
+.dg-svg .tag.hl rect { stroke: var(--warn); stroke-width: 2; }
+.dg-svg .wlabel.hl { fill: var(--warn); font-weight: 700; }
+.dg-svg .port.hl { stroke: var(--warn); stroke-width: 2.4; }
+.dg-svg .node.var.hl .box { stroke: var(--warn); stroke-width: 2.4; }
+[data-theme="dark"] .dg-svg .port.dir-I { stroke: #93c5fd; }
+[data-theme="dark"] .dg-svg .port.dir-O { stroke: #86efac; fill: #14532d; }
+[data-theme="dark"] .dg-svg .tag.in rect { fill: #1e3a5f; stroke: #3b6aa6; }
+[data-theme="dark"] .dg-svg .tag.out rect { fill: #14532d; stroke: #2f7d4a; }
+[data-theme="dark"] .dg-svg .tag.in text { fill: #93c5fd; }
+[data-theme="dark"] .dg-svg .tag.out text { fill: #86efac; }
+[data-theme="dark"] .dg-svg .wire.egd { stroke: #93c5fd; }
+[data-theme="dark"] .dg-svg .mk-egd { fill: #93c5fd; }
+[data-theme="dark"] .dg-svg .node.leaf.io .box { fill: #14532d; stroke: #2f7d4a; }
+[data-theme="dark"] .dg-svg .node.leaf.io .name { fill: #86efac; }
+/* 窄螢幕：側欄變底部抽屜；工具列只留圖示 */
+@media (max-width: 900px) {
+  .dg { height: calc(100vh - var(--hdr) - 24px); min-height: 360px; }
+  .dg-side { position: absolute; left: 0; right: 0; bottom: 0; width: auto; flex: none; max-height: 45vh; border-left: 0; border-top: 1px solid var(--border-strong); border-radius: 10px 10px 0 0; box-shadow: 0 -6px 20px rgba(20, 30, 50, 0.18); z-index: 4; }
+  .dg-side-head { padding: 6px 10px; }
+  .dg-side-head::before { content: ""; position: absolute; left: 50%; top: 3px; width: 36px; height: 3px; margin-left: -18px; border-radius: 3px; background: var(--border-strong); }
+}
+@media (max-width: 440px) {
+  .btn.tb .tb-txt { display: none; }
+  .btn.tb { padding: 0 7px; min-width: 32px; justify-content: center; }
+  .btn.tb.txt-only .tb-txt { display: inline; }
+  .dg-title { font-size: 14px; }
+}
+@media print {
+  body.wide .main { padding: 0; }
+  .dg { height: auto; display: block; }
+  .dg-tools, .dg-side, .dg-status, .dg-banner, .foot, .app-header, .dg-crumbs { display: none !important; }
+  .dg-wrap { border: 0; overflow: visible; display: block; }
+  .dg-canvas { overflow: visible; }
+  .dg-svg { width: 100%; height: 170mm; background: #fff; }
+}
+
+/* 訊號圖（dsignal.js）補充：未展開節點、上限節點、同 task hover、步進器 */
+.dg-svg .node.var.cut .box { stroke-dasharray: 4 3; }
+.dg-svg .node.var.capped .box { stroke: var(--warn); stroke-dasharray: 4 3; }
+.dg-svg .node.new .box { animation: dg-in 0.6s ease-out; }
+.dg-svg .node.blk.tk-hl .box { stroke: var(--accent-2); stroke-width: 1.8; }
+.dg-step { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; white-space: nowrap; }
+.dg-step .btn { min-width: 30px; padding-left: 6px; padding-right: 6px; }
+.dg-step-v { min-width: 1.2em; text-align: center; }
+
+/* diagram side panel: compact pin table never wraps mid-token; the wrapper scrolls horizontally */
+.dg-side table.mini.compact td, .dg-side table.mini.compact th { white-space: nowrap; }
+.dg-side table.mini.compact td:last-child { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }

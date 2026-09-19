@@ -22,7 +22,8 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 5. 要驗證或引用原始 XML 時，用 `where <CTRL.NAME>` 拿到 `file:line`，再用 `Read` 的 offset/limit 只讀那幾十行。
    **不要** grep checkout、不要整檔 Read `_*.xml` 或 `Variables.xml`（單檔可達 18 MB、全案 800 MB）。
 6. 回答用中文散文 + 英文訊號名；每個結論引用 `CTRL/Program/Task/Block.Pin (file:line)`，並附網頁深連結
-   `https://momobacon-wq.github.io/signal-atlas/#/v/<CTRL.NAME>`。
+   `https://momobacon-wq.github.io/signal-atlas/#/v/<CTRL.NAME>`；要看圖時附 Task 圖 `#/d/<CTRL>/<Program>/<Task>?sel=<CTRL.NAME>`
+   或訊號圖 `#/g/<CTRL.NAME>?up=2&down=2`（`show` 的 WRITERS 行 `CTRL/Program/Task/…` 的前三段就是 Task 圖路徑）。
 7. 誠實標示不確定：
    - 方向是推斷值。CLI 印 `O/T` 這種「方向/來源」字母：U=介面腳 Usage、T=手冊表或人工覆寫、C=常數規則、L=連線投票、H=命名慣例、`?`=未知。來源是 L/H 時在回答裡寫「推斷」。
    - **加密 ≠ 未使用**。來源 XML 內加密的程式與巨集無法追蹤；CLI 印 `encrypted: not traceable`，照實轉述，不要編邏輯。

@@ -34,6 +34,23 @@
     return el;
   };
   D.frag = (...kids) => D.append(document.createDocumentFragment(), kids);
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  /** svg(tag, attrs, ...kids)：D.h 的 SVG 版（createElementNS）；class/text/on* 規則相同，其餘屬性 setAttribute */
+  D.svg = function (tag, attrs, ...kids) {
+    const el = document.createElementNS(SVG_NS, tag);
+    if (attrs) {
+      for (const k in attrs) {
+        const v = attrs[k];
+        if (v == null || v === false) continue;
+        if (k === 'text') el.textContent = v;
+        else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+        else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
+        else el.setAttribute(k, v === true ? '' : v);
+      }
+    }
+    D.append(el, kids);
+    return el;
+  };
   /** 清空 el 再放入 kids（可含陣列／null） */
   D.set = (el, ...kids) => { el.replaceChildren(); return D.append(el, kids); };
   D.debounce = function (fn, ms) {
@@ -62,6 +79,21 @@
   D.hrefS = (screen) => '#/s/' + D.enc(screen);
   D.hrefA = (ctrl) => '#/a/' + D.enc(ctrl);
   D.hrefQ = (q, ctrl) => '#/?q=' + encodeURIComponent(q) + (ctrl ? '&c=' + encodeURIComponent(ctrl) : '');
+  /** Task 邏輯圖 #/d/<CTRL>/<Program>/<Task>?…（query 物件：值為 null/'' 者省略） */
+  D.hrefD = function (ctrl, program, task, query) {
+    let h = '#/d/' + D.enc(ctrl) + '/' + D.enc(program) + '/' + D.enc(task);
+    const qs = [];
+    if (query) for (const k in query) { const v = query[k]; if (v != null && v !== '' && v !== false) qs.push(k + '=' + encodeURIComponent(String(v))); }
+    return qs.length ? h + '?' + qs.join('&') : h;
+  };
+  /** 訊號圖 #/g/<CTRL.NAME>?up=N&down=N */
+  D.hrefG = (full, up, down) => '#/g/' + D.enc(full) + '?up=' + (up == null ? 2 : up) + '&down=' + (down == null ? 2 : down);
+  /** block key 'CTRL|Program/Task/…/Block' → 所屬 task key 'CTRL|Program/Task'（前兩段） */
+  D.taskKeyOf = function (key) {
+    const i = String(key).indexOf('|');
+    const path = i < 0 ? String(key) : key.slice(i + 1);
+    return (i < 0 ? '' : key.slice(0, i + 1)) + path.split('/').slice(0, 2).join('/');
+  };
   D.splitFull = (full) => { const i = full.indexOf('.'); return i < 0 ? [full, ''] : [full.slice(0, i), full.slice(i + 1)]; };
   /** block_path = 'Program/Task/…/Block'：Task 名（第二段；只有一段時就是那一段） */
   D.taskOf = (path) => { const s = String(path || '').split('/'); return (s.length > 1 ? s[1] : s[0]) || '?'; };
@@ -252,11 +284,34 @@
     const obj = await D.json('var/' + hh + '.json', signal);
     return obj && obj.v && obj.v[full] ? obj.v[full] : null;
   };
-  /** 方塊：key = 'CTRL|block_path' */
+  /** Task 檔：task/<sha1('CTRL|Program/Task')[:3]>.json → {n, b:{key:record,…}}（b 依文件順序，首鍵是 kind:"task" 根）或 null */
+  D.task = async function (tkey, signal) {
+    const hh = (await D.sha1(tkey)).slice(0, 3);
+    const obj = await D.json('task/' + hh + '.json', signal);
+    return obj && obj.t && obj.t[tkey] ? obj.t[tkey] : null;
+  };
+  /** 方塊：key = 'CTRL|block_path'；在所屬 task 檔內查（同 task 的方塊共用一次抓取） */
   D.block = async function (key, signal) {
-    const hh = (await D.sha1(key)).slice(0, 3);
-    const obj = await D.json('block/' + hh + '.json', signal);
-    return obj && obj.b && obj.b[key] ? obj.b[key] : null;
+    const t = await D.task(D.taskKeyOf(key), signal);
+    return (t && t.b && t.b[key]) || null;
+  };
+  /** 延遲載入 assets/<name>（?v= 用 atlas-build 的 data-app）；同名只載一次 */
+  const scriptCache = new Map();
+  D.loadScript = function (name) {
+    if (scriptCache.has(name)) return scriptCache.get(name);
+    const meta = D.$('meta[name="dcdas-build"], meta[name="atlas-build"]');
+    const app = (meta && meta.getAttribute('data-app')) || '';
+    const p = new Promise((resolve, reject) => {
+      const el = document.createElement('script');
+      el.src = 'assets/' + name + (app ? '?v=' + app : '');
+      el.async = true;
+      el.onload = () => resolve();
+      el.onerror = () => reject(new Error('無法載入 ' + name));
+      document.head.appendChild(el);
+    });
+    scriptCache.set(name, p);
+    p.catch(() => scriptCache.delete(name));
+    return p;
   };
   D.screen = async function (name) {
     const hh = (await D.sha1(name)).slice(0, 2);
@@ -406,6 +461,7 @@
     const view = D.$('#view');
     const fn = pages[rt.page] || pages['404'];
     document.body.classList.toggle('home', rt.page === '');
+    document.body.classList.remove('wide');
     D.progress(null);
     try {
       await fn({ route: rt, view, signal: ctl.signal, alive: () => seq === routeSeq });

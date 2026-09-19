@@ -12,7 +12,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 
 def local_dir() -> Path:
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS block(
   id INTEGER PRIMARY KEY, ctrl TEXT NOT NULL, program_id INTEGER NOT NULL, task_id INTEGER, parent_id INTEGER,
   path TEXT NOT NULL, name TEXT NOT NULL, block_type TEXT, kind TEXT CHECK(kind IN ('block','userblock','task')),
   version TEXT, is_opaque INTEGER DEFAULT 0, description TEXT, logic_drg TEXT, p_id TEXT, device TEXT,
-  hmi_linked_object TEXT, line_no INTEGER);
+  hmi_linked_object TEXT, line_no INTEGER, layout INTEGER);
 CREATE UNIQUE INDEX IF NOT EXISTS ix_block_path ON block(ctrl, path);
 CREATE INDEX IF NOT EXISTS ix_block_name ON block(ctrl, program_id, name);
 CREATE INDEX IF NOT EXISTS ix_block_type ON block(block_type);

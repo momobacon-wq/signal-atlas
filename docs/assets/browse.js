@@ -20,7 +20,7 @@
         const blocks = t.blocks || [];
         return D.h('details', { class: 'grp task', open: tasks.length === 1 },
           D.h('summary', null, D.h('span', { text: (t.is_task ? 'Task ' : (t.type || 'UserBlock') + ' ') }), D.h('a', { href: D.hrefB(ctrl, p.name + '/' + t.name), class: 'lk mono b', text: t.name, onclick: (e) => e.stopPropagation() }),
-            t.drg ? D.frag(' ', D.tag(t.drg)) : null, D.h('span', { class: 'sec-n', text: String(blocks.length) }), D.h('span', { class: 'muted small mono', text: ' :' + (t.line == null ? '?' : t.line) })),
+            t.drg ? D.frag(' ', D.tag(t.drg)) : null, D.h('span', { class: 'sec-n', text: String(blocks.length) }), ' ', D.h('a', { href: D.hrefD(ctrl, p.name, t.name), class: 'lk small', text: '圖', title: '邏輯方塊圖', onclick: (e) => e.stopPropagation() }), D.h('span', { class: 'muted small mono', text: ' :' + (t.line == null ? '?' : t.line) })),
           D.h('div', { class: 'grp-body' }, blocks.length ? D.table(['方塊', '型式', '種類', ''], blocks.filter((r) => r[3] !== 'task').map(([k, name, type, kind, opaque]) => [D.h('a', { href: D.hrefBKey(k), class: 'lk mono', text: name }), D.mono(type || ''), kind || '', opaque ? D.tag('不透明', 'warn') : ''])) : D.empty('無方塊')));
       }) : D.h('p', { class: 'muted' }, p.enc ? D.h('span', { class: 'warn-text', text: '加密 — 無法追蹤：此程式內容加密，只索引變數宣告與 EGD。' }) : '沒有 task。');
       const det = D.section(p.name, D.frag(

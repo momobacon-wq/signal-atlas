@@ -171,6 +171,7 @@
             D.link(D.hrefT(full, 'up', hops), '上游', 'btn sm' + (up ? ' on' : '')),
             D.link(D.hrefT(full, 'down', hops), '下游', 'btn sm' + (!up ? ' on' : ''))),
           D.h('label', { class: 'hops' }, '跳數 ', range, ' ', rangeV),
+          D.link(D.hrefG(full, up ? hops : 1, up ? 1 : hops), '圖形檢視', 'btn sm'),
           btnStop, status)),
       legend, tree);
 

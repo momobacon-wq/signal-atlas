@@ -57,8 +57,17 @@ INSERT_PROGRAM = """INSERT INTO program(id,ctrl,name,library_type,file_path,encr
 VALUES(?,?,?,?,?,?,?,?,?)"""
 INSERT_TASK = "INSERT INTO task(id,program_id,name,block_type,logic_drg,is_task,line_no) VALUES(?,?,?,?,?,?,?)"
 INSERT_BLOCK = """INSERT INTO block(id,ctrl,program_id,task_id,parent_id,path,name,block_type,kind,version,is_opaque,
-description,logic_drg,p_id,device,hmi_linked_object,line_no) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+description,logic_drg,p_id,device,hmi_linked_object,line_no,layout) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
 INSERT_ATTR = "INSERT OR IGNORE INTO block_attr(block_id,name,value) VALUES(?,?,?)"
+
+
+def _layout(v):
+    """BlockLayoutData = 1-based drawing order of a Block/UserBlock inside its diagram (0 on the task root)."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
 INSERT_LOCAL_VAR = """INSERT INTO variable(id,
   ctrl,name,full_name,description,datatype,address,scope,value,decl_connection,decl_program,decl_task,global_prefix,
   egd_page,alias,format_spec,units,disp_low,disp_high,display_screen,control_constant,device_name,referenced_in,
@@ -253,7 +262,7 @@ def parse_program_file(conn, ctrl: str, path: Path, root: Path, ids: _Ids, vardi
             batches["block"].add((fr.id, ctrl, prog_id, fr.task_id, fr.parent.id if fr.parent else None, fr.path,
                                   fr.name, a.get("BlockType"), fr.kind, a.get("Version"), opaque, desc,
                                   fr.lifted.get("logic_drg"), fr.lifted.get("p_id"), fr.lifted.get("device"),
-                                  fr.lifted.get("hmi_linked_object"), fr.line))
+                                  fr.lifted.get("hmi_linked_object"), fr.line, _layout(a.get("BlockLayoutData"))))
             for an, av in fr.attrs:
                 batches["attr"].add((fr.id, an, av))
             stats["attrs"] += len(fr.attrs)

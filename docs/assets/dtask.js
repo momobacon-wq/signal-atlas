@@ -1,4 +1,4 @@
-/* Signal Atlas — Task 邏輯圖 #/d/<CTRL>/<Program>/<Task>?ub=<block_path>&f=&pins=1&cm=0|1&sel=<CTRL.VAR>&b=<key>&page=k&all=1&desc=0|1
+/* Signal Atlas — Task 邏輯圖 #/d/<CTRL>/<Program>/<Task>?ub=<block_path>&f=&pins=1&cm=0|1&sel=<CTRL.VAR>&b=<key>&page=k&all=1&desc=off|brief|full(0|1|2)
  * 由 task/<hhh>.json 的整份 task 記錄建圖（buildGraph，規則見 plan §二），交給 D.dg（diagram.js）排版／渲染／互動。
  * 說明：腳位 tuple 第 11 欄 → port.desc；entry.vd[varFull] → port.varDesc / tag.desc / graph.varDesc（舊資料 10 欄／無 vd → 無描述）。
  * 規模分級：≤300 方塊全畫；301–1000 依連通群組分頁；>1000 拒絕並提供篩選／型別 chips／分頁。 */
@@ -219,7 +219,7 @@
     if (q.ub) crumbs.push(' › ', D.mono(q.ub.split('/').slice(2).join('/'), 'b'));
     const inst = D.dg.create(view, {
       crumbs, title: rootPath, fileName: ctrl + '_' + rootPath.replace(/\//g, '_'),
-      showDesc: D.dg.descPref(q), // ?desc=0|1 只影響本次；否則 localStorage／預設開
+      descMode: D.dg.descPref(q), // ?desc=off|brief|full（0|1|2）只影響本次；否則 localStorage／預設 full
       varHint: '雙擊變數標籤：輸入 → 展開到寫入者所在 task；輸出 → 讀取者所在 task。',
       onDblVar: (v, ctx, i) => { expandVar(v, ctx, i, cur).catch((e) => console.warn(e)); },
       nodeActions: (n) => (n.kind === 'ub' && !n.opaque ? D.link(href({ ub: n.key.slice(n.key.indexOf('|') + 1), page: null, f: null }), '展開內部', 'btn sm') : null),

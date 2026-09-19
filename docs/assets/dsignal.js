@@ -4,7 +4,7 @@
  * L: 鏈沿同 task 方塊延伸（≤12、不算跳數）；上限 200 節點（未展開者 .capped）、深度截止（.cut）。交給 D.dg（diagram.js）排版／渲染／互動。
  * 雙擊變數：從該變數再展一層（依其所在側；根節點雙向），整圖重排但保留 viewBox 與選取，新節點 .new。
  * 說明：變數節點 desc 取自訊號卡 d.desc（已展開者；截止／上限節點在 fillDesc 補抓自身卡片，EGD 副本亦用自身卡片）；
- * 方塊腳位 desc 取 tuple 第 11 欄；graph.varDesc 供側欄腳位表；?desc=0|1 / localStorage 由 D.dg.descPref 解析。 */
+ * 方塊腳位 desc 取 tuple 第 11 欄；graph.varDesc 供側欄腳位表；?desc=off|brief|full（0|1|2）/ localStorage 由 D.dg.descPref 解析（三段密度）。 */
 'use strict';
 (function () {
   const D = window.DC;
@@ -309,7 +309,7 @@
 
     inst = D.dg.create(view, {
       crumbs, title: full, fileName: 'signal_' + full,
-      showDesc: D.dg.descPref(q),
+      descMode: D.dg.descPref(q),
       varHint: '雙擊變數 pill（或按「展開」）：從該變數再展開一層——上游側展寫入者、下游側展讀取者，根節點雙向。',
       onDblVar: (v) => { expandNode('v:' + v).catch((e) => console.warn(e)); },
       varActions: (v) => (S && S.nodes.has('v:' + v) ? D.h('button', { type: 'button', class: 'btn sm', text: '展開', title: '從此變數再展開一層', onclick: () => expandNode('v:' + v).catch((e) => console.warn(e)) }) : null),

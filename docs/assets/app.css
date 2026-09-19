@@ -4,7 +4,7 @@
   --mono: Consolas, "Cascadia Mono", "Noto Sans Mono CJK TC", ui-monospace, monospace;
   --hdr: 54px;
   --bg: #f3f5f8; --surface: #ffffff; --surface-2: #f7f8fa; --surface-3: #eef1f5;
-  --text: #1c2330; --muted: #5b6475; --faint: #a2a9b5;
+  --text: #1c2330; --muted: #5b6475; --faint: #a2a9b5; --desc: #4a5568;
   --border: #dde2e9; --border-strong: #c3cad5; --grid: #e6e9ee;
   --accent: #1f4e79; --accent-2: #2e75b6; --accent-soft: #e6eef7; --accent-text: #1f4e79;
   --link: #0563c1; --hover: rgba(46, 117, 182, 0.07); --sel: rgba(46, 117, 182, 0.16);
@@ -16,7 +16,7 @@
 }
 [data-theme="dark"] {
   --bg: #0e1217; --surface: #171c23; --surface-2: #1c222a; --surface-3: #232a34;
-  --text: #e3e7ed; --muted: #9aa4b2; --faint: #5d6673;
+  --text: #e3e7ed; --muted: #9aa4b2; --faint: #5d6673; --desc: #b3bccb;
   --border: #2b323d; --border-strong: #3b4452; --grid: #262d37;
   --accent: #6fa8dc; --accent-2: #5b9bd5; --accent-soft: #1d2d40; --accent-text: #9cc6ee;
   --link: #6cb6ff; --hover: rgba(111, 168, 220, 0.08); --sel: rgba(111, 168, 220, 0.2);
@@ -356,8 +356,10 @@ body.wide .main { max-width: none; padding: 8px 12px 16px; }
 .dg-svg .node.comment .box { fill: var(--const-bg); stroke: var(--const); stroke-opacity: 0.5; }
 .dg-svg .node .name { font-weight: 700; fill: var(--text); }
 .dg-svg .node .type, .dg-svg .node .flag { font-size: 9.5px; fill: var(--muted); }
-/* 說明（描述）文字：腳位列 .pdesc、方塊描述行 .bdesc、var pill 第二行 .desc；token 走深色主題，列印同樣顯示（標籤的 .desc 見下方，需壓過 .tag.in text） */
-.dg-svg .desc, .dg-svg .pdesc, .dg-svg .bdesc { font-size: 9.5px; fill: var(--muted); font-weight: 400; }
+/* 說明（描述）文字 10px、色 --desc：腳位描述 .pdesc（brief 同行 tspan／full 腳位名下方多行）、方塊描述 .bdesc（brief 型別下一行／full 底部 caption）、
+   var pill 描述 .desc；token 走深色主題，列印同樣顯示（標籤的 .desc 見下方，需壓過 .tag.in text） */
+.dg-svg .desc, .dg-svg .pdesc, .dg-svg .bdesc { font-size: 10px; fill: var(--desc); font-weight: 400; }
+.dg-svg .node .cap-ln { stroke: var(--border); stroke-width: 1; }
 .dg-svg .node .pin { fill: var(--text); font-size: 10px; }
 .dg-svg .node .body { fill: var(--muted); font-size: 10px; }
 .dg-svg .node.comment .body { fill: var(--const); }
@@ -392,7 +394,8 @@ body.wide .main { max-width: none; padding: 8px 12px 16px; }
 .dg-svg .tag.iface text { fill: var(--accent-text); }
 .dg-svg .tag.warn rect, .dg-svg .tag.ext-l rect { fill: var(--warn-bg); stroke: var(--warn-bd); }
 .dg-svg .tag.warn text, .dg-svg .tag.ext-l text { fill: var(--warn); }
-.dg-svg .tag text.desc { font-size: 9.5px; fill: var(--muted); font-weight: 400; }
+.dg-svg .tag text.desc { font-size: 10px; fill: var(--desc); font-weight: 400; }
+.dg-svg .tag text.tname { font-size: 11px; font-weight: 700; } /* full 說明卡的名稱行 */
 .dg-svg .tag.hl text.desc { fill: var(--text); }
 .dg-svg .tag .tag-ln { stroke: var(--muted); stroke-width: 1; }
 .dg-svg .tag:hover rect, .dg-svg .tag:focus-visible rect { stroke: var(--accent-2); stroke-width: 1.6; }
@@ -448,4 +451,5 @@ body.wide .main { max-width: none; padding: 8px 12px 16px; }
 /* diagram side panel: compact pin table never wraps mid-token; the wrapper scrolls horizontally */
 .dg-side table.mini.compact td, .dg-side table.mini.compact th { white-space: nowrap; }
 .dg-side table.mini.compact td:last-child { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
-.dg-side table.mini td.pdesc-cell { max-width: 240px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+/* 腳位表「說明」欄：全文、允許換行（壓過上一行 compact 的 nowrap） */
+.dg-side .dg-side-body table.mini td.pdesc-cell, .dg-side table.mini.compact td.pdesc-cell { white-space: normal; max-width: 260px; min-width: 120px; word-break: break-word; line-height: 1.35; color: var(--desc); }

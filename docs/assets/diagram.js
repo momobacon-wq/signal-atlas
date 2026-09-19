@@ -11,10 +11,13 @@
  *   Tag   { port:portId, side:'L'|'R', text, varFull, desc(變數描述→第二行), cls:'in'|'out'|'iface'|'warn'|'ext-l'… }
  *   graph.varDesc { varFull: description }（選用；側欄腳位表「說明」欄的後備來源）
  *
- * 說明顯示（showDesc）：預設開；`?desc=0|1` 只影響本次（頁面以 D.dg.descPref(query) 解析）、工具列「說明」切換並記在
- *   localStorage `atlas.dg.desc`（'0'/'1'）。開啟時：腳位列「pin␣␣描述(28)」、xref 標籤第二行描述(36)、var pill 第二行(40)、
- *   方塊型別下一行方塊描述(36)；描述一律只取第一行；tooltip <title> 含全文。切換 → 重新 size→layout→route→render，保留 viewBox／選取／高亮。
- *   有描述標籤的腳位列高 16 → 28（否則兩行標籤會互相重疊）；其餘列維持 16。
+ * 說明密度（descMode ∈ 'off'|'brief'|'full'，預設 full）：`?desc=0|1|2` 或 `off|brief|full` 只影響本次（頁面以 D.dg.descPref(query) 解析）；
+ *   否則 localStorage `atlas.dg.desc`（'off'/'brief'/'full'；相容舊值 '0'→off、'1'→full）。工具列「說明：完整」循環 完整 → 關 → 精簡。
+ *   full：xref 標籤 = 固定寬 TAG_W_FULL 說明卡（名稱一行 11px 粗 + 描述換行 ≤3 行 10px）；腳位描述在腳位名下方換行 ≤2 行（方塊寬至少／上限 BOX_MAX_D）；
+ *         方塊描述為方塊底部 caption ≤3 行；var pill = 固定寬 VAR_W_FULL 卡片（名稱 + 描述 ≤3 行）。描述取全文（各段以空白接起）再換行截尾。
+ *   brief：各處一行截斷（腳位同行 28 字、標籤第二行 36 字、pill 第二行 40 字、方塊型別下一行 36 字）。off：只名稱。
+ *   腳位列高逐列計算：max(16 + 12×腳位描述行數, 標籤卡高 + 4)，左右取 max；port 對齊腳位名那一行。tooltip <title> 一律含全文。
+ *   切換 → 重新 size→layout→route→render，保留 viewBox／選取／高亮。graph.showDesc（布林 = mode !== 'off'）保留供相容，另有 graph.descMode。
  *
  * 管線（全部掛在 D.dg）：
  *   D.dg.prepare(graph)          正規化：graph.ports Map、port.node/side、varIndex
@@ -27,12 +30,13 @@
  *       inst.fit(pad) / zoom(f, cx, cy) / pan(dx, dy) / centerNode(id) / centerVar(varFull)
  *       inst.select(nodeId) / highlight(varFull) / clear() / showSide(el, title) / hideSide() / status(text)
  *       inst.addTool(el) 工具列加按鈕；inst.setLoading(msg)；inst.print()；inst.exportSvg(name)；inst.destroy()
- *       inst.showDesc（目前狀態）／inst.setDesc(on)（切換說明顯示；重排但保留 viewBox／選取）
+ *       inst.descMode／inst.showDesc（目前狀態）／inst.setDesc(mode|boolean|省略=循環)（切換說明密度；重排但保留 viewBox／選取）
  *       opts: { crumbs:[el], title:string, nodeActions(node, inst)→[el], varActions(varFull, inst)→[el],
  *               onSelect(node, inst), onVar(varFull, inst), onDblNode(node, inst), onDblVar(varFull, ctx, inst),
- *               varHint:string（變數面板提示，例「雙擊標籤展開到寫入者所在 task」）, showDesc:boolean（省略 → localStorage／預設開）}
+ *               varHint:string（變數面板提示，例「雙擊標籤展開到寫入者所在 task」）, descMode:'off'|'brief'|'full'（省略 → localStorage／預設 full；舊 showDesc:boolean 仍接受）}
  *   D.dg.blockPanel(node, inst) / D.dg.varPanel(varFull, inst)   預設側欄內容（可被 opts 取代）
- *   D.dg.wrapText(text, maxW, maxLines) / D.dg.measure(text) / D.dg.trunc(s, n) / D.dg.firstLine(s) / D.dg.descPref(query)
+ *   D.dg.wrapText(text, maxW, maxLines) / D.dg.fitText(s, maxW) / D.dg.measure(text) / D.dg.trunc(s, n) / D.dg.firstLine(s) / D.dg.descAll(s)
+ *   D.dg.descPref(query) → 'off'|'brief'|'full' / D.dg.normMode(v) / D.dg.saveDescPref(mode) / D.dg.MODES / D.dg.MODE_LABEL
  * 需先 D.loadScript('dagre.min.js')（全域 dagre）。CSP：無 inline script；SVG 文字皆走 textContent。 */
 'use strict';
 (function () {
@@ -41,12 +45,18 @@
 
   /* ------------------------------------------------------------------ 常數 */
   const PIN_H = 16, TITLE_H = 26, BODY_LH = 14, BOX_MIN = 110, BOX_MAX = 260, PORT_R = 3;
-  const TAG_GAP = 10, TAG_PAD = 4, SHEET_H = 1500, GAP_X = 60, GAP_Y = 40;
-  // 說明顯示：方塊寬上限、有兩行標籤的腳位列高、兩行標籤高、pill 高、方塊描述行高、描述字（9.5px）相對量測字（11px）的寬度比
-  const BOX_MAX_D = 340, PIN_H_D = 28, TAG_H = 16, TAG_H_D = 27, VAR_H = 24, VAR_H_D = 34, BDESC_H = 12, DESC_K = 0.87;
-  const DESC_LS = 'atlas.dg.desc';
-  const TR_PIN = 28, TR_TAG = 36, TR_PILL = 40, TR_BLK = 36; // 各處描述截斷字數
-  dg.C = { PIN_H, TITLE_H, BODY_LH, BOX_MIN, BOX_MAX, BOX_MAX_D, SHEET_H, PIN_H_D, TAG_H_D, VAR_H_D };
+  const TAG_GAP = 10, TAG_PAD = 4, SHEET_H = 1500, SHEET_H_FULL = 2100, GAP_X = 60, GAP_Y = 40; // full 模式卡片較高 → 欄高放大，免得欄數暴增變成超寬圖
+  // 說明顯示：brief 方塊寬上限、full 方塊寬（有腳位描述時至少／上限）、單行標籤高、brief 兩行標籤高、pill 高、brief 方塊描述行高、
+  //   描述行距、full 說明卡寬（xref 標籤／var pill）、描述字（10px）相對量測字（11px）的寬度比
+  const BOX_MAX_B = 340, BOX_MAX_D = 220, TAG_H = 16, TAG_H_D = 27, VAR_H = 24, VAR_H_D = 34, BDESC_H = 12;
+  const DESC_LH = 12, TAG_W_FULL = 190, VAR_W_FULL = 200, DESC_K = 10 / 11;
+  const TAG_CARD_LINES = 3, PIN_DESC_LINES = 2, CAP_LINES = 3, PILL_LINES = 3; // full 模式各處描述行數上限
+  const DESC_LS = 'atlas.dg.desc', MODES = ['full', 'off', 'brief']; // 按鈕循環順序
+  const TR_PIN = 28, TR_TAG = 36, TR_PILL = 40, TR_BLK = 36; // brief 各處描述截斷字數
+  const NB2 = '\u00a0\u00a0'; // 腳位名與同行描述之間（nbsp 不會被 SVG 折疊）
+  dg.C = { PIN_H, TITLE_H, BODY_LH, BOX_MIN, BOX_MAX, BOX_MAX_B, BOX_MAX_D, SHEET_H, SHEET_H_FULL, TAG_H, TAG_H_D, VAR_H, VAR_H_D, DESC_LH, TAG_W_FULL, VAR_W_FULL };
+  dg.MODES = MODES;
+  dg.MODE_LABEL = { off: '關', brief: '精簡', full: '完整' };
 
   /* ------------------------------------------------------------------ 文字量測 */
   let ctx = null, fontStr = '';
@@ -74,16 +84,35 @@
   dg.firstLine = (s) => { if (s == null) return ''; const m = String(s).split(/\r?\n/).find((x) => x.trim()); return m ? m.trim() : ''; };
   const dline = (s, n) => dg.trunc(dg.firstLine(s), n);
   const dmeasure = (s) => dg.measure(s) * DESC_K; // 描述字較小
-  /** 解析說明顯示偏好：query.desc '0'/'1' 只影響本次；否則 localStorage atlas.dg.desc；預設開 */
+  /** 描述全文（各非空行 trim 後以空白接起；換行來源不只第一行） */
+  dg.descAll = (s) => (s == null ? '' : String(s).split(/\r?\n/).map((x) => x.trim()).filter(Boolean).join(' '));
+  /** 尾截到像素寬內（超出以 … 收尾；量測字級 11px） */
+  dg.fitText = function (s, maxW) {
+    s = String(s == null ? '' : s);
+    if (dg.measure(s) <= maxW) return s;
+    let n = s.length - 1;
+    while (n > 0 && dg.measure(s.slice(0, n) + '…') > maxW) n--;
+    return s.slice(0, n).replace(/\s+$/, '') + '…';
+  };
+  /** 描述（10px）依像素寬換行：量測以 11px 為準，故寬度先除以 DESC_K */
+  const wrapDesc = (s, maxW, maxLines) => dg.wrapText(dg.descAll(s), maxW / DESC_K, maxLines);
+  /** 正規化密度模式：'off'|'brief'|'full' 原樣；布林 true→full、false→off；其他 → null */
+  dg.normMode = (v) => (v === 'off' || v === 'brief' || v === 'full' ? v : v === true ? 'full' : v === false ? 'off' : null);
+  const Q_MODE = { 0: 'off', 1: 'brief', 2: 'full', off: 'off', brief: 'brief', full: 'full' };
+  /** 解析說明密度偏好：query.desc（0|1|2 或 off|brief|full）只影響本次；否則 localStorage atlas.dg.desc（相容舊值 '0'→off、'1'→full）；預設 full */
   dg.descPref = function (query) {
     const q = query && query.desc;
-    if (q === '0' || q === 0 || q === false) return false;
-    if (q === '1' || q === 1 || q === true) return true;
-    try { const v = localStorage.getItem(DESC_LS); if (v === '0') return false; if (v === '1') return true; } catch (e) { /* 私密模式 */ }
-    return true;
+    if (q != null && q !== '' && Q_MODE[String(q).toLowerCase()]) return Q_MODE[String(q).toLowerCase()];
+    try {
+      const v = localStorage.getItem(DESC_LS);
+      if (v === '0') return 'off';
+      if (v === '1') return 'full';
+      if (dg.normMode(v)) return v;
+    } catch (e) { /* 私密模式 */ }
+    return 'full';
   };
-  dg.saveDescPref = function (on) { try { localStorage.setItem(DESC_LS, on ? '1' : '0'); } catch (e) { /* ignore */ } };
-  /** 依像素寬換行（先照 \n 切，再貪婪切字；單字過長則逐字切）；最多 maxLines 行（最後一行加 …） */
+  dg.saveDescPref = function (mode) { try { localStorage.setItem(DESC_LS, dg.normMode(mode) || 'full'); } catch (e) { /* ignore */ } };
+  /** 依像素寬換行（先照 \n 切，再貪婪切字；單字過長則逐字切）；最多 maxLines 行（超出時最後一行截到寬內並加 …） */
   dg.wrapText = function (text, maxW, maxLines) {
     const out = [];
     for (const raw of String(text == null ? '' : text).split(/\r?\n/)) {
@@ -101,7 +130,12 @@
       if (out.length > maxLines) break;
     }
     while (out.length && !out[out.length - 1]) out.pop();
-    if (out.length > maxLines) { out.length = maxLines; out[maxLines - 1] = dg.trunc(out[maxLines - 1] + '…', 60); }
+    if (out.length > maxLines) {
+      out.length = maxLines;
+      let l = out[maxLines - 1];
+      while (l && dg.measure(l + '…') > maxW) l = l.slice(0, -1);
+      out[maxLines - 1] = l.replace(/\s+$/, '') + '…';
+    }
     return out;
   };
 
@@ -128,17 +162,36 @@
     return graph;
   };
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-  /** 腳位列文字寬（含腳位描述；描述字較小） */
-  const pinTextW = (p, sd) => dg.measure(dg.trunc(p.pin, 12)) + (sd && p.desc ? dmeasure('  ' + dline(p.desc, TR_PIN)) : 0);
-  dg.size = function (graph, opts) {
-    const sd = graph.showDesc = !!(opts && opts.showDesc);
-    const tagW = new Map(); // portId -> 標籤寬（含間距）
-    const tagD = new Set(); // 有描述（兩行）標籤的 portId
-    for (const t of graph.tags) {
-      let w = dg.measure(t.text);
-      if (sd && t.desc) { w = Math.max(w, dmeasure(dline(t.desc, TR_TAG))); tagD.add(t.port); }
-      tagW.set(t.port, Math.max(tagW.get(t.port) || 0, w + TAG_PAD * 2 + TAG_GAP + 6));
+  /** 腳位名寬（brief 含同行描述；描述字較小） */
+  const pinNameW = (p, mode) => dg.measure(dg.trunc(p.pin, 12)) + (mode === 'brief' && p.desc ? dmeasure(NB2 + dline(p.desc, TR_PIN)) : 0);
+  /** 標籤卡尺寸（依密度模式）→ 寫回 t.name / t.lines / t.w / t.h；full 有描述 = 固定寬說明卡 */
+  function sizeTag(t, mode) {
+    t.lines = [];
+    if (mode === 'full' && t.desc) {
+      t.w = TAG_W_FULL;
+      t.name = dg.fitText(t.text, TAG_W_FULL - TAG_PAD * 2);
+      t.lines = wrapDesc(t.desc, TAG_W_FULL - TAG_PAD * 2, TAG_CARD_LINES);
+      t.h = 8 + 12 + DESC_LH * t.lines.length; // 名稱行（port 上 8 / 下 12）+ 每行描述
+      return;
     }
+    t.name = dg.trunc(t.text, 28);
+    if (mode === 'brief' && t.desc) { const d = dline(t.desc, TR_TAG); t.lines = [d]; t.w = Math.max(dg.measure(t.name), dmeasure(d)) + TAG_PAD * 2; t.h = TAG_H_D; return; }
+    t.w = dg.measure(t.name) + TAG_PAD * 2; t.h = TAG_H;
+  }
+  dg.size = function (graph, opts) {
+    opts = opts || {};
+    const mode = graph.descMode = dg.normMode(opts.descMode) || (opts.descMode == null && opts.showDesc != null ? (opts.showDesc ? 'full' : 'off') : 'full');
+    const sd = graph.showDesc = mode !== 'off';
+    const full = mode === 'full';
+    const tagW = new Map(); // portId -> 標籤保留寬（含間距）
+    const tagH = new Map(); // portId -> 該腳位最高的標籤卡高
+    for (const t of graph.tags) {
+      sizeTag(t, mode);
+      tagW.set(t.port, Math.max(tagW.get(t.port) || 0, t.w + TAG_GAP + 6));
+      tagH.set(t.port, Math.max(tagH.get(t.port) || 0, t.h));
+    }
+    // 腳位列間距：標籤卡比單行高 → 卡高 + 4（相鄰卡不重疊）；否則 16
+    const tagRowH = (p) => { const h = p ? tagH.get(p.id) || 0 : 0; return h > TAG_H ? h + 4 : PIN_H; };
     for (const n of graph.nodes.values()) {
       if (n.kind === 'comment') {
         n.tagL = n.tagR = 0;
@@ -149,10 +202,21 @@
       }
       if (n.kind === 'var' || n.kind === 'leaf') {
         const label = n.label || n.name || n.varFull || '';
-        const d = sd && n.kind === 'var' ? dline(n.desc, TR_PILL) : '';
-        n.descLine = d;
-        n.boxW = clamp(Math.max(dg.measure(label) + 22 + (n.flag ? dg.measure(n.flag) + 8 : 0), d ? dmeasure(d) + 22 : 0), 60, 360);
-        n.h = d ? VAR_H_D : VAR_H;
+        const flagW = n.flag ? dg.measure(n.flag) + 8 : 0;
+        n.descLines = [];
+        if (full && n.kind === 'var' && n.desc) {
+          n.boxW = VAR_W_FULL;
+          n.nameText = dg.fitText(label, VAR_W_FULL - 22 - flagW);
+          n.descLines = wrapDesc(n.desc, VAR_W_FULL - 16, PILL_LINES);
+          n.h = 22 + DESC_LH * n.descLines.length; // 名稱基線 14、描述基線 26+12i；1 行 = 34（同 brief）
+        } else {
+          const d = sd && n.kind === 'var' ? dline(n.desc, TR_PILL) : '';
+          if (d) n.descLines = [d];
+          n.nameText = dg.trunc(label, 34);
+          n.boxW = clamp(Math.max(dg.measure(n.nameText) + 22 + flagW, d ? dmeasure(d) + 22 : 0), 60, 360);
+          n.h = d ? VAR_H_D : VAR_H;
+        }
+        n.descLine = n.descLines[0] || '';
         const py = n.h / 2;
         n.left.forEach((p) => { p.y = py; p.noLabel = true; });
         n.right.forEach((p) => { p.y = py; p.noLabel = true; });
@@ -162,24 +226,46 @@
         continue;
       }
       const rows = Math.max(n.left.length, n.right.length);
-      const bd = sd ? dline(n.desc, TR_BLK) : '';
+      const bd = mode === 'brief' ? dline(n.desc, TR_BLK) : '';
       n.descLine = bd;
       n.titleH = TITLE_H + (bd ? BDESC_H : 0);
       let need = Math.max(dg.measure(n.name) + 16, dg.measure(n.type || '') + 16, bd ? dmeasure(bd) + 16 : 0);
+      const anyPinDesc = full && n.left.concat(n.right).some((p) => p.desc);
+      for (let i = 0; i < rows; i++) {
+        const l = n.left[i], r = n.right[i];
+        const lw = l ? pinNameW(l, mode) + 7 : 0, rw = r ? pinNameW(r, mode) + 7 : 0;
+        need = Math.max(need, lw + rw + (l && r ? 14 : 8));
+      }
+      for (const b of n.body) need = Math.max(need, dg.measure(b) + 16);
+      // full 且有腳位描述：方塊至少 BOX_MAX_D 寬（描述換行而不撐寬）；brief 上限 BOX_MAX_B；其餘 BOX_MAX
+      n.boxW = anyPinDesc ? Math.max(BOX_MAX_D, clamp(need, BOX_MIN, BOX_MAX)) : clamp(need, BOX_MIN, mode === 'brief' ? BOX_MAX_B : BOX_MAX);
+      const inner = n.boxW - 14; // 左右各 7 padding
       let pinsH = 0;
       for (let i = 0; i < rows; i++) {
         const l = n.left[i], r = n.right[i];
-        const lw = l ? pinTextW(l, sd) + 7 : 0, rw = r ? pinTextW(r, sd) + 7 : 0;
-        need = Math.max(need, lw + rw + (l && r ? 14 : 8));
-        const rh = sd && ((l && tagD.has(l.id)) || (r && tagD.has(r.id))) ? PIN_H_D : PIN_H;
+        let rh = PIN_H;
+        if (l) l.descLines = [];
+        if (r) r.descLines = [];
+        if (full) {
+          // 描述可用寬：兩側都有描述 → 各半；只一側有 → 扣掉另一側腳位名；單側列 → 全寬
+          const ld = !!(l && l.desc), rd = !!(r && r.desc);
+          const lName = l ? dg.measure(dg.trunc(l.pin, 12)) : 0, rName = r ? dg.measure(dg.trunc(r.pin, 12)) : 0;
+          const lW = ld ? (rd ? inner / 2 - 4 : inner - (r ? rName + 8 : 0)) : 0;
+          const rW = rd ? (ld ? inner / 2 - 4 : inner - (l ? lName + 8 : 0)) : 0;
+          if (ld) l.descLines = wrapDesc(l.desc, Math.max(lW, 30), PIN_DESC_LINES);
+          if (rd) r.descLines = wrapDesc(r.desc, Math.max(rW, 30), PIN_DESC_LINES);
+          rh = PIN_H + DESC_LH * Math.max(l ? l.descLines.length : 0, r ? r.descLines.length : 0);
+        }
+        rh = Math.max(rh, tagRowH(l), tagRowH(r));
         if (l) l.y = n.titleH + pinsH + 8;
         if (r) r.y = n.titleH + pinsH + 8;
         pinsH += rh;
       }
       n.pinsH = pinsH;
-      for (const b of n.body) need = Math.max(need, dg.measure(b) + 16);
-      n.boxW = clamp(need, BOX_MIN, sd ? BOX_MAX_D : BOX_MAX);
-      n.h = n.titleH + pinsH + (n.body.length ? 6 + n.body.length * BODY_LH : 0) + 6;
+      n.bodyH = n.body.length ? 6 + n.body.length * BODY_LH : 0;
+      n.capLines = full && n.desc ? wrapDesc(n.desc, n.boxW - 16, CAP_LINES) : [];
+      n.capH = n.capLines.length ? 6 + DESC_LH * n.capLines.length : 0;
+      n.h = n.titleH + pinsH + n.bodyH + n.capH + 6;
       let tl = 0, tr = 0;
       n.left.forEach((p) => { tl = Math.max(tl, tagW.get(p.id) || 0, p.inline ? dg.measure(dg.trunc(p.inline, 18)) + TAG_GAP + 4 : 0); });
       n.right.forEach((p) => { tr = Math.max(tr, tagW.get(p.id) || 0, p.inline ? dg.measure(dg.trunc(p.inline, 18)) + TAG_GAP + 4 : 0); });
@@ -252,7 +338,7 @@
     }
     comps.sort((a, b) => a.minOrd - b.minOrd);
     // 欄式打包：上→下，滿 SHEET_H 換欄
-    const sheetH = opts.sheetH || SHEET_H;
+    const sheetH = opts.sheetH || (graph.descMode === 'full' ? SHEET_H_FULL : SHEET_H);
     let colX = 0, colY = 0, colW = 0, totalW = 0, totalH = 0;
     comps.forEach((c, i) => {
       if (colY > 0 && colY + c.h > sheetH) { colX += colW + GAP_X; colY = 0; colW = 0; }
@@ -320,31 +406,39 @@
       return g;
     }
     if (n.kind === 'var' || n.kind === 'leaf') {
-      const two = !!n.descLine;
+      const lines = n.descLines || (n.descLine ? [n.descLine] : []);
+      const two = lines.length > 0;
       g.appendChild(D.svg('rect', { class: 'box', x: r1(bx), y: 0, width: r1(n.boxW), height: r1(n.h), rx: 12 }));
-      g.appendChild(D.svg('text', { class: 'name', x: r1(bx + 11), y: two ? 14 : 16, text: dg.trunc(n.label || n.name || n.varFull || '', 34) }));
+      g.appendChild(D.svg('text', { class: 'name', x: r1(bx + 11), y: two ? 14 : 16, text: n.nameText || dg.trunc(n.label || n.name || n.varFull || '', 34) }));
       if (n.flag) g.appendChild(D.svg('text', { class: 'flag', x: r1(bx + n.boxW - 8), y: two ? 14 : 16, 'text-anchor': 'end', text: n.flag }));
-      if (two) g.appendChild(D.svg('text', { class: 'desc', x: r1(bx + 11), y: 27, text: n.descLine }));
+      lines.forEach((d, i) => g.appendChild(D.svg('text', { class: 'desc', x: r1(bx + 11), y: 26 + i * DESC_LH, text: d })));
       for (const p of n.left) g.appendChild(D.svg('circle', { class: 'port dir-' + (p.dir || 'q'), cx: r1(bx), cy: p.y, r: PORT_R, 'data-port': p.id, 'data-var': p.varFull || null }));
       for (const p of n.right) g.appendChild(D.svg('circle', { class: 'port dir-' + (p.dir || 'q'), cx: r1(bx + n.boxW), cy: p.y, r: PORT_R, 'data-port': p.id, 'data-var': p.varFull || null }));
       return g;
     }
-    const sd = !!graph.showDesc;
+    const mode = graph.descMode || (graph.showDesc ? 'full' : 'off');
     g.appendChild(D.svg('rect', { class: 'box', x: r1(bx), y: 0, width: r1(n.boxW), height: r1(n.h), rx: 4 }));
     if (n.kind === 'ub') g.appendChild(D.svg('rect', { class: 'box2', x: r1(bx + 3), y: 3, width: r1(n.boxW - 6), height: r1(n.h - 6), rx: 3 }));
     g.appendChild(D.svg('text', { class: 'name', x: r1(bx + 7), y: 12, text: dg.trunc(n.name || '', 30) }));
     if (n.type || n.sub) g.appendChild(D.svg('text', { class: 'type', x: r1(bx + 7), y: 23, text: dg.trunc((n.type || '') + (n.sub ? '  ' + n.sub : ''), 40) }));
     if (n.descLine) g.appendChild(D.svg('text', { class: 'bdesc', x: r1(bx + 7), y: 35, text: n.descLine }));
     const dirCls = (p) => 'dir-' + (p.dir === '?' || !p.dir ? 'q' : p.dir);
-    // 腳位列：左側「pin␣␣描述」、右側「描述␣␣pin」（腳位名貼近腳位）；描述用 .pdesc tspan（nbsp 不會被折疊）
+    // 腳位列：brief = 左側「pin␣␣描述」、右側「描述␣␣pin」同行（.pdesc tspan；nbsp 不會被折疊）；
+    //   full = 腳位名一行，描述換行（p.descLines，size() 算好）在下方 .pdesc；port 圓點對齊腳位名那一行
     const pinText = (p, right) => {
       const name = dg.trunc(p.pin, 12);
-      const d = sd && p.desc ? dline(p.desc, TR_PIN) : '';
       const attrs = right ? { class: 'pin', x: r1(bx + n.boxW - 7), y: p.y + 3.5, 'text-anchor': 'end' } : { class: 'pin', x: r1(bx + 7), y: p.y + 3.5 };
-      if (!d) { attrs.text = name; return D.svg('text', attrs); }
-      const t = D.svg('text', attrs, right ? [D.svg('tspan', { class: 'pdesc', text: d + '  ' }), D.svg('tspan', { text: name })] : [D.svg('tspan', { text: name }), D.svg('tspan', { class: 'pdesc', text: '  ' + d })]);
-      t.appendChild(D.svg('title', { text: p.pin + '\n' + p.desc }));
-      return t;
+      const title = p.desc ? D.svg('title', { text: p.pin + '\n' + p.desc }) : null;
+      if (mode === 'full' && p.descLines && p.descLines.length) {
+        attrs.text = name;
+        const grp = D.svg('g', { class: 'pinrow' }, D.svg('text', attrs));
+        p.descLines.forEach((d, i) => grp.appendChild(D.svg('text', { class: 'pdesc', x: attrs.x, y: r1(p.y + 15.5 + i * DESC_LH), 'text-anchor': right ? 'end' : null, text: d })));
+        grp.appendChild(title);
+        return grp;
+      }
+      const d = mode === 'brief' && p.desc ? dline(p.desc, TR_PIN) : '';
+      if (!d) { attrs.text = name; return D.svg('text', attrs, title); }
+      return D.svg('text', attrs, right ? [D.svg('tspan', { class: 'pdesc', text: d + NB2 }), D.svg('tspan', { text: name })] : [D.svg('tspan', { text: name }), D.svg('tspan', { class: 'pdesc', text: NB2 + d })], title);
     };
     for (const p of n.left) {
       g.appendChild(D.svg('circle', { class: 'port ' + dirCls(p), cx: r1(bx), cy: p.y, r: PORT_R, 'data-port': p.id, 'data-var': p.varFull || null }));
@@ -359,23 +453,30 @@
     const rows = Math.max(n.left.length, n.right.length);
     const bodyY = (n.titleH == null ? TITLE_H : n.titleH) + (n.pinsH == null ? rows * PIN_H : n.pinsH);
     n.body.forEach((line, i) => g.appendChild(D.svg('text', { class: 'body', x: r1(bx + 7), y: bodyY + 12 + i * BODY_LH, text: line })));
+    // full：方塊描述 caption（底部；size() 算好 n.capLines）
+    if (n.capLines && n.capLines.length) {
+      const capY = bodyY + (n.bodyH || 0);
+      g.appendChild(D.svg('line', { class: 'cap-ln', x1: r1(bx + 6), y1: r1(capY + 2), x2: r1(bx + n.boxW - 6), y2: r1(capY + 2) }));
+      n.capLines.forEach((d, i) => g.appendChild(D.svg('text', { class: 'bdesc', x: r1(bx + 8), y: r1(capY + 15 + i * DESC_LH), text: d })));
+    }
     return g;
   }
+  /** xref 標籤：off/brief 依 size() 的 t.name/t.lines/t.w/t.h；full 有描述 → 固定寬說明卡（名稱 .tname 11px 粗 + 描述行） */
   function renderTag(graph, t) {
     const a = dg.portXY(graph, t.port);
     if (!a) return null;
-    const text = dg.trunc(t.text, 28);
-    const d = graph.showDesc && t.desc ? dline(t.desc, TR_TAG) : '';
-    const tw = Math.max(dg.measure(text), d ? dmeasure(d) : 0) + TAG_PAD * 2;
+    if (t.w == null) sizeTag(t, graph.descMode || (graph.showDesc ? 'full' : 'off'));
+    const card = graph.descMode === 'full' && t.lines.length > 0;
+    const tw = t.w;
     const left = t.side === 'L';
     const x0 = left ? a.x - TAG_GAP - tw : a.x + TAG_GAP;
-    const g = D.svg('g', { class: 'tag ' + (t.cls || ''), 'data-var': t.varFull || null, 'data-port': t.port, tabindex: t.varFull ? '0' : null });
+    const g = D.svg('g', { class: 'tag ' + (t.cls || '') + (card ? ' card' : ''), 'data-var': t.varFull || null, 'data-port': t.port, tabindex: t.varFull ? '0' : null });
     const tt = t.title || t.text;
     g.appendChild(D.svg('title', { text: tt + (t.varFull && t.varFull !== tt ? '\n' + t.varFull : '') + (t.desc ? '\n' + t.desc : '') }));
     g.appendChild(D.svg('line', { class: 'tag-ln', x1: r1(left ? a.x - TAG_GAP : a.x), y1: a.y, x2: r1(left ? a.x : a.x + TAG_GAP), y2: a.y }));
-    g.appendChild(D.svg('rect', { x: r1(x0), y: a.y - 8, width: r1(tw), height: d ? TAG_H_D : TAG_H, rx: 3 }));
-    g.appendChild(D.svg('text', { x: r1(x0 + TAG_PAD), y: a.y + 3.5, text }));
-    if (d) g.appendChild(D.svg('text', { class: 'desc', x: r1(x0 + TAG_PAD), y: a.y + 15.5, text: d }));
+    g.appendChild(D.svg('rect', { x: r1(x0), y: a.y - 8, width: r1(tw), height: t.h, rx: 3 }));
+    g.appendChild(D.svg('text', { class: card ? 'tname' : null, x: r1(x0 + TAG_PAD), y: a.y + 3.5, text: t.name }));
+    t.lines.forEach((d, i) => g.appendChild(D.svg('text', { class: 'desc', x: r1(x0 + TAG_PAD), y: r1(a.y + 15.5 + i * DESC_LH), text: d })));
     return g;
   }
   dg.render = function (graph) {
@@ -435,17 +536,24 @@
     document.body.classList.add('wide');
     D.set(view, root);
 
-    inst.showDesc = opts.showDesc == null ? dg.descPref() : !!opts.showDesc;
-    const descBtn = dg.tool('desc', '說明', () => inst.setDesc(!inst.showDesc), { pressed: inst.showDesc, cls: inst.showDesc ? 'on' : '', title: '顯示／隱藏說明（變數、腳位、方塊描述；?desc=0 關）' });
-    /** 切換說明顯示：記到 localStorage、更新按鈕，重新 size→layout→route→render（保留 viewBox／選取／高亮） */
-    inst.setDesc = (on) => {
-      on = !!on;
-      inst.showDesc = on;
-      dg.saveDescPref(on);
-      descBtn.classList.toggle('on', on);
-      descBtn.setAttribute('aria-pressed', String(on));
+    inst.descMode = dg.normMode(opts.descMode) || (opts.descMode == null && opts.showDesc != null ? (opts.showDesc ? 'full' : 'off') : dg.descPref());
+    inst.showDesc = inst.descMode !== 'off';
+    const DESC_TITLE = '說明密度：完整（換行卡片）→ 關 → 精簡（一行）循環；?desc=full|brief|off（或 2|1|0）只影響本次';
+    const descBtn = dg.tool('desc', '說明：' + dg.MODE_LABEL[inst.descMode], () => inst.setDesc(), { pressed: inst.showDesc, cls: inst.showDesc ? 'on' : '', title: DESC_TITLE });
+    /** 切換說明密度：mode 省略 → 依 MODES 循環（完整 → 關 → 精簡）；布林 true/false → full/off。記到 localStorage、更新按鈕，
+     *  重新 size→layout→route→render（保留 viewBox／選取／高亮） */
+    inst.setDesc = (mode) => {
+      mode = mode == null ? MODES[(MODES.indexOf(inst.descMode) + 1) % MODES.length] : dg.normMode(mode) || 'full';
+      inst.descMode = mode;
+      inst.showDesc = mode !== 'off';
+      dg.saveDescPref(mode);
+      descBtn.classList.toggle('on', inst.showDesc);
+      descBtn.setAttribute('aria-pressed', String(inst.showDesc));
+      const lb = '說明：' + dg.MODE_LABEL[mode];
+      descBtn.querySelector('.tb-txt').textContent = lb;
+      descBtn.setAttribute('aria-label', lb);
       if (inst.graph && inst.svg) inst.setGraph(inst.graph, Object.assign({}, inst.lastSetOpts || {}, { keepViewport: true }));
-      return on;
+      return mode;
     };
     tools.append(
       dg.tool('fit', '適應', () => inst.fit(), { title: '適應視窗（0 / F）' }),
@@ -654,7 +762,7 @@
       inst.lastSetOpts = { layout: o.layout };
       const t = {};
       let t0 = performance.now();
-      dg.prepare(graph); dg.size(graph, { showDesc: inst.showDesc }); t.size = performance.now() - t0;
+      dg.prepare(graph); dg.size(graph, { descMode: inst.descMode }); t.size = performance.now() - t0;
       const lay = dg.layout(graph, o.layout); t.layout = lay.ms; t.comps = lay.comps;
       t0 = performance.now(); dg.route(graph); t.route = performance.now() - t0;
       t0 = performance.now();
@@ -733,7 +841,9 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
 .tag.iface rect{fill:var(--accent-soft);stroke:var(--accent-2)}
 .tag.warn rect,.tag.ext-l rect{fill:var(--warn-bg);stroke:var(--warn-bd)}.tag.warn text,.tag.ext-l text{fill:var(--warn)}
 .tag .tag-ln{stroke:var(--muted);stroke-width:1}
-.node .desc,.node .pdesc,.node .bdesc,.tag text.desc{font-size:9.5px;fill:var(--muted);font-weight:400}
+.node .desc,.node .pdesc,.node .bdesc,.tag text.desc{font-size:10px;fill:var(--desc);font-weight:400}
+.tag text.tname{font-size:11px;font-weight:700}
+.node .cap-ln{stroke:var(--border);stroke-width:1}
 `;
   function exportCss() {
     const cs = getComputedStyle(document.documentElement);
@@ -741,6 +851,11 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
   }
 
   /* ------------------------------------------------------------------ 預設側欄：方塊 */
+  /** 腳位表「說明」欄：全文（各段以空白接起）、允許換行（CSS td.pdesc-cell）；極長文字截 400 字，title 含全文 */
+  function descTd(desc) {
+    const d = dg.descAll(desc);
+    return d ? D.h('td', { class: 'pdesc-cell', title: d, text: dg.trunc(d, 400) }) : D.h('td', { class: 'muted', text: '—' });
+  }
   dg.blockPanel = function (n, inst) {
     const opts = inst.opts || {};
     const out = [];
@@ -771,8 +886,7 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
       const portByPin = new Map(n.left.concat(n.right).map((p) => [p.pin, p]));
       const descCell = (name, varFull, pinDesc) => {
         const port = portByPin.get(name);
-        const d = dg.firstLine(pinDesc || (port && (port.desc || port.varDesc)) || (varFull && vdMap[varFull]) || '');
-        return d ? D.h('td', { class: 'pdesc-cell', title: d, text: dg.trunc(d, 60) }) : D.h('td', { class: 'muted', text: '—' });
+        return descTd(pinDesc || (port && (port.desc || port.varDesc)) || (varFull && vdMap[varFull]) || '');
       };
       const rows = pins.map((p) => {
         const [name, dir, src, ck, conn, varFull, tgtKey, tgtPin] = p;
@@ -785,10 +899,8 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
       });
       out.push(D.h('h4', { text: '腳位（' + pins.length + '）' }), D.table(['腳位', '種類', '連到', '說明'], rows, 'pins compact'));
     } else if (n.left.length || n.right.length) {
-      out.push(D.h('h4', { text: '腳位' }), D.table(['腳位', '方向', '連線', '說明'], n.left.concat(n.right).map((p) => {
-        const d = dg.firstLine(p.desc || p.varDesc || '');
-        return [D.mono(p.pin, 'b'), D.dirBadge(p.dir), p.varFull ? D.h('a', { href: D.hrefV(p.varFull), class: 'lk mono', text: p.varFull }) : D.mono(D.val(p.conn)), d ? D.h('td', { class: 'pdesc-cell', title: d, text: dg.trunc(d, 60) }) : D.h('td', { class: 'muted', text: '—' })];
-      })));
+      out.push(D.h('h4', { text: '腳位' }), D.table(['腳位', '方向', '連線', '說明'], n.left.concat(n.right).map((p) =>
+        [D.mono(p.pin, 'b'), D.dirBadge(p.dir), p.varFull ? D.h('a', { href: D.hrefV(p.varFull), class: 'lk mono', text: p.varFull }) : D.mono(D.val(p.conn)), descTd(p.desc || p.varDesc || '')])));
     }
     return D.frag(out);
   };

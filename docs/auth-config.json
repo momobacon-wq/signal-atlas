@@ -1,0 +1,7 @@
+{
+  "endpoint": "https://script.google.com/macros/s/AKfycbytKeZwxdlzcFVlp82IJK0eC1fCaRgsXsrvfqCgJYzynbRDC_5yr5ygKKF26ry0K5ys/exec",
+  "sessionHours": 12,
+  "title": "請先登入",
+  "subtitle": "輸入員工代號後才能瀏覽本站；登入時間會記錄在試算表的 AMS_Log 分頁。",
+  "footer": "帳號問題請找站台管理者"
+}

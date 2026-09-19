@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.sqlite
+*.sqlite-journal
+*.log
+*.pkl
+.DS_Store
+Thumbs.db
+tools/auth/mock_log.jsonl
+tools/auth/mock_server.out
+tools/verify_report.*
+_scratch/

@@ -1,0 +1,2 @@
+block_type,pin_name,direction,note
+# manual corrections (direction I|O), loaded on every build, take precedence over pin_dir_table.csv; lines starting with # are ignored

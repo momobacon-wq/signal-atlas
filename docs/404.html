@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>Signal Atlas — 轉址中…</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+  // GitHub Pages 找不到路徑時，轉回單頁 App 首頁（保留 #hash）
+  (function () {
+    var p = location.pathname;
+    var i = p.indexOf('/', 1);
+    var base = (location.hostname.endsWith('github.io') && i > 0) ? p.slice(0, i + 1) : '/';
+    location.replace(base + 'index.html' + location.search + location.hash);
+  })();
+</script>
+</head>
+<body><p>找不到此頁，正在轉回 <a href="index.html">Signal Atlas 首頁</a>…</p></body>
+</html>

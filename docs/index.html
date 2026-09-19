@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<!-- CSP：只允許本站的程式與資料（無行內 script／事件處理器；style 允許行內以便 JS 設定寬度等） -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://script.google.com https://script.googleusercontent.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Signal Atlas — 訊號邏輯查詢</title>
+<meta name="description" content="Signal Atlas：控制系統訊號邏輯查詢（寫入者、讀取者、上下游追蹤、I/O 端子、跨控制器交換、畫面、警報）。資料已加密，需密語。">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#1F4E79" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#171C23" media="(prefers-color-scheme: dark)">
+<!-- 版本戳記：tools/stamp_assets.py 依檔案內容寫入（content＝資料建置雜湊、data-app＝程式雜湊） -->
+<meta name="atlas-build" content="675e9f0550" data-app="befda294cb">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231F4E79'/%3E%3Ctext x='16' y='21' font-size='11' font-family='Arial' font-weight='700' fill='white' text-anchor='middle'%3ESA%3C/text%3E%3C/svg%3E">
+<link rel="preload" href="data/meta.json?v=675e9f0550" as="fetch" crossorigin>
+<script src="assets/boot.js?v=0783d4f386"></script>
+<meta name="ams-auth-config" content="auth-config.json" data-site="Signal Atlas">
+<script src="assets/auth.js?v=8ac3fe2b80"></script>
+<link rel="stylesheet" href="assets/app.css?v=dc6ddd0403">
+</head>
+<body>
+<a class="skip-link" href="#main">跳到主要內容</a>
+<div id="topbar-progress" class="topbar-progress" hidden><div></div></div>
+
+<header class="app-header" role="banner">
+  <a class="brand" href="#/" title="回到搜尋">
+    <span class="brand-mark" aria-hidden="true">SA</span>
+    <span class="brand-text">
+      <span class="brand-title">Signal Atlas</span>
+      <span class="brand-sub">訊號邏輯查詢</span>
+    </span>
+  </a>
+  <div class="header-search" role="search">
+    <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    <input id="global-search" type="search" autocomplete="off" spellcheck="false" placeholder="訊號名／別名／說明… Enter 搜尋" aria-label="搜尋訊號（Enter 開啟搜尋頁）">
+  </div>
+  <button id="btn-key" class="btn sm" type="button" title="忘掉此裝置記住的密語並重新載入" hidden>清除密語</button>
+  <button id="btn-theme" class="icon-btn" type="button" aria-label="切換深色／淺色主題" title="切換深色／淺色主題">
+    <svg class="ico-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>
+    <svg class="ico-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+  </button>
+</header>
+
+<div class="app-body">
+  <main id="main" class="main" tabindex="-1">
+    <div id="view" class="view">
+      <div class="boot">
+        <div class="spinner" aria-hidden="true"></div>
+        <p>載入中…</p>
+        <noscript><p>此網頁需要啟用 JavaScript。</p></noscript>
+      </div>
+    </div>
+    <footer id="foot" class="foot" role="contentinfo"></footer>
+  </main>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="assets/core.js?v=70ca7a1798"></script>
+<script src="assets/search.js?v=7c1d9d6e5a"></script>
+<script src="assets/signal.js?v=2101e43ee7"></script>
+<script src="assets/trace.js?v=291e7d24bf"></script>
+<script src="assets/block.js?v=b9920f7411"></script>
+<script src="assets/io.js?v=3ab9063c62"></script>
+<script src="assets/browse.js?v=40a2692e3a"></script>
+</body>
+</html>

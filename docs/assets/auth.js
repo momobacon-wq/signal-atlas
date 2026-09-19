@@ -1,4 +1,4 @@
-/* AMS 解析網頁 — 登入閘門（員工代號，對照 Google 試算表 Users 分頁；登入／造訪寫入 AMS_Log）
+/* Signal Atlas — 登入閘門（員工代號，對照 Google 試算表 Users 分頁；登入／造訪寫入 AMS_Log）
  *
  * 運作：index.html 在 core.js 之前載入本檔；app.js 的 boot() 會先 await window.AMSAuth.ready()。
  *  1. 讀 auth-config.json（<meta name="ams-auth-config" content="路徑" data-site="站名">；預設 auth-config.json）
@@ -18,7 +18,7 @@
   const REVERIFY_MS = 30 * 60 * 1000;
   const meta = document.querySelector('meta[name="ams-auth-config"]');
   const CONFIG_URL = (meta && meta.getAttribute('content')) || 'auth-config.json';
-  const SITE = (meta && meta.getAttribute('data-site')) || document.title || 'AMS';
+  const SITE = (meta && meta.getAttribute('data-site')) || document.title || 'SA';
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const norm = (s) => { s = String(s == null ? '' : s); try { s = s.normalize('NFKC'); } catch (e) { /* old engines */ } return s.replace(/\s+/g, '').trim(); };
   const A = (window.AMSAuth = { user: null, config: null, enabled: false });
@@ -76,7 +76,7 @@
       overlay.setAttribute('aria-labelledby', 'auth-title');
       overlay.innerHTML = `
         <form class="auth-card" autocomplete="on" novalidate>
-          <div class="auth-brand"><span class="brand-mark" aria-hidden="true">AMS</span><div><h1 id="auth-title">${esc(A.config.title || '請先登入')}</h1><p class="auth-sub">${esc(A.config.subtitle || '輸入員工代號後才能瀏覽本站；登入時間會記錄在登入紀錄中。')}</p></div></div>
+          <div class="auth-brand"><span class="brand-mark" aria-hidden="true">SA</span><div><h1 id="auth-title">${esc(A.config.title || '請先登入')}</h1><p class="auth-sub">${esc(A.config.subtitle || '輸入員工代號後才能瀏覽本站；登入時間會記錄在登入紀錄中。')}</p></div></div>
           <label class="auth-field"><span>員工代號</span><input id="auth-id" name="id" type="text" inputmode="numeric" autocomplete="username" autocapitalize="off" spellcheck="false" required maxlength="20" placeholder="員工代號（半形數字）"></label>
           <div id="auth-msg" class="auth-msg" role="status" aria-live="polite"></div>
           <button id="auth-submit" class="btn primary auth-btn" type="submit">登入</button>

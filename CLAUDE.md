@@ -36,6 +36,10 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
   原始檔 = `<CTRL>/_<Program>.xml`。`L:` 連線指向同 task 內的 block，`L:Pin`（無點）指向外層巨集/task 的介面腳。
 - 勵磁控制器（EX2100e）的 block 型別不在手冊內，方向未知率約 15%，其餘 <4%（`coverage` 可看）。
 
+- 「宣告在腳位上的變數」：腳位沒有 `Connection`（`conn_kind A`）但被發佈成全域變數（例 PID 的 `HpBypToCrhPressCv.CVO`）；索引以
+  名稱 `Block.Pin` → 宣告位置 → 同位址唯一 三層規則連結（約 16.7 萬個腳位），`show` 的寫入者行會註明 `(variable declared at this pin)`。
+- `audit-type <BLOCK_TYPE>`：逐腳位稽核某型別方塊（方向/來源/連線種類/已連結/被使用）；懷疑某類方塊漏接時用它。
+
 ## 命名慣例（判讀訊號名用）
 
 - RDS-PP/KKS：`C10PAC30GP001XB65`（XB=數位、XQ=類比）、`MBP80QN202`、`G11MAN10QN001.AU_SEL`（KKS 別名綁在 block pin 上）

@@ -1,6 +1,7 @@
 /* Signal Atlas — Task 邏輯圖 #/d/<CTRL>/<Program>/<Task>?ub=<block_path>&f=&pins=1&cm=0|1&sel=<CTRL.VAR>&b=<key>&page=k&all=1&desc=off|brief|full(0|1|2)
  * 由 task/<hhh>.json 的整份 task 記錄建圖（buildGraph，規則見 plan §二），交給 D.dg（diagram.js）排版／渲染／互動。
  * 說明：腳位 tuple 第 11 欄 → port.desc；entry.vd[varFull] → port.varDesc / tag.desc / graph.varDesc（舊資料 10 欄／無 vd → 無描述）。
+ * 宣告於腳位（ck 'A' 且有 varFull）：走線／標籤規則同 V；可見性依 entry.vu[varFull]=[nW,nR,flags]（除自己外還有人接、或 I/O／EGD／HMI／警報）或 PID 家族關鍵腳；?pins=1 全顯。
  * 規模分級：≤300 方塊全畫；301–1000 依連通群組分頁；>1000 拒絕並提供篩選／型別 chips／分頁。 */
 'use strict';
 (function () {
@@ -13,11 +14,16 @@
   const shortVar = (full) => { const i = full.indexOf('.'); return i < 0 ? full : full.slice(i + 1); };
   const isComment = (rec) => rec.type === '_COMMENT' || /^_COMMENT(_\d+)?$/.test(rec.name || '');
   const stripK = (s) => String(s == null ? '' : s).replace(/^[NEL]:/, '');
+  /** PID 家族（type 以 PID 開頭）即使沒人用也要顯示的關鍵腳 */
+  const PID_PINS = new Set(['PV', 'SP', 'CVO', 'CV', 'CVI', 'AUTO', 'RSP', 'OUT']);
+  /** 變數腳：V，或宣告於腳位的 A（有 varFull） */
+  const isVarPin = (ck, varFull) => !!varFull && (ck === 'V' || ck === 'A');
 
   /** 建圖：t = task 記錄 {n,b}；rootKey = task key 或 ?ub= 的 userblock key；q = {pins, cm, f} */
   function buildGraph(t, ctrl, rootKey, q) {
     const b = t.b;
     const vd = t.vd || {}; // {varFull: description}（舊資料無 → 空）
+    const vu = t.vu || {}; // {varFull: [nW, nR, flags]} 宣告於腳位變數的全索引用量（舊資料無 → 空）
     const root = b[rootKey] || {};
     const prefix = rootKey + '/';
     const members = [];
@@ -25,7 +31,9 @@
     for (const k in b) if (k.startsWith(prefix) && k.indexOf('/', prefix.length) < 0) members.push([k, b[k], idx++]);
     const memberSet = new Set(members.map((m) => m[0]));
     const nodes = new Map(), edges = [], tags = [], warn = [];
-    const meta = { title: rootKey.slice(rootKey.indexOf('|') + 1), warn, nComment: 0, nHiddenComment: 0, nHiddenPins: 0 };
+    const meta = { title: rootKey.slice(rootKey.indexOf('|') + 1), warn, nComment: 0, nHiddenComment: 0, nHiddenPins: 0, nDeclared: 0 };
+    // 宣告於腳位的變數腳可見性：有人接（nW+nR>1）／有 I/O、EGD、HMI、警報旗標／PID 家族關鍵腳
+    const declaredShown = (rec, pin, varFull) => { const u = vu[varFull]; return !!(u && (u[0] + u[1] > 1 || u[2] !== 0)) || (String(rec.type || '').startsWith('PID') && PID_PINS.has(pin)); };
     // 被同 scope 的 L 腳指到的目標腳（即使只有位址也要畫出來）
     const needed = new Map();
     for (const [, rec] of members) for (const p of rec.pins || []) if (p[3] === 'L' && p[6] && memberSet.has(p[6]) && p[7]) { if (!needed.has(p[6])) needed.set(p[6], new Set()); needed.get(p[6]).add(p[7]); }
@@ -46,8 +54,10 @@
       const need = needed.get(k);
       for (const p of rec.pins || []) {
         const [pin, dir, src, ck, conn, varFull, tgtKey, tgtPin] = p;
-        const shown = ck === 'V' || ck === 'L' || ck === 'P' || ck === 'N' || ck === 'E' || q.pins || (need && need.has(pin));
+        const declared = ck === 'A' && !!varFull;
+        const shown = ck === 'V' || ck === 'L' || ck === 'P' || ck === 'N' || ck === 'E' || q.pins || (need && need.has(pin)) || (declared && declaredShown(rec, pin, varFull));
         if (!shown) { meta.nHiddenPins++; continue; }
+        if (declared) meta.nDeclared++;
         const port = { id: k + '#' + pin, pin, dir: dir || '?', src, ck, conn, varFull: varFull || null, tgtKey, tgtPin, inline: null,
           desc: (p.length > 10 && p[10]) || null, varDesc: (varFull && vd[varFull]) || null };
         if (ck === 'N' || ck === 'E') {
@@ -102,9 +112,9 @@
         covered.add(port.id);
       }
     }
-    // V：同變數在 scope 內 |W| 1..2 且 |Rd| 1..4 → 內部走線；否則標籤
+    // V（含宣告於腳位的 A+varFull）：同變數在 scope 內 |W| 1..2 且 |Rd| 1..4 → 內部走線；否則標籤
     const byVar = new Map();
-    for (const n of nodes.values()) for (const port of n.left.concat(n.right)) if (port.ck === 'V' && port.varFull) { if (!byVar.has(port.varFull)) byVar.set(port.varFull, { W: [], R: [] }); byVar.get(port.varFull)[port.dir === 'O' ? 'W' : 'R'].push(port); }
+    for (const n of nodes.values()) for (const port of n.left.concat(n.right)) if (isVarPin(port.ck, port.varFull)) { if (!byVar.has(port.varFull)) byVar.set(port.varFull, { W: [], R: [] }); byVar.get(port.varFull)[port.dir === 'O' ? 'W' : 'R'].push(port); }
     const portNode = (p) => p.id.slice(0, p.id.indexOf('#'));
     for (const [v, g] of byVar) {
       const wired = new Set();
@@ -285,6 +295,7 @@
     if (banner) inst.canvas.prepend(banner);
     const nEdges = graph.edges.filter((e) => e.kind !== 'sticky').length;
     const st = ['抓取 ' + (D.fetchCount - f0) + ' 個分片', '方塊 ' + D.int(nBlocks(graph)) + (full.meta.nHiddenComment ? '（隱藏 ' + full.meta.nHiddenComment + ' 個註解）' : ''), '連線 ' + nEdges, '標籤 ' + graph.tags.length, '群組 ' + tm.comps, '排版 ' + Math.round(tm.layout) + ' ms'];
+    if (full.meta.nDeclared) st.push('宣告於腳位 ' + full.meta.nDeclared);
     if (full.meta.filter) st.push('篩選「' + full.meta.filter + '」' + full.meta.nMatched + ' 個');
     if (full.meta.warn.length) st.push('警告 ' + full.meta.warn.length);
     inst.status(st.join(' · '));

@@ -35,6 +35,10 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
   `N` `N:...` constant / RUNG equation; `E` `E:...` enum constant; `A` no Connection but has Address; `-` nothing.
   Dotted names ARE often real variables (`G11.L27QE1_A`, `HpStmBypGrp.OFF`, `1-HS-CW011-3.ON`) — check the
   variable table before classifying as `D`.
+* Address-only pins (`conn_kind='A'`) are often published as global variables declared AT the pin (`GlobalNamePrefix`
+  Block/Task/Full; same address). `resolve.link_declared_pins` links `pin.var_id` by (1) name `Block.Pin`, (2)
+  `decl_connection == Program.Task….Pin`, (3) unique same-address variable (non-`DistributedIO.` preferred); conn_kind
+  stays 'A'. ~167k pins. Multi-writer lint counts ordinary-block writers only (interface pin + inner block = one path).
 * Pin direction is NOT in the XML (except `Usage` on interface pins). `direction.py` infers it post-hoc
   (U > T manual table/overrides > C constants > L link votes > H name heuristics > `?`).
 * `block.path` = `Program/Task/UserBlock/…/Block` (task names repeat across programs, so the program is part of the key).

@@ -90,6 +90,9 @@ docs/data/                     export-web 的輸出（下）
 - `b` 的鍵順序 = 原始 XML 文件順序，第一筆是 task 根（`kind:"task"`，其 `pins` 為介面腳）；巢狀 UserBlock 內的方塊同在此 entry（同 task）。
 - 方塊記錄欄位同前（`ctrl program path name type kind ver opaque desc drg pid device hmi attrs pins line file`），新增可選 `lay`（`BlockLayoutData`，同層的 1-based 繪圖順序，含 UserBlock；缺值省略）。空欄位/空陣列/0 一律省略。
 - 腳位 tuple 第 11 欄 `desc` = 腳位自身的描述（`Pin@Description` 第一行；無則 `null`），例如產生器方塊 `L4TTRP_OVR.IN1` = "Generator LCI Trip"。
+- `conn_kind='A'` 且 `var_full_name` 非空 = **宣告在腳位上的變數**（腳位沒有 `Connection`，但 ToolboxST 把它發佈成全域變數，例如 PID 的 `HpBypToCrhPressCv.CVO`）；索引以「名稱 `Block.Pin` → 宣告位置 → 同位址唯一」三層規則連結。前端把它當作變數腳位（可走線、可標籤、可追蹤），
+  但只在該變數「有人用」時顯示：`vu[full] = [nW, nR, flags]`（全索引中對該變數的輸出腳數、輸入腳數、外部旗標 2=I/O 4=EGD（有其他控制器消費）8=HMI 16=警報），
+  顯示條件 = `nW+nR > 1` 或 `flags≠0` 或 (PID 家族的關鍵腳 PV/SP/CVO/CV/CVI/AUTO/RSP/OUT)；「全腳位」開關可全顯。`vu` 只列 task 內有此類腳位的變數。
 - `vd` = 該 task 所有腳位參照到的變數的描述（第一行；無描述者不列），供圖上標籤與腳位旁顯示說明；變數完整描述仍以訊號卡為準。
 - 單一方塊 = `task` entry 的 `b[key]`；前端 `D.block(key)` 先算 `D.taskKeyOf(key)`（路徑前兩段）再查。加密程式的 task 沒有 entry（前端以 `program/<CTRL>.json` 的 `enc` 解釋）。
 - 尺寸：6,261 個 entry，明文 p50 9 KB、p95 61 KB；兩個 MIS 資料表 task 約 2 MB（前端以規模分級處理）。

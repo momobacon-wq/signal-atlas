@@ -5,7 +5,7 @@ Layout (all JSON compact, UTF-8, no local absolute paths — the exporter aborts
   manifest.json                 build hash, source info, controllers, shard config, encrypted programs, block types
   names/<CTRL>.json             {ctrl, rows:[[name, desc, flags, alias, datatype]]}   (search index, lazy per controller)
   var/<hhh>.json                {v:{full_name: card}}     shard = sha1(full_name)[:3]  (4096 shards)
-  task/<hhh>.json               {t:{tkey:{n, vd:{full_name: desc}, b:{key: block}}}}  tkey = ctrl|Program/Task, shard = sha1(tkey)[:3];
+  task/<hhh>.json               {t:{tkey:{n, vd:{full_name: desc}, vu:{full_name:[nW,nR,flags]}, b:{key: block}}}}  tkey = ctrl|Program/Task;
                                 b in document order, root first; pins tuple = [name, dir, src, conn_kind, connection, var_full, tgt_key, tgt_pin, address, alias, desc]
   program/<CTRL>.json           {ctrl, programs:[{name, lib, file, enc, help, tasks:[{name, type, drg, blocks:[[key,name,type,kind,opaque]]}]}]}
   io/<CTRL>.json                {ctrl, modules:[{name, id, cabinet, red, boards:[{name, hw, pos, points:[[name, dir, conn, tag, addr, type, lo, hi, screws]]}]}]}
@@ -296,9 +296,11 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     task_items = defaultdict(list)     # tkey -> ['"key":{record}', ...] in document order (root first)
     task_n = defaultdict(int)
     task_vars = defaultdict(set)       # tkey -> var ids referenced anywhere in the task
+    task_avars = defaultdict(set)      # tkey -> var ids on declared-at-pin pins (need usage counts)
     has_layout = bool(conn.execute("SELECT 1 FROM pragma_table_info('block') WHERE name='layout'").fetchone())
     pins_by_block = defaultdict(list)
     block_vars = defaultdict(set)      # block_id -> var ids referenced by its pins (for the per-task description map)
+    a_vars_by_block = defaultdict(set)   # block_id -> var ids on declared-at-pin (A + var) pins
     for r in conn.execute("""SELECT block_id,name,direction,dir_source,conn_kind,connection,var_id,tgt_block_id,tgt_pin,address,alias,description
                              FROM pin ORDER BY block_id,id"""):
         tb = blk.get(r[7]) if r[7] else None
@@ -307,8 +309,20 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
                                     (r[11].split("\n")[0].strip() or None) if r[11] else None])
         if r[6] is not None:
             block_vars[r[0]].add(r[6])
+            if (r[4] or "-") == "A":
+                a_vars_by_block[r[0]].add(r[6])
     var_desc = {r[0]: r[1].split("\n")[0].strip() for r in conn.execute(
         "SELECT id, description FROM variable WHERE description IS NOT NULL AND description<>''") if r[1].strip()}
+    # usage counts per variable for the diagram's visibility rule on declared-at-pin (A + var) pins
+    var_nw = {r[0]: r[1] for r in conn.execute("SELECT var_id,count(*) FROM pin WHERE var_id IS NOT NULL AND direction='O' GROUP BY var_id")}
+    var_nr = {r[0]: r[1] for r in conn.execute("SELECT var_id,count(*) FROM pin WHERE var_id IS NOT NULL AND direction<>'O' GROUP BY var_id")}
+    var_ext = defaultdict(int)
+    for r in conn.execute("SELECT DISTINCT var_id FROM io_point WHERE var_id IS NOT NULL"): var_ext[r[0]] |= 2
+    # EGD counts as "used" only when another controller actually consumes it (every HMI-page variable is produced)
+    for r in conn.execute("SELECT DISTINCT producer_var_id FROM egd_consumed WHERE producer_var_id IS NOT NULL"): var_ext[r[0]] |= 4
+    for r in conn.execute("SELECT DISTINCT local_var_id FROM egd_consumed WHERE local_var_id IS NOT NULL"): var_ext[r[0]] |= 4
+    for r in conn.execute("SELECT DISTINCT var_id FROM hmi_point WHERE var_id IS NOT NULL"): var_ext[r[0]] |= 8
+    for r in conn.execute("SELECT id FROM variable WHERE alarm_id IS NOT NULL"): var_ext[r[0]] |= 16
     attrs = defaultdict(dict)
     for r in conn.execute("SELECT block_id,name,value FROM block_attr"):
         attrs[r[0]][r[1]] = r[2]
@@ -330,6 +344,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         task_n[tkey] += 1
         if bid in block_vars:
             task_vars[tkey].update(block_vars[bid])
+        if bid in a_vars_by_block:
+            task_avars[tkey].update(a_vars_by_block[bid])
         if tid is not None:
             task_blocks[tid].append([key, name, btype, kind, opq])
         n_blocks += 1
@@ -337,7 +353,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     sizes = []
     for tkey, items in task_items.items():
         vd = {var_name[v]: var_desc[v] for v in task_vars.get(tkey, ()) if v in var_desc and v in var_name}
-        body = '{"n":%d,"vd":%s,"b":{%s}}' % (task_n[tkey], _dump(vd), ",".join(items))
+        vu = {var_name[v]: [var_nw.get(v, 0), var_nr.get(v, 0), var_ext.get(v, 0)] for v in task_avars.get(tkey, ()) if v in var_name}
+        body = '{"n":%d,"vd":%s,"vu":%s,"b":{%s}}' % (task_n[tkey], _dump(vd), _dump(vu), ",".join(items))
         sizes.append(len(body))
         tshards[_shard(tkey)].append(_dump(tkey) + ":" + body)
     for sh, items in tshards.items():
@@ -346,7 +363,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     if sizes:
         log(f"    {len(sizes)} task entries  p50 {sizes[len(sizes)//2]/1e3:.0f} KB  p95 {sizes[int(len(sizes)*.95)]/1e3:.0f} KB  "
             f"max {sizes[-1]/1e6:.2f} MB  layout column: {has_layout}")
-    del task_items, tshards, pins_by_block, block_vars, task_vars, var_desc
+    del task_items, tshards, pins_by_block, block_vars, task_vars, var_desc, task_avars, a_vars_by_block, var_nw, var_nr, var_ext
     tasks_by_prog = defaultdict(list)
     for r in conn.execute("SELECT id,program_id,name,block_type,logic_drg,is_task,line_no FROM task ORDER BY program_id,id"):
         tasks_by_prog[r[1]].append({"name": r[2], "type": r[3], "drg": r[4], "is_task": r[5], "line": r[6],

@@ -2,18 +2,21 @@
 'use strict';
 (function () {
   const D = window.DC;
-  const CK = { V: '變數', L: '同 task 方塊腳', P: '介面腳（外層巨集）', D: 'device pin', N: '常數 / RUNG', E: '列舉', A: '只有位址', '-': '空' };
+  const CK = { V: '變數', L: '同 task 方塊腳', P: '介面腳（外層巨集）', D: 'device pin', N: '常數 / RUNG', E: '列舉', A: '只有位址', AV: '宣告於腳位', '-': '空' };
+  /** 連線種類文字：A 且有變數 = 宣告於腳位的全域變數（索引已連結） */
+  const ckLabel = (ck, varFull) => (ck === 'A' && varFull ? CK.AV : CK[ck] || '');
 
   function pinRow(p) {
     const [name, dir, src, ck, conn, varFull, tgtKey, tgtPin, addr, alias] = p;
     let connCell;
     if (ck === 'V' && varFull) connCell = D.h('a', { href: D.hrefV(varFull), class: 'lk mono', text: conn || varFull });
     else if (ck === 'L' && tgtKey) connCell = D.h('a', { href: D.hrefBKey(tgtKey), class: 'lk mono', text: conn || tgtKey });
+    else if (varFull) connCell = D.h('a', { href: D.hrefV(varFull), class: 'lk mono', text: conn || varFull, title: ck === 'A' ? '宣告於腳位的變數' : undefined });
     else connCell = D.mono(D.val(conn), ck === 'N' || ck === 'E' ? 'const' : '');
     return D.h('tr', null,
       D.h('td', { class: 'nowrap' }, D.mono(name, 'b')),
       D.h('td', { class: 'nowrap' }, D.dirBadge(dir), ' ', D.srcBadge(src)),
-      D.h('td', { class: 'nowrap' }, D.tag(ck || '-'), ' ', D.h('span', { class: 'muted small', text: CK[ck] || '' })),
+      D.h('td', { class: 'nowrap' }, D.tag(ck || '-'), ' ', D.h('span', { class: 'muted small', text: ckLabel(ck, varFull) })),
       D.h('td', null, connCell),
       D.h('td', null, varFull ? D.h('a', { href: D.hrefV(varFull), class: 'lk mono small', text: varFull }) : '—'),
       D.h('td', null, tgtKey ? D.frag(D.h('a', { href: D.hrefBKey(tgtKey), class: 'lk mono small', text: tgtKey.slice(tgtKey.indexOf('|') + 1) }), tgtPin ? D.mono('.' + tgtPin, 'small') : null) : '—'),

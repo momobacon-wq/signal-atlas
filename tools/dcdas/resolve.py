@@ -16,8 +16,51 @@ def _upd(conn, sql, log, label):
     log(f"  {label:34s} {cur.rowcount:8d}  {time.time()-t0:4.1f}s")
 
 
+def link_declared_pins(conn, ctrl_names, log=print):
+    """Address-only pins (conn_kind 'A', no Connection attr) whose value ToolboxST publishes as a global variable
+    declared AT that pin (GlobalNamePrefix Block/Task/Full). Link pin.var_id so writers/readers/traces/diagrams see it.
+    Rules per controller, first hit wins: (1) variable.name == Block.Pin  (2) variable.decl_connection ==
+    Program.<path dots>.Pin  (3) unique variable at the same address (prefer names not starting with 'DistributedIO.')."""
+    t0 = time.time()
+    tot = {"name": 0, "decl": 0, "addr": 0, "ambiguous": 0}
+    for ctrl in ctrl_names:
+        by_name, by_decl, by_addr = {}, {}, {}
+        for vid, name, decl, addr in conn.execute("SELECT id,name,decl_connection,address FROM variable WHERE ctrl=?", (ctrl,)):
+            by_name[name] = vid
+            if decl:
+                by_decl[decl] = vid
+            if addr:
+                by_addr.setdefault(addr, []).append((vid, name))
+        updates = []
+        for pid, pname, paddr, bname, bpath, prog in conn.execute("""
+                SELECT p.id, p.name, p.address, b.name, b.path, pr.name FROM pin p
+                JOIN block b ON b.id=p.block_id JOIN program pr ON pr.id=b.program_id
+                WHERE b.ctrl=? AND p.conn_kind='A' AND p.var_id IS NULL""", (ctrl,)):
+            vid = by_name.get(f"{bname}.{pname}")
+            how = "name"
+            if vid is None:
+                vid = by_decl.get(f"{bpath.replace('/', '.')}.{pname}") if bpath else None   # path already starts with Program
+                how = "decl"
+            if vid is None and paddr:
+                cands = by_addr.get(paddr, [])
+                if len(cands) > 1:
+                    cands = [c for c in cands if not c[1].startswith("DistributedIO.")] or cands
+                if len(cands) == 1:
+                    vid, how = cands[0][0], "addr"
+                elif len(cands) > 1:
+                    tot["ambiguous"] += 1
+            if vid is not None:
+                updates.append((vid, pid))
+                tot[how] += 1
+        conn.executemany("UPDATE pin SET var_id=? WHERE id=?", updates)
+        conn.commit()
+    log(f"  declared-at-pin links: name={tot['name']} decl={tot['decl']} addr={tot['addr']} ambiguous-skipped={tot['ambiguous']}  {time.time()-t0:.1f}s")
+    return tot
+
+
 def run(conn, root, ctrls, log=print):
     ctrl_names = [c.name for c in ctrls]
+    link_declared_pins(conn, ctrl_names, log)
     inlist = ",".join("'" + n.replace("'", "''") + "'" for n in ctrl_names)
     _upd(conn, f"""UPDATE variable SET producer_var_id=(
             SELECT p.id FROM variable p WHERE p.ctrl=variable.device_name

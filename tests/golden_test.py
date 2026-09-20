@@ -117,6 +117,14 @@ def main():
           any("111604-10-GA-YDY-SNL-001" in (r[0] or "") for r in drgs) or one(conn,
           """SELECT count(*) FROM block b WHERE b.ctrl='WSC1' AND b.logic_drg='111604-10-GA-YDY-SNL-001'""") > 0, str(drgs)[:120])
 
+    # ---- declared-at-pin links (PID CVO etc.)
+    na = one(conn, "SELECT count(*) FROM pin WHERE conn_kind='A' AND var_id IS NOT NULL")
+    check("A-kind pins linked to declared variables >= 160000", (na or 0) >= 160000, str(na))
+    cvo = conn.execute("""SELECT b.path,p.direction,p.conn_kind FROM pin p JOIN block b ON b.id=p.block_id JOIN variable v ON v.id=p.var_id
+                          WHERE v.ctrl='H11' AND v.name='HpBypToCrhPressCv.CVO' AND p.name='CVO'""").fetchall()
+    check("H11 HpBypToCrhPressCv.CVO written by the PID block's CVO pin (O, declared at pin)",
+          len(cvo) == 1 and cvo[0][1] == "O" and cvo[0][2] == "A", str(cvo))
+
     # ---- quality gates
     for c in ("G11", "H11", "WSC1"):
         tot = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.ctrl=? AND p.conn_kind IN ('V','L','P','D')", c)

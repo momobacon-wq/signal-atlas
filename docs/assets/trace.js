@@ -26,7 +26,7 @@
         const wanted = up ? (pdir === 'I' || pdir === 'S') : pdir === 'O';
         if (!wanted) continue;
         const edge = Object.assign({}, edgeBase, { pin: name, pdir, src: p[2] });
-        if (ck === 'V' && varFull) {
+        if ((ck === 'V' || ck === 'A') && varFull) { // V，或宣告於腳位的 A（有 varFull）
           if (varFull === edgeBase.from) continue; // 本身
           out.push({ kind: 'var', full: varFull, edge, children: [] });
         } else if (ck === 'L' && tgtKey) {

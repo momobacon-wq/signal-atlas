@@ -54,7 +54,8 @@ def _pin_ref(p):
     return {"ref": f"{p['ctrl']}/{p['path']}.{p['pin']}", "block_type": p["block_type"],
             "dir": _ds(p["direction"], p["dir_source"]), "at": _fl(p["file_path"], p["line_no"]),
             "block_id": p["block_id"], "pin_id": p["id"], "kind": p["kind"], "opaque": p["is_opaque"],
-            "note": "(variable declared at this pin)" if p.get("decl") else (f"(via interface pin {p['via']})" if p.get("via") else "")}
+            "note": "(variable declared at this pin)" if (p.get("decl") or (p["conn_kind"] == "A" and p["var_id"] is not None))
+                    else (f"(via interface pin {p['via']})" if p.get("via") else "")}
 
 
 def _pins_of_var(conn, var_id, directions=None):
@@ -1096,17 +1097,19 @@ def where(conn, key):
 def lint(conn, limit=40):
     limit = int(limit or 40)
     multi = []
+    # a task/userblock interface pin declared as the variable + the inner block writing it is ONE signal path,
+    # so only count ordinary-block writers (or interface writers when there is no block writer)
     for vid, full, n, nb in conn.execute("""SELECT v.id, v.full_name, count(*) AS n, sum(b.kind='block') AS nb
                                             FROM pin p JOIN variable v ON v.id=p.var_id JOIN block b ON b.id=p.block_id
-                                            WHERE p.direction='O' GROUP BY v.id HAVING n>1
+                                            WHERE p.direction='O' GROUP BY v.id HAVING (nb>1 OR (nb=0 AND n>1))
                                             ORDER BY nb DESC, n DESC, v.full_name LIMIT ?""", (limit,)):
         ws = _pins_of_var(conn, vid, ("O",))
         multi.append({"full_name": full, "n_writers": n, "n_block_writers": nb, "n_interface_writers": n - nb,
                       "writers": [f"{p['ctrl']}/{p['path']}.{p['pin']} [{p['block_type'] or p['kind']}] {_ds(p['direction'], p['dir_source'])} "
                                   f"{_fl(p['file_path'], p['line_no'])}" for p in ws[:3]],
                       "writers_more": max(0, len(ws) - 3)})
-    n_multi = conn.execute("""SELECT count(*) FROM (SELECT var_id FROM pin WHERE direction='O' AND var_id IS NOT NULL
-                              GROUP BY var_id HAVING count(*)>1)""").fetchone()[0]
+    n_multi = conn.execute("""SELECT count(*) FROM (SELECT p.var_id, count(*) AS n, sum(b.kind='block') AS nb FROM pin p JOIN block b ON b.id=p.block_id
+                              WHERE p.direction='O' AND p.var_id IS NOT NULL GROUP BY p.var_id HAVING (nb>1 OR (nb=0 AND n>1)))""").fetchone()[0]
     # logic writer AND field input on the same variable
     wio = _rows(conn, """SELECT v.full_name, i.ctrl, i.name AS point, i.device_tag,
                                 (SELECT count(*) FROM pin p WHERE p.var_id=v.id AND p.direction='O') AS n_writers
@@ -1168,3 +1171,33 @@ def coverage(conn, limit=40):
     return {"kind": "coverage", "controllers": ctrls, "top_unknown": top, "by_source": src, "by_direction": dirs,
             "programs": enc, "unresolved": unres,
             "manual": {"pin_dir_table_rows": manual, "block_types_in_use": types_total, "block_types_in_manual": types_manual}}
+
+
+# -------------------------------------------------------------------------------------------------- audit-type
+def audit_type(conn, block_type, ctrl=None, limit=200):
+    """Per-pin audit of one block type: direction/source/conn_kind distribution, declared-at-pin linking, usage."""
+    where = "b.block_type=?" + (" AND b.ctrl=?" if ctrl else "")
+    args = [block_type] + ([ctrl] if ctrl else [])
+    n_blocks = conn.execute(f"SELECT count(*) FROM block b WHERE {where}", args).fetchone()[0]
+    pins = []
+    for r in conn.execute(f"""
+        SELECT p.name, count(*) AS n,
+               sum(p.direction='I') AS n_i, sum(p.direction='O') AS n_o, sum(p.direction='S') AS n_s, sum(p.direction='?') AS n_q,
+               group_concat(DISTINCT p.dir_source) AS srcs,
+               sum(p.conn_kind='V') AS ck_v, sum(p.conn_kind='L') AS ck_l, sum(p.conn_kind='P') AS ck_p,
+               sum(p.conn_kind IN ('N','E')) AS ck_c, sum(p.conn_kind='A') AS ck_a, sum(p.conn_kind='-') AS ck_none,
+               sum(p.var_id IS NOT NULL) AS linked,
+               sum(p.conn_kind='A' AND p.var_id IS NOT NULL) AS a_linked,
+               sum(p.var_id IS NOT NULL AND EXISTS(SELECT 1 FROM pin q WHERE q.var_id=p.var_id AND q.id<>p.id)) AS used_by_other_pin,
+               sum(p.var_id IS NOT NULL AND (EXISTS(SELECT 1 FROM egd_produced e WHERE e.var_id=p.var_id)
+                                            OR EXISTS(SELECT 1 FROM hmi_point h WHERE h.var_id=p.var_id)
+                                            OR EXISTS(SELECT 1 FROM io_point i WHERE i.var_id=p.var_id))) AS egd_hmi_io
+        FROM pin p JOIN block b ON b.id=p.block_id WHERE {where} GROUP BY p.name ORDER BY n DESC, p.name""", args):
+        pins.append({"pin": r[0], "n": r[1], "I": r[2], "O": r[3], "S": r[4], "unknown": r[5], "sources": r[6] or "",
+                     "V": r[7], "L": r[8], "P": r[9], "const": r[10], "A": r[11], "none": r[12],
+                     "linked": r[13], "a_linked": r[14], "used_by_other_pin": r[15], "egd_hmi_io": r[16]})
+    manual = {r[0]: r[1] for r in conn.execute("SELECT pin_name, direction FROM pin_dir_table WHERE block_type=?", (block_type,))}
+    unknown = [p for p in pins if p["unknown"] and p["unknown"] == p["n"]]
+    return {"kind": "audit", "block_type": block_type, "ctrl": ctrl, "n_blocks": n_blocks, "n_pin_names": len(pins),
+            "pins": pins[:limit], "pins_more": max(0, len(pins) - limit), "manual_pins": len(manual),
+            "unknown_pin_names": [p["pin"] for p in unknown], "n_unknown_pin_names": len(unknown)}

@@ -93,7 +93,7 @@
   }
 
   /* ------------------------------------------------------------------ BFS（鏡射 trace.js） */
-  /** 方塊的另一側腳位：up 取 I/S 腳（左側）、down 取 O 腳（右側）；V → 變數節點＋邊；L → 同 task 鏈；P/N/E 行內；A/D 忽略。新觸及的變數節點推入 out */
+  /** 方塊的另一側腳位：up 取 I/S 腳（左側）、down 取 O 腳（右側）；V（含宣告於腳位的 A+varFull）→ 變數節點＋邊；L → 同 task 鏈；P/N/E 行內；無變數的 A／D 忽略。新觸及的變數節點推入 out */
   async function pinsOf(S, bn, blk, dir, chain, out) {
     const up = dir === 'up';
     const done = bn.id + '|' + dir;
@@ -104,7 +104,7 @@
       const [name, pdir, , ck, conn, varFull, tgtKey, tgtPin] = t;
       const wanted = up ? (pdir === 'I' || pdir === 'S') : pdir === 'O';
       if (!wanted) continue;
-      if (ck === 'V' && varFull) {
+      if ((ck === 'V' || ck === 'A') && varFull) {
         const vn = varNode(S, varFull, dir);
         if (!vn) continue; // 上限
         const port = blockPort(S, bn, name, up ? 'L' : 'R', t);
@@ -127,7 +127,7 @@
       } else if (ck === 'N' || ck === 'E') {
         blockPort(S, bn, name, up ? 'L' : 'R', t).inline = stripK(conn);
       }
-      // A/D：只有位址／device 的腳不畫（同 trace.js）
+      // 無變數的 A／D：只有位址／device 的腳不畫（同 trace.js）
     }
     return out;
   }

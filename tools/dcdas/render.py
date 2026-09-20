@@ -398,10 +398,20 @@ def _coverage(o, r):
     o.rows(r["top_unknown"], lambda t: f"{t['block_type']:<28s} {t['pin_name']:<36s} {t['n']:>6d}")
 
 
+def _audit(o, r):
+    o.line(f"AUDIT {r['block_type']}" + (f"  ctrl={r['ctrl']}" if r["ctrl"] else "") + f"  blocks {r['n_blocks']}  pin names {r['n_pin_names']}  manual-table pins {r['manual_pins']}")
+    o.line(f"  unknown-direction pin names: {r['n_unknown_pin_names']}" + (": " + " ".join(r["unknown_pin_names"][:40]) + (" ..." if r["n_unknown_pin_names"] > 40 else "") if r["unknown_pin_names"] else ""))
+    o.line("  pin                       n     I     O     S     ?  src      V     L     P  const     A  none  linked A-link other egd/hmi/io")
+    for p in r["pins"]:
+        o.line(f"  {p['pin'][:24]:24s} {p['n']:5d} {p['I']:5d} {p['O']:5d} {p['S']:5d} {p['unknown']:5d}  {p['sources']:6s} {p['V']:5d} {p['L']:5d} {p['P']:5d} {p['const']:6d} {p['A']:5d} {p['none']:5d}  {p['linked']:6d} {p['a_linked']:6d} {p['used_by_other_pin']:5d} {p['egd_hmi_io']:10d}")
+    if r["pins_more"]:
+        o.line(f"  ... +{r['pins_more']} more pin names")
+
+
 _DISPATCH = {
     "show": _show, "trace": _trace, "block": _block, "task": _task, "find": _find, "io": _io,
     "egd_ctrl": _egd_ctrl, "egd_var": _egd_var, "screen": _screen, "screen_var": _screen_var, "alarm": _alarm,
-    "where": _where, "lint": _lint, "coverage": _coverage, "ambiguous": _ambiguous, "notfound": _notfound,
+    "where": _where, "lint": _lint, "coverage": _coverage, "ambiguous": _ambiguous, "notfound": _notfound, "audit": _audit,
 }
 
 

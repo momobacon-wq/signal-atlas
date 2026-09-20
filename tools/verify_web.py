@@ -254,6 +254,20 @@ def main(docs):
             """SELECT DISTINCT v.full_name, v.description FROM pin p JOIN block b ON b.id=p.block_id JOIN variable v ON v.id=p.var_id
                WHERE b.task_id=? AND v.description IS NOT NULL AND v.description<>''""", (tid,)) if r[1].strip()}
         got_vd = ent.get("vd", {})
+        vu_bad = 0
+        for full, (nw, nr, fl) in list(ent.get("vu", {}).items())[:10]:
+            v = conn.execute("SELECT id FROM variable WHERE full_name=?", (full,)).fetchone()
+            if not v:
+                vu_bad += 1
+                continue
+            w_ = conn.execute("SELECT count(*) FROM pin WHERE var_id=? AND direction='O'", (v[0],)).fetchone()[0]
+            r_ = conn.execute("SELECT count(*) FROM pin WHERE var_id=? AND direction<>'O'", (v[0],)).fetchone()[0]
+            if (w_, r_) != (nw, nr):
+                vu_bad += 1
+        if vu_bad:
+            tbad += 1
+            if tbad <= 5:
+                err(f"task {tkey}: {vu_bad} vu entries disagree with DB")
         if bad_len or got_vd != want_vd:
             tbad += 1
             if tbad <= 5:

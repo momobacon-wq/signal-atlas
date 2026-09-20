@@ -2,6 +2,7 @@
  * 由 task/<hhh>.json 的整份 task 記錄建圖（buildGraph，規則見 plan §二），交給 D.dg（diagram.js）排版／渲染／互動。
  * 說明：腳位 tuple 第 11 欄 → port.desc；entry.vd[varFull] → port.varDesc / tag.desc / graph.varDesc（舊資料 10 欄／無 vd → 無描述）。
  * 宣告於腳位（ck 'A' 且有 varFull）：走線／標籤規則同 V；可見性依 entry.vu[varFull]=[nW,nR,flags]（除自己外還有人接、或 I/O／EGD／HMI／警報）或 PID 家族關鍵腳；?pins=1 全顯。
+ * 回推腳（tuple 第 12 欄 org：'d' 由宣告變數、'l' 由 L: 連線；只在 opaque 方塊上）：'d' 的可見性同宣告於腳位（另加「同 scope 有夥伴」）；'l' 只在被同 scope 的 L 腳指到時畫；腳位名後加「推」徽章。
  * 規模分級：≤300 方塊全畫；301–1000 依連通群組分頁；>1000 拒絕並提供篩選／型別 chips／分頁。 */
 'use strict';
 (function () {
@@ -33,9 +34,13 @@
     for (const k in b) if (k.startsWith(prefix) && k.indexOf('/', prefix.length) < 0) members.push([k, b[k], idx++]);
     const memberSet = new Set(members.map((m) => m[0]));
     const nodes = new Map(), edges = [], tags = [], warn = [];
-    const meta = { title: rootKey.slice(rootKey.indexOf('|') + 1), warn, nComment: 0, nHiddenComment: 0, nHiddenPins: 0, nDeclared: 0 };
+    const meta = { title: rootKey.slice(rootKey.indexOf('|') + 1), warn, nComment: 0, nHiddenComment: 0, nHiddenPins: 0, nDeclared: 0, nRecovered: 0 };
     // 宣告於腳位的變數腳可見性：有人接（nW+nR>1）／有 I/O、EGD、HMI、警報旗標／PID 家族關鍵腳
     const declaredShown = (rec, pin, varFull) => { const u = vu[varFull]; return !!(u && (u[0] + u[1] > 1 || u[2] !== 0)) || (String(rec.type || '').startsWith('PID') && PID_PINS.has(pin)); };
+    // 同 scope 內同一變數接在別的方塊上（回推腳的可見性：同 task 有寫入者／讀取者才畫，免得不透明巨集一次冒出上百支腳）
+    const scopeVar = new Map(); // varFull → Set(blockKey)
+    for (const [k, rec] of members) for (const p of rec.pins || []) if (p[5] && (p[3] === 'V' || p[3] === 'A')) { if (!scopeVar.has(p[5])) scopeVar.set(p[5], new Set()); scopeVar.get(p[5]).add(k); }
+    const partnered = (k, varFull) => { const s = scopeVar.get(varFull); return !!s && (s.size > 1 || !s.has(k)); };
     // 被同 scope 的 L 腳指到的目標腳（即使只有位址也要畫出來）
     const needed = new Map();
     for (const [, rec] of members) for (const p of rec.pins || []) if (p[3] === 'L' && p[6] && memberSet.has(p[6]) && p[7]) { if (!needed.has(p[6])) needed.set(p[6], new Set()); needed.get(p[6]).add(p[7]); }
@@ -52,15 +57,18 @@
         nodes.set(k, node); comments.push(node);
         continue;
       }
-      const node = { id: k, kind: rec.kind === 'userblock' ? 'ub' : 'block', key: k, name, type: rec.type || (rec.kind === 'userblock' ? 'UserBlock' : ''), desc: rec.desc || '', attrs: rec.attrs, pins: rec.pins || [], ord, left: [], right: [], body: [], opaque: !!rec.opaque, cls: rec.opaque ? 'opaque' : '', kindLabel: rec.kind };
+      const node = { id: k, kind: rec.kind === 'userblock' ? 'ub' : 'block', key: k, name, type: rec.type || (rec.kind === 'userblock' ? 'UserBlock' : ''), desc: rec.desc || '', attrs: rec.attrs, pins: rec.pins || [], ord, left: [], right: [], body: [], opaque: !!rec.opaque, rc: rec.rc || null, cls: rec.opaque ? 'opaque' : '', kindLabel: rec.kind };
       const need = needed.get(k);
       for (const p of rec.pins || []) {
         const [pin, dir, src, ck, conn, varFull, tgtKey, tgtPin] = p;
-        const declared = ck === 'A' && !!varFull;
-        const shown = ck === 'V' || ck === 'L' || ck === 'P' || ck === 'N' || ck === 'E' || q.pins || (need && need.has(pin)) || (declared && declaredShown(rec, pin, varFull));
+        const org = D.orgOf(p); // 回推腳（只在不透明方塊上）：'d' 宣告變數／'l' 連線；明文 null
+        // 宣告於腳位（A+var）與回推的變數腳（org 'd'，V 或 A）同一套可見性：有人接／旗標／PID 關鍵腳／同 scope 有夥伴／?pins=1；
+        // 回推的 'l' 腳（ck '-'）只在同 scope 有 L 腳指到它時才畫（need）
+        const declared = !!varFull && (ck === 'A' || (org && ck === 'V'));
+        const shown = !!q.pins || !!(need && need.has(pin)) || (!org && (ck === 'V' || ck === 'L' || ck === 'P' || ck === 'N' || ck === 'E')) || (declared && (declaredShown(rec, pin, varFull) || partnered(k, varFull)));
         if (!shown) { meta.nHiddenPins++; continue; }
-        if (declared) meta.nDeclared++;
-        const port = { id: k + '#' + pin, pin, dir: dir || '?', src, ck, conn, varFull: varFull || null, tgtKey, tgtPin, inline: null,
+        if (org) meta.nRecovered++; else if (declared) meta.nDeclared++;
+        const port = { id: k + '#' + pin, pin, dir: dir || '?', src, ck, conn, varFull: varFull || null, tgtKey, tgtPin, inline: null, org,
           desc: (p.length > 10 && p[10]) || null, varDesc: (varFull && vd[varFull]) || null, mirror: (mm && mm.get(k + '#' + pin)) || null };
         if (ck === 'N' || ck === 'E') {
           const txt = stripK(conn);
@@ -96,7 +104,7 @@
         if (tk && tk === rootKey && tp) { ifaceTag(n, port, tp); continue; }
         if (tk && memberSet.has(tk)) {
           let other = portOf(tk, tp);
-          if (!other && tp) { // 目標記錄沒列這支腳（不透明 userblock 無 pins）→ 依持有者方向補一支
+          if (!other && tp) { // 目標記錄沒列這支腳（不透明方塊既無明文也無回推腳）→ 依持有者方向補一支；有回推 'l' 腳時 portOf 已命中，不再補
             const tn = nodes.get(tk);
             other = { id: tk + '#' + tp, pin: tp, dir: port.dir === 'O' ? 'I' : 'O', src: '-', ck: '-', conn: null, varFull: null, inline: null, synth: true };
             (other.dir === 'O' ? tn.right : tn.left).push(other);
@@ -376,6 +384,7 @@
     const nEdges = graph.edges.filter((e) => e.kind !== 'sticky').length;
     const st = ['抓取 ' + (D.fetchCount - f0) + ' 個分片', '方塊 ' + D.int(nBlocks(graph)) + (full.meta.nHiddenComment ? '（隱藏 ' + full.meta.nHiddenComment + ' 個註解）' : ''), '連線 ' + nEdges, '標籤 ' + graph.tags.length, '群組 ' + tm.comps, '排版 ' + Math.round(tm.layout) + ' ms'];
     if (full.meta.nDeclared) st.push('宣告於腳位 ' + full.meta.nDeclared);
+    if (full.meta.nRecovered) st.push('回推腳位 ' + full.meta.nRecovered);
     if (nMirror) st.push('發佈為 ' + nMirror);
     if (full.meta.filter) st.push('篩選「' + full.meta.filter + '」' + full.meta.nMatched + ' 個');
     if (full.meta.warn.length) st.push('警告 ' + full.meta.warn.length);

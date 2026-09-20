@@ -12,7 +12,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 
 
 def local_dir() -> Path:
@@ -91,10 +91,12 @@ CREATE TABLE IF NOT EXISTS block_attr(block_id INTEGER, name TEXT, value TEXT, P
 
 CREATE TABLE IF NOT EXISTS pin(
   id INTEGER PRIMARY KEY, block_id INTEGER NOT NULL, name TEXT NOT NULL,
-  direction TEXT CHECK(direction IN ('I','O','S','?')), dir_source TEXT CHECK(dir_source IN ('U','T','C','L','H','-')),
+  direction TEXT CHECK(direction IN ('I','O','S','?')), dir_source TEXT CHECK(dir_source IN ('U','T','C','L','H','R','-')),
   conn_kind TEXT CHECK(conn_kind IN ('V','L','P','D','N','E','A','-')), connection TEXT,
   var_id INTEGER, tgt_block_id INTEGER, tgt_pin TEXT, address TEXT, value TEXT, alias TEXT,
-  alias_override INTEGER, usage_declared TEXT, description TEXT, line_no INTEGER, UNIQUE(block_id, name));
+  alias_override INTEGER, usage_declared TEXT, description TEXT, line_no INTEGER,
+  origin TEXT CHECK(origin IN ('decl','link')), UNIQUE(block_id, name));
+CREATE INDEX IF NOT EXISTS ix_pin_origin ON pin(origin);
 CREATE INDEX IF NOT EXISTS ix_pin_var ON pin(var_id, direction);
 CREATE INDEX IF NOT EXISTS ix_pin_block ON pin(block_id);
 CREATE INDEX IF NOT EXISTS ix_pin_tgt ON pin(tgt_block_id, tgt_pin);

@@ -37,16 +37,19 @@
     ? D.h('div', { class: 'mirror' }, mirrors.map((m, i) => D.frag(i ? D.h('br') : null, D.h('a', { href: D.hrefV(m), class: 'lk mono small', text: m, title: '此腳位的值發佈為變數 ' + m }))))
     : '—');
 
+  /** 腳位列（方塊頁／側欄共用）：第 12 欄 org（回推腳，只在不透明方塊上）→「腳位來源」欄：明文／宣告（推）／連線（推） */
   function pinRow(p, mirrors) {
     const [name, dir, src, ck, conn, varFull, tgtKey, tgtPin, addr, alias] = p;
+    const org = D.orgOf(p);
     let connCell;
     if (ck === 'V' && varFull) connCell = D.h('a', { href: D.hrefV(varFull), class: 'lk mono', text: conn || varFull });
     else if (ck === 'L' && tgtKey) connCell = D.h('a', { href: D.hrefBKey(tgtKey), class: 'lk mono', text: conn || tgtKey });
-    else if (varFull) connCell = D.h('a', { href: D.hrefV(varFull), class: 'lk mono', text: conn || varFull, title: ck === 'A' ? '宣告於腳位的變數' : undefined });
+    else if (varFull) connCell = D.h('a', { href: D.hrefV(varFull), class: 'lk mono', text: conn || varFull, title: ck === 'A' ? (org ? '由宣告變數回推的腳位' : '宣告於腳位的變數') : undefined });
     else connCell = D.mono(D.val(conn), ck === 'N' || ck === 'E' ? 'const' : '');
     return D.h('tr', null,
       D.h('td', { class: 'nowrap' }, D.mono(name, 'b')),
       D.h('td', { class: 'nowrap' }, D.dirBadge(dir), ' ', D.srcBadge(src)),
+      D.h('td', { class: 'nowrap' }, org ? D.frag(D.orgBadge(org), ' ', D.h('span', { class: 'small', text: D.orgLabel(org) })) : D.h('span', { class: 'muted small', text: '明文' })),
       D.h('td', { class: 'nowrap' }, D.tag(ck || '-'), ' ', D.h('span', { class: 'muted small', text: ckLabel(ck, varFull) })),
       D.h('td', null, connCell),
       D.h('td', null, varFull ? D.h('a', { href: D.hrefV(varFull), class: 'lk mono small', text: varFull }) : '—'),
@@ -57,7 +60,7 @@
   }
 
   D.pinRow = pinRow; // 邏輯圖側欄（diagram.js）重用；第二參數 = 該腳位的鏡像變數名陣列（選用）
-  D.PIN_HEADS = ['腳位', '方向 / 來源', '連線種類', '連線', '變數', '目標方塊', '位址', '別名', '發佈為'];
+  D.PIN_HEADS = ['腳位', '方向 / 來源', '腳位來源', '連線種類', '連線', '變數', '目標方塊', '位址', '別名', '發佈為'];
 
   /** 程式樹中的 Task/UserBlock 節點（block_path 第二段）；供 task 頁列方塊、一般方塊頁補邏輯圖號 */
   async function taskEntry(ctrl, program, taskName) {
@@ -96,6 +99,7 @@
       D.h('div', { class: 'ph-kicker' }, D.link('#/', '搜尋'), ' › ', D.mono(ctrl), ' › 方塊'),
       D.h('h1', { class: 'ph-title mono' }, b.name || segs[segs.length - 1], ' ', b.type ? D.tag(b.type, 'lg') : null, ' ', D.tag(b.kind === 'task' ? 'Task' : (b.kind || 'block')), b.opaque ? D.frag(' ', D.tag('不透明 opaque', 'warn')) : null),
       crumb,
+      b.opaque ? D.opaqueLine(b, 'ph-sub') : null, // 鎖頭 + 介面回推 N 腳／目錄介面 N 腳／介面加密
       b.desc ? D.h('p', { class: 'ph-sub', text: b.desc }) : null,
       D.h('div', { class: 'ph-actions' },
         parent && segs.length > 2 ? D.link(D.hrefB(ctrl, parent), '上一層', 'btn') : null,
@@ -117,12 +121,20 @@
     const tEntry = await D.task(D.taskKeyOf(key), signal).catch(() => null);
     const mm = D.mirrorMap(tEntry, ctrl);
     const nMirror = mm ? pins.filter((p) => mm.has(key + '#' + p[0])).length : 0;
+    const nOrg = pins.filter((p) => D.orgOf(p)).length;
+    // 不透明方塊：有回推腳 → 表加「腳位來源」；無腳位但程式庫有目錄 → 目錄表（只有名稱與方向）；都沒有 → 介面加密
+    const oi = b.opaque ? D.opaqueInfo(b) : null;
+    let pinsBody;
+    if (pins.length) pinsBody = D.frag(
+      nOrg ? D.h('p', { class: 'muted small', text: '「腳位來源」= 明文（組態檔內列出）／宣告（由宣告在該腳位的變數回推）／連線（由同層方塊的 L: 連線回推）；回推腳共 ' + nOrg + ' 腳，方向由證據推斷、可能不完整。' }) : null,
+      nMirror ? D.h('p', { class: 'muted small', text: '「發佈為」= 該腳位的值被組態工具發佈成的全域變數（腳位值鏡像）；共 ' + nMirror + ' 腳。' }) : null,
+      D.table(D.PIN_HEADS, pins.map((p) => pinRow(p, mm ? mm.get(key + '#' + p[0]) : null)), 'pins'));
+    else if (oi && oi.kind === 'cat') pinsBody = D.catalogueTable(oi.cat);
+    else pinsBody = D.empty(b.opaque ? '介面加密，無可見腳位' : '沒有腳位');
     const secs = [
       D.section('基本資料', meta),
       D.section('屬性（attrs）', attrs.length ? D.h('table', { class: 'kv' }, D.h('tbody', null, attrs.map(([k, v]) => D.kv(k, D.mono(v == null ? '—' : String(v)))))) : D.empty('無屬性'), { count: attrs.length, open: attrs.length > 0 }),
-      D.section('腳位（pins）', pins.length ? D.frag(
-        nMirror ? D.h('p', { class: 'muted small', text: '「發佈為」= 該腳位的值被組態工具發佈成的全域變數（腳位值鏡像）；共 ' + nMirror + ' 腳。' }) : null,
-        D.table(D.PIN_HEADS, pins.map((p) => pinRow(p, mm ? mm.get(key + '#' + p[0]) : null)), 'pins')) : D.empty('沒有腳位'), { count: pins.length }),
+      D.section('腳位（pins）', pinsBody, { count: pins.length || (oi && oi.kind === 'cat' ? oi.n : 0), note: oi && oi.kind === 'cat' && !pins.length ? '程式庫目錄' : null }),
     ];
     if (isTask && entry) {
       const rows = (entry.task.blocks || []).filter((r) => r[3] !== 'task' && r[0] !== key)

@@ -94,6 +94,115 @@ def build_pin_mirror(conn, ctrl_names, log=print):
     return tot
 
 
+def _inlist(names):
+    return ",".join("'" + n.replace("'", "''") + "'" for n in names)
+
+
+def purge_recovered(conn, ctrl_names, log=print):
+    """Drop pins recovered by recover_opaque_pins for these controllers (post-only rebuilds would otherwise keep stale
+    rows and feed them into link_declared_pins / build_pin_mirror / direction)."""
+    cur = conn.execute(f"DELETE FROM pin WHERE origin IS NOT NULL AND block_id IN (SELECT id FROM block WHERE ctrl IN ({_inlist(ctrl_names)}))")
+    conn.execute(f"DELETE FROM pin_mirror WHERE pin_id NOT IN (SELECT id FROM pin)")
+    conn.commit()
+    if cur.rowcount:
+        log(f"  purged recovered pins: {cur.rowcount}")
+
+
+def recover_opaque_pins(conn, ctrl_names, log=print):
+    """Opaque macros (UserBlock whose whole body, interface pins included, is encrypted) have no pin rows. Recover the
+    visible part of their interface from two kinds of evidence and mark the rows with pin.origin:
+      'decl'  a variable declared AT the block ('Program.Task….Block.PIN'): one pin per variable. Direction from evidence:
+              control constant -> I ('A', var=itself); address shared with an OUTPUT pin of this controller -> I ('V',
+              var=itself; that pin already writes it); address shared with another variable -> I ('V', var=that source,
+              and the declared variable becomes a pin_mirror of this pin); otherwise 'A' var=itself with O only when the
+              variable has readers/alarm/HMI/IO-output AND no other writer/field input/EGD source, else '?'.
+      'link'  a sibling pin wired 'L:Block.PIN' to the block: direction opposite to the referrer ('-', no variable).
+    Runs AFTER direction.run (needs the XML pins' directions) and BEFORE refresh_mirror_kinds. Directions carry
+    dir_source 'R' (recovered) for 'decl' rows and 'L' for 'link' rows. The list is only as complete as the evidence."""
+    t0 = time.time()
+    tot = {"decl": 0, "link": 0, "blocks": 0, "conflict": 0, "I": 0, "O": 0, "?": 0, "mirror": 0}
+    n_opaque = conn.execute("SELECT count(*) FROM block WHERE is_opaque=1").fetchone()[0]
+    next_id = (conn.execute("SELECT coalesce(max(id),0) FROM pin").fetchone()[0] or 0) + 1
+    for ctrl in ctrl_names:
+        opaque = {}
+        for bid, path, line_no in conn.execute("SELECT id, path, line_no FROM block WHERE ctrl=? AND is_opaque=1", (ctrl,)):
+            opaque[path.replace("/", ".")] = (bid, line_no)
+        if not opaque:
+            continue
+        opaque_ids = {v[0] for v in opaque.values()}
+        # --- evidence indexes for this controller
+        o_pin_addr = {r[0] for r in conn.execute("""SELECT p.address FROM pin p JOIN block b ON b.id=p.block_id
+                                                     WHERE b.ctrl=? AND p.direction='O' AND p.address IS NOT NULL AND p.address<>''""", (ctrl,))}
+        var_writer = {r[0] for r in conn.execute("SELECT DISTINCT p.var_id FROM pin p JOIN block b ON b.id=p.block_id WHERE b.ctrl=? AND p.direction='O' AND p.var_id IS NOT NULL", (ctrl,))}
+        var_reader = {r[0] for r in conn.execute("SELECT DISTINCT p.var_id FROM pin p JOIN block b ON b.id=p.block_id WHERE b.ctrl=? AND p.direction<>'O' AND p.var_id IS NOT NULL", (ctrl,))}
+        io_in = {r[0] for r in conn.execute("SELECT DISTINCT var_id FROM io_point WHERE ctrl=? AND direction='I' AND var_id IS NOT NULL", (ctrl,))}
+        io_out = {r[0] for r in conn.execute("SELECT DISTINCT var_id FROM io_point WHERE ctrl=? AND direction='O' AND var_id IS NOT NULL", (ctrl,))}
+        egd_cons = {r[0] for r in conn.execute("SELECT DISTINCT local_var_id FROM egd_consumed WHERE consumer_ctrl=? AND local_var_id IS NOT NULL", (ctrl,))}
+        hmi = {r[0] for r in conn.execute("SELECT DISTINCT h.var_id FROM hmi_point h JOIN variable v ON v.id=h.var_id WHERE v.ctrl=? AND h.var_id IS NOT NULL", (ctrl,))}
+        by_addr = {}
+        for vid, name, addr in conn.execute("SELECT id, name, address FROM variable WHERE ctrl=? AND address IS NOT NULL AND address<>''", (ctrl,)):
+            by_addr.setdefault(addr, []).append((vid, name))
+        lrefs = {}   # (bid, pin) -> set of referrer directions
+        for tb, tp, d in conn.execute("""SELECT p.tgt_block_id, p.tgt_pin, p.direction FROM pin p
+                                          WHERE p.tgt_block_id IN (SELECT id FROM block WHERE ctrl=? AND is_opaque=1) AND p.tgt_pin IS NOT NULL""", (ctrl,)):
+            lrefs.setdefault((tb, tp), set()).add(d or "?")
+        # --- decl rows
+        rows = {}     # (bid, pname) -> dict
+        mirrors = []  # (decl var id, (bid, pname))
+        for vid, name, decl, addr, cc, desc, alarm_id in conn.execute(
+                "SELECT id, name, decl_connection, address, control_constant, description, alarm_id FROM variable WHERE ctrl=? AND decl_connection IS NOT NULL AND decl_connection<>''", (ctrl,)):
+            key, _, pname = decl.rpartition(".")
+            if key not in opaque or not pname:
+                continue
+            bid, line_no = opaque[key]
+            row = {"bid": bid, "name": pname, "addr": addr, "desc": desc, "line": line_no, "origin": "decl", "src": "R", "ck": "A", "var": vid, "mirror": None}
+            others = [c for c in by_addr.get(addr, []) if c[0] != vid] if addr else []
+            if cc:
+                row["dir"] = "I"
+            elif addr and addr in o_pin_addr:
+                row["dir"], row["ck"] = "I", "V"
+            elif others:
+                pref = [c for c in others if c[0] in var_writer or c[0] in io_in] or [c for c in others if not c[1].startswith("DistributedIO.")] or others
+                row["dir"], row["ck"], row["var"], row["mirror"] = "I", "V", pref[0][0], vid
+            else:
+                out_ev = vid in var_reader or alarm_id is not None or vid in hmi or vid in io_out
+                clean = vid not in var_writer and vid not in io_in and vid not in egd_cons
+                row["dir"] = "O" if (out_ev and clean) else "?"
+            if row["dir"] == "I" and "I" in lrefs.get((bid, pname), ()):   # declared as input but a sibling reads it as an output
+                row.update(dir="?", ck="A", var=vid, mirror=None)
+                tot["conflict"] += 1
+            rows[(bid, pname)] = row
+            tot["decl"] += 1
+        # --- link rows
+        for (bid, tp), dirs in lrefs.items():
+            if (bid, tp) in rows:
+                continue
+            d = "O" if dirs <= {"I", "?"} and "I" in dirs else ("I" if dirs <= {"O", "?"} and "O" in dirs else "?")
+            line_no = conn.execute("SELECT line_no FROM block WHERE id=?", (bid,)).fetchone()[0]
+            rows[(bid, tp)] = {"bid": bid, "name": tp, "addr": None, "desc": None, "line": line_no, "origin": "link", "src": "L", "ck": "-", "var": None, "mirror": None, "dir": d}
+            tot["link"] += 1
+        if not rows:
+            continue
+        order = {"I": 0, "O": 1, "S": 2, "?": 3}
+        ins, mir = [], []
+        for key in sorted(rows, key=lambda k: (k[0], order.get(rows[k]["dir"], 9), k[1])):
+            r = rows[key]
+            ins.append((next_id, r["bid"], r["name"], r["dir"], r["src"], r["ck"], r["var"], r["addr"], r["desc"], r["line"], r["origin"]))
+            if r["mirror"] is not None:
+                mir.append((r["mirror"], next_id, "I"))
+            tot[r["dir"]] = tot.get(r["dir"], 0) + 1
+            next_id += 1
+        conn.executemany("""INSERT OR IGNORE INTO pin(id, block_id, name, direction, dir_source, conn_kind, var_id, address, description, line_no, origin)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?)""", ins)
+        conn.executemany("INSERT OR REPLACE INTO pin_mirror(var_id, pin_id, kind) VALUES(?,?,?)", mir)
+        conn.commit()
+        tot["blocks"] += len({k[0] for k in rows})
+        tot["mirror"] += len(mir)
+    log(f"  opaque interface recovered: decl={tot['decl']} link={tot['link']} blocks={tot['blocks']}/{n_opaque} "
+        f"I={tot['I']} O={tot['O']} ?={tot['?']} mirrors={tot['mirror']} conflicts={tot['conflict']}  {time.time()-t0:.1f}s")
+    return tot
+
+
 def refresh_mirror_kinds(conn, log=print):
     """pin_mirror.kind = the pin's inferred direction; must run after direction.run()."""
     conn.execute("""UPDATE pin_mirror SET kind = coalesce((SELECT CASE WHEN p.direction IN ('I','O') THEN p.direction ELSE '?' END
@@ -105,6 +214,7 @@ def refresh_mirror_kinds(conn, log=print):
 
 def run(conn, root, ctrls, log=print):
     ctrl_names = [c.name for c in ctrls]
+    purge_recovered(conn, ctrl_names, log)
     link_declared_pins(conn, ctrl_names, log)
     build_pin_mirror(conn, ctrl_names, log)
     inlist = ",".join("'" + n.replace("'", "''") + "'" for n in ctrl_names)

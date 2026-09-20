@@ -25,7 +25,7 @@
         const [name, pdir, , ck, conn, varFull, tgtKey, tgtPin] = p;
         const wanted = only ? name === only : (up ? (pdir === 'I' || pdir === 'S') : pdir === 'O');
         if (!wanted) continue;
-        const edge = Object.assign({}, edgeBase, { pin: name, pdir, src: p[2] });
+        const edge = Object.assign({}, edgeBase, { pin: name, pdir, src: p[2], org: D.orgOf(p) });
         if ((ck === 'V' || ck === 'A') && varFull) { // V，或宣告於腳位的 A（有 varFull）
           if (varFull === edgeBase.from) continue; // 本身
           out.push({ kind: 'var', full: varFull, edge, children: [] });
@@ -34,9 +34,10 @@
           const tb = await D.block(tgtKey, signal);
           if (!tb) { out.push(Object.assign(leaf('方塊分片缺失 ' + conn, 'warn', D.hrefBKey(tgtKey)), { edge })); continue; }
           const c2 = new Set(chain); c2.add(tgtKey);
-          const sub = await pinsOf(tb, c2, { blockKey: tgtKey, block: tb.name || tgtKey, btype: tb.type, from: edgeBase.from, via: (edgeBase.via ? edgeBase.via + ' › ' : '') + blk.name + '.' + name + ' → ' + conn });
-          if (tb.opaque) out.push(Object.assign(leaf('不透明 userblock ' + (tb.name || '') + ' — 無法追蹤內部', 'enc', D.hrefBKey(tgtKey)), { edge }));
-          if (!sub.length && !tb.opaque) out.push(Object.assign(leaf('經 ' + conn + '（' + (tb.type || '') + '）沒有' + (up ? '輸入' : '輸出') + '變數', 'muted', D.hrefBKey(tgtKey)), { edge }));
+          // 不透明方塊：沒有腳位（明文或回推）→ 葉「無法追蹤內部」；有回推腳 → 照常走 pinsOf（邊標鎖頭）
+          if (tb.opaque && !(tb.pins || []).length) { out.push(Object.assign(leaf('不透明 userblock ' + (tb.name || '') + ' — 無法追蹤內部', 'enc', D.hrefBKey(tgtKey)), { edge })); continue; }
+          const sub = await pinsOf(tb, c2, { blockKey: tgtKey, block: tb.name || tgtKey, btype: tb.type, from: edgeBase.from, via: (edgeBase.via ? edgeBase.via + ' › ' : '') + blk.name + '.' + name + ' → ' + conn, opaque: tb.opaque ? D.opaqueInfo(tb).text : null });
+          if (!sub.length) out.push(Object.assign(leaf('經 ' + conn + '（' + (tb.type || '') + '）沒有' + (up ? '輸入' : '輸出') + '變數', 'muted', D.hrefBKey(tgtKey)), { edge }));
           out.push(...sub);
         } else if (ck === 'P') {
           out.push(Object.assign(leaf('介面腳 ' + conn + '（外層巨集介面，需看上層 userblock）', 'muted'), { edge }));
@@ -63,8 +64,8 @@
         const tname = (tb && tb.name) || s.block.slice(s.block.lastIndexOf('/') + 1);
         const via = '腳位值 ' + bname + '.' + mpin + ' ← ' + (s.k === 'P' ? '介面腳 ' : '') + tname + '.' + (s.pin || '?');
         if (!tb) { kids.push(Object.assign(leaf('方塊分片缺失 ' + tname, 'warn', D.hrefBKey(s.block)), { edge: base })); return; }
-        if (tb.opaque) { kids.push(Object.assign(leaf('不透明 userblock ' + tname + ' — 無法追蹤內部', 'enc', D.hrefBKey(s.block)), { edge: base })); return; }
-        const sub = await pinsOf(tb, new Set([mkey, s.block]), { blockKey: s.block, block: tname, btype: tb.type, from: node.full, via, mirror: 'I' }, s.k === 'P' ? s.pin : null);
+        if (tb.opaque && !(tb.pins || []).length) { kids.push(Object.assign(leaf('不透明 userblock ' + tname + ' — 無法追蹤內部', 'enc', D.hrefBKey(s.block)), { edge: base })); return; }
+        const sub = await pinsOf(tb, new Set([mkey, s.block]), { blockKey: s.block, block: tname, btype: tb.type, from: node.full, via, mirror: 'I', opaque: tb.opaque ? D.opaqueInfo(tb).text : null }, s.k === 'P' ? s.pin : null);
         if (!sub.length) kids.push(Object.assign(leaf('經 ' + tname + '.' + (s.pin || '?') + '（' + (tb.type || tb.kind || '') + '）沒有輸入變數', 'muted', D.hrefBKey(s.block)), { edge: base }));
         kids.push(...sub);
         return;
@@ -112,7 +113,8 @@
         const edgeBase = { blockKey: key, block: path.split('/').pop(), btype, from: node.full, refPin: pin, program, path, mirror: mirrorOut ? 'O' : null };
         const blk = await D.block(key, signal);
         if (!blk) { kids.push(Object.assign(leaf('方塊分片缺失 ' + path + '.' + pin, 'warn', D.hrefB(ctrl, path)), { edge: edgeBase })); continue; }
-        if (blk.opaque) { kids.push(Object.assign(leaf('不透明 userblock ' + blk.name + ' — 無法追蹤內部', 'enc', D.hrefB(ctrl, path)), { edge: edgeBase })); continue; }
+        // 不透明方塊：無腳位 → 葉「無法追蹤內部」；有回推腳 → 照常走 pinsOf（邊標鎖頭與介面說明）
+        if (blk.opaque) { edgeBase.opaque = D.opaqueInfo(blk).text; if (!(blk.pins || []).length) { kids.push(Object.assign(leaf('不透明 userblock ' + blk.name + ' — 無法追蹤內部', 'enc', D.hrefB(ctrl, path)), { edge: edgeBase })); continue; } }
         const sub = await pinsOf(blk, new Set([key]), edgeBase);
         if (!sub.length) kids.push(Object.assign(leaf(blk.name + ' 沒有連到變數的' + (up ? '輸入' : '輸出') + '腳' + (sub.addr ? '（' + sub.addr + ' 腳只有位址）' : '（方向可能未推斷）'), 'muted', D.hrefB(ctrl, path)), { edge: edgeBase }));
         kids.push(...sub);
@@ -152,7 +154,8 @@
     if (e.via) parts.push(D.h('span', { class: 'muted small', text: '經 ' + e.via + ' ' }));
     parts.push(D.h('a', { href: D.hrefBKey(e.blockKey), class: 'lk mono', text: e.block + (e.pin ? '.' + e.pin : ''), title: (e.path || e.blockKey) + (e.refPin ? '（' + (e.mirror ? '腳位值' : up ? '輸出' : '輸入') + '腳 ' + e.refPin + '）' : '') }));
     if (e.btype) parts.push(D.h('span', { class: 'ref-type', text: '[' + e.btype + ']' }));
-    if (e.pdir) parts.push(D.dirBadge(e.pdir), D.srcBadge(e.src));
+    if (e.opaque) parts.push(D.h('span', { class: 'opq-inline muted small', title: '不透明巨集：' + e.opaque }, D.lockIcon(), ' ', e.opaque)); // 鎖頭 + 介面回推／目錄／加密
+    if (e.pdir) parts.push(D.dirBadge(e.pdir), D.srcBadge(e.src), e.org ? D.orgBadge(e.org) : null);
     return D.h('span', { class: 'edge' }, up ? '← ' : '→ ', parts);
   }
   function renderNode(node, up, dir, hops) {

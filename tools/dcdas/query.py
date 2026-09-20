@@ -42,19 +42,24 @@ def _ds(direction, source):
 
 
 _PIN_SQL = """SELECT p.id, p.name AS pin, p.direction, p.dir_source, p.conn_kind, p.connection, p.var_id,
-                     p.tgt_block_id, p.tgt_pin, p.address, p.value, p.alias, p.usage_declared, p.line_no,
+                     p.tgt_block_id, p.tgt_pin, p.address, p.value, p.alias, p.usage_declared, p.line_no, p.origin, p.description,
                      b.id AS block_id, b.ctrl, b.path, b.name AS block_name, coalesce(b.block_type,'') AS block_type,
                      b.kind, b.is_opaque, b.logic_drg, b.p_id, b.task_id, b.program_id,
                      pr.name AS program, pr.file_path, pr.encrypted
               FROM pin p JOIN block b ON b.id=p.block_id JOIN program pr ON pr.id=b.program_id """
 
 
+ORIGIN_NOTE = {"decl": "(recovered: variable declared at this pin of an opaque macro)",
+               "link": "(recovered: sibling L: link into this opaque macro)"}
+
+
 def _pin_ref(p):
     """One-line reference for a pin row from _PIN_SQL."""
     return {"ref": f"{p['ctrl']}/{p['path']}.{p['pin']}", "block_type": p["block_type"],
             "dir": _ds(p["direction"], p["dir_source"]), "at": _fl(p["file_path"], p["line_no"]),
-            "block_id": p["block_id"], "pin_id": p["id"], "kind": p["kind"], "opaque": p["is_opaque"],
-            "note": "(variable declared at this pin)" if (p.get("decl") or (p["conn_kind"] == "A" and p["var_id"] is not None))
+            "block_id": p["block_id"], "pin_id": p["id"], "kind": p["kind"], "opaque": p["is_opaque"], "origin": p["origin"],
+            "note": ORIGIN_NOTE[p["origin"]] if p["origin"] in ORIGIN_NOTE
+                    else "(variable declared at this pin)" if (p.get("decl") or (p["conn_kind"] == "A" and p["var_id"] is not None))
                     else (f"(via interface pin {p['via']})" if p.get("via") else "")}
 
 
@@ -464,7 +469,8 @@ def show(conn, signal, all_rows=False):
     elif not writers and mirror and mirror["kind"] == "O":
         source = f"logic (output pin value): {mirror['pin']['ref']} [{mirror['pin']['block_type']}]"
     elif writers:
-        source = f"logic: {w_entries[0]['ref']}" + (f" (+{len(writers)-1} more writers)" if len(writers) > 1 else "")
+        source = (("logic (opaque macro output, recovered interface): " if writers[0]["origin"] else "logic: ") + w_entries[0]["ref"]
+                  + (f" (+{len(writers)-1} more writers)" if len(writers) > 1 else ""))
     elif iface and (iface["usage"] or "").lower() == "output":
         source = f"interface Output pin {iface['ref']} (no inner writer found" + ("; opaque macro" if iface["opaque"] else "") + ")"
     elif egd["source"]:
@@ -587,8 +593,8 @@ class _Trace:
                             return
                         self.up_block(q["block_id"], d + 3, level, up, skip_pin=q["id"])
                     continue
-                if p["is_opaque"]:
-                    self.emit(d + 2, "[opaque userblock: not traceable]")
+                if p["is_opaque"] and not p["origin"]:
+                    self.emit(d + 2, "[opaque macro: interface encrypted, no visible pins]")
                     continue
             self.up_block(p["block_id"], d + 2, level, up, skip_pin=p["id"])
 
@@ -600,8 +606,12 @@ class _Trace:
         self.seen_block.add(block_id)
         b = _block_by_id(conn, block_id)
         if b and b["is_opaque"]:
-            self.emit(d, "[opaque userblock: not traceable]")
-            return
+            n_rec = conn.execute("SELECT count(*) FROM pin WHERE block_id=? AND origin IS NOT NULL", (block_id,)).fetchone()[0]
+            if not n_rec:
+                self.emit(d, f"[opaque macro {b['block_type'] or ''}: interface encrypted, no visible pins]")
+                return
+            if not self.emit(d, f"[opaque macro {b['block_type'] or ''}: internals encrypted; {n_rec} recovered interface pins, list may be incomplete]"):
+                return
         pins = [q for q in _pins_of_block(conn, block_id) if q["id"] != skip_pin and q["direction"] != "O"]
         # connected pins first; address-only ("declared at pin") pins are only followed when that variable has a
         # writer / EGD source, otherwise they are summarised in one line (LOGIC_BUILDER-style blocks have dozens)
@@ -686,8 +696,8 @@ class _Trace:
                             return
                         self.down_block(q["block_id"], d + 3, level, down, skip_pin=q["id"])
                     continue
-                if p["is_opaque"]:
-                    self.emit(d + 2, "[opaque userblock: not traceable]")
+                if p["is_opaque"] and not p["origin"]:
+                    self.emit(d + 2, "[opaque macro: interface encrypted, no visible pins]")
                     continue
             self.down_block(p["block_id"], d + 2, level, down, skip_pin=p["id"])
         for c in _rows(conn, "SELECT consumer_ctrl,producer_ctrl,var_name,exchange_id,voffs,match_method,local_var_id FROM egd_consumed WHERE producer_var_id=?", (vid,)):
@@ -710,8 +720,12 @@ class _Trace:
         self.seen_block.add(block_id)
         b = _block_by_id(conn, block_id)
         if b and b["is_opaque"]:
-            self.emit(d, "[opaque userblock: not traceable]")
-            return
+            n_rec = conn.execute("SELECT count(*) FROM pin WHERE block_id=? AND origin IS NOT NULL", (block_id,)).fetchone()[0]
+            if not n_rec:
+                self.emit(d, f"[opaque macro {b['block_type'] or ''}: interface encrypted, no visible pins]")
+                return
+            if not self.emit(d, f"[opaque macro {b['block_type'] or ''}: internals encrypted; {n_rec} recovered interface pins, list may be incomplete]"):
+                return
         for q in _pins_of_block(conn, block_id):
             if q["id"] == skip_pin or q["direction"] != "O":
                 continue
@@ -795,7 +809,13 @@ def block(conn, ctrl, path):
     for p in pins:
         prow.append({"pin": p["pin"], "dir": _ds(p["direction"], p["dir_source"]), "conn_kind": p["conn_kind"] or "-",
                      "to": _conn_text(conn, p, names), "usage": p["usage_declared"], "value": p["value"],
-                     "alias": p["alias"], "at": _fl(p["file_path"], p["line_no"])})
+                     "alias": p["alias"], "at": _fl(p["file_path"], p["line_no"]), "origin": p["origin"],
+                     "desc": (p["description"] or "").split("\n")[0].strip() if p["origin"] else None})
+    recovered = {"decl": sum(1 for p in pins if p["origin"] == "decl"), "link": sum(1 for p in pins if p["origin"] == "link")}
+    catalogue = []
+    if b["is_opaque"] and not pins:
+        catalogue = [{"pin": r[0], "usage": r[1]} for r in conn.execute(
+            "SELECT pin_name, usage FROM lib_pin_usage WHERE def_name=? AND pin_name<>'' GROUP BY pin_name ORDER BY usage, pin_name", (b["block_type"],))]
     attrs = _rows(conn, "SELECT name, value FROM block_attr WHERE block_id=? ORDER BY name", (b["id"],))
     children = _rows(conn, """SELECT path, name, coalesce(block_type,'') AS block_type, kind, is_opaque, description, line_no
                               FROM block WHERE parent_id=? ORDER BY line_no""", (b["id"],))
@@ -808,7 +828,8 @@ def block(conn, ctrl, path):
             "logic_drg": b["logic_drg"] or (task["logic_drg"] if task else None), "p_id": b["p_id"], "device": b["device"],
             "hmi_linked_object": b["hmi_linked_object"], "at": _fl(b["file_path"], b["line_no"]),
             "parent": f"{parent['ctrl']}/{parent['path']}" if parent else None,
-            "pins": prow, "attrs": attrs, "children": children, "library_help": help_row}
+            "pins": prow, "attrs": attrs, "children": children, "library_help": help_row,
+            "recovered": recovered, "catalogue": catalogue}
 
 
 def task(conn, ctrl, program, task_name):
@@ -1231,8 +1252,15 @@ def coverage(conn, limit=40):
     types_total = conn.execute("SELECT count(DISTINCT block_type) FROM block WHERE kind='block'").fetchone()[0]
     types_manual = conn.execute("""SELECT count(DISTINCT b.block_type) FROM block b
                                    WHERE b.kind='block' AND b.block_type IN (SELECT block_type FROM pin_dir_table)""").fetchone()[0]
+    op = _rows(conn, """SELECT b.block_type, count(*) AS n,
+                               sum(EXISTS(SELECT 1 FROM pin p WHERE p.block_id=b.id AND p.origin IS NOT NULL)) AS n_recovered,
+                               sum(EXISTS(SELECT 1 FROM lib_pin_usage l WHERE l.def_name=b.block_type AND l.pin_name<>'')) AS n_catalogue
+                        FROM block b WHERE b.is_opaque=1 GROUP BY b.block_type ORDER BY n DESC""")
+    opaque_tot = {"n": sum(r["n"] for r in op), "recovered": sum(r["n_recovered"] for r in op),
+                  "catalogue_only": sum(r["n_catalogue"] for r in op if not r["n_recovered"]) + sum(max(0, r["n_catalogue"] - r["n_recovered"]) for r in op if r["n_recovered"]),
+                  "none": sum(r["n"] - max(r["n_recovered"], r["n_catalogue"]) for r in op), "types": len(op)}
     return {"kind": "coverage", "controllers": ctrls, "top_unknown": top, "by_source": src, "by_direction": dirs,
-            "programs": enc, "unresolved": unres,
+            "programs": enc, "unresolved": unres, "opaque": opaque_tot, "opaque_types": op[:limit],
             "manual": {"pin_dir_table_rows": manual, "block_types_in_use": types_total, "block_types_in_manual": types_manual}}
 
 

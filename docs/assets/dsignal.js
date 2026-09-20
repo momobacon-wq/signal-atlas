@@ -55,7 +55,7 @@
     const rec = blk || {};
     n = { id, kind: rec.kind === 'userblock' ? 'ub' : 'block', key, ctrl, program: segs[0] || '', task: segs[1] || '', tkey: D.taskKeyOf(key),
       name: rec.name || segs[segs.length - 1], type: rec.type || (rec.kind === 'userblock' ? 'UserBlock' : ''), sub: (segs[0] || '') + '/' + (segs[1] || ''),
-      desc: rec.desc || '', attrs: rec.attrs, pins: rec.pins || [], kindLabel: rec.kind, opaque: !!rec.opaque, ord: S.ord++, left: [], right: [], body: [], cls: '', fresh: true };
+      desc: rec.desc || '', attrs: rec.attrs, pins: rec.pins || [], kindLabel: rec.kind, opaque: !!rec.opaque, rc: rec.rc || null, ord: S.ord++, left: [], right: [], body: [], cls: '', fresh: true };
     S.nodes.set(id, n);
     S.st.count++; S.st.blocks++;
     return n;
@@ -69,7 +69,7 @@
     const t = tuple || pins.find((x) => x[0] === pin) || null;
     const idx = t ? pins.indexOf(t) : -1;
     p = { id, pin, dir: (t && t[1]) || (side === 'R' ? 'O' : 'I'), src: t ? t[2] : '-', ck: t ? t[3] : '-', conn: t ? t[4] : null, varFull: (t && t[5]) || null, inline: null, pinIdx: idx < 0 ? 1e6 : idx,
-      desc: (t && t.length > 10 && t[10]) || null, varDesc: null };
+      desc: (t && t.length > 10 && t[10]) || null, varDesc: null, org: D.orgOf(t) };
     (side === 'R' ? n.right : n.left).push(p);
     return p;
   }
@@ -93,8 +93,16 @@
   }
 
   /* ------------------------------------------------------------------ BFS（鏡射 trace.js） */
-  /** 方塊的另一側腳位：up 取 I/S 腳（左側）、down 取 O 腳（右側）；V（含宣告於腳位的 A+varFull）→ 變數節點＋邊；L → 同 task 鏈；P/N/E 行內；無變數的 A／D 忽略。新觸及的變數節點推入 out */
-  async function pinsOf(S, bn, blk, dir, chain, out, only) {
+  /** 不透明方塊：標記 opaque；沒有腳位（明文或回推）→ 葉「無法追蹤內部」並回傳 true（呼叫端停止）；有回推腳 → false（照常走 pinsOf） */
+  function opaqueStop(S, tn, tb, dir, side) {
+    tn.opaque = true; tn.rc = tb.rc || null;
+    if ((tb.pins || []).length) return false;
+    leaf(S, blockPort(S, tn, '內部', side).id, dir, '不透明 userblock ' + (tb.name || '') + ' — 無法追蹤內部', 'enc', D.hrefBKey(tn.key));
+    return true;
+  }
+  /** 方塊的另一側腳位：up 取 I/S 腳（左側）、down 取 O 腳（右側）；V（含宣告於腳位的 A+varFull、不透明方塊回推的 'd' 腳）→ 變數節點＋邊；L → 同 task 鏈；P/N/E 行內；無變數的 A／D／回推 'l' 腳（ck '-'）忽略。
+   *  from = 正在展開的變數（回推腳接到同一變數時不畫回自己）。新觸及的變數節點推入 out */
+  async function pinsOf(S, bn, blk, dir, chain, out, only, from) {
     const up = dir === 'up';
     const done = bn.id + '|' + dir + (only ? '|' + only : '');
     if (S.blockDone.has(done)) return out;
@@ -105,6 +113,7 @@
       const wanted = only ? name === only : (up ? (pdir === 'I' || pdir === 'S') : pdir === 'O'); // only = 只走這一支腳（介面腳來源，不論方向）
       if (!wanted) continue;
       if ((ck === 'V' || ck === 'A') && varFull) {
+        if (from && varFull === from && D.orgOf(t)) continue; // 回推腳接到正在展開的變數本身 → 不畫自環
         const vn = varNode(S, varFull, dir);
         if (!vn) continue; // 上限
         const port = blockPort(S, bn, name, up ? 'L' : 'R', t);
@@ -119,9 +128,9 @@
         if (!tn) continue; // 上限
         const tp = blockPort(S, tn, tgtPin || '?', up ? 'R' : 'L');
         if (up) addEdge(S, tp.id, port.id, 'L'); else addEdge(S, port.id, tp.id, 'L');
-        if (tb.opaque) { tn.opaque = true; leaf(S, blockPort(S, tn, '內部', up ? 'L' : 'R').id, dir, '不透明 userblock ' + (tb.name || '') + ' — 無法追蹤內部', 'enc', D.hrefBKey(tgtKey)); continue; }
+        if (tb.opaque && opaqueStop(S, tn, tb, dir, up ? 'L' : 'R')) continue; // 無腳位的不透明方塊 → 葉；有回推腳 → 照常追
         const c2 = new Set(chain); c2.add(tgtKey);
-        await pinsOf(S, tn, tb, dir, c2, out);
+        await pinsOf(S, tn, tb, dir, c2, out, null, from);
       } else if (ck === 'P') {
         blockPort(S, bn, name, up ? 'L' : 'R', t).inline = '⟨' + (tgtPin || stripK(conn) || '介面腳') + '⟩';
       } else if (ck === 'N' || ck === 'E') {
@@ -157,8 +166,8 @@
       if (!tn) return; // 上限
       const tp = blockPort(S, tn, s.pin || '?', 'R');
       addEdge(S, tp.id, inP, 'L', { label: lbl + (s.k === 'P' ? '（介面腳）' : '') });
-      if (tb.opaque) { tn.opaque = true; return; }
-      await pinsOf(S, tn, tb, dir, new Set([mkey, s.block]), out, s.k === 'P' ? s.pin : null);
+      if (tb.opaque) { tn.opaque = true; tn.rc = tb.rc || null; if (!(tb.pins || []).length) return; } // 有回推腳才追
+      await pinsOf(S, tn, tb, dir, new Set([mkey, s.block]), out, s.k === 'P' ? s.pin : null, node.varFull);
       return;
     }
     if (s.k === 'N' || s.k === 'E') { leaf(S, inP, dir, lbl + ' = ' + (s.k === 'N' ? '常數 ' : '列舉 ') + stripK(s.text), 'const'); return; }
@@ -226,8 +235,8 @@
       if (!bn) continue; // 上限
       const port = blockPort(S, bn, pin, up ? 'R' : 'L');
       if (up) addEdge(S, port.id, inP, 'V', { varFull: node.varFull, multi, label: mirrorOut ? '輸出腳位值 ' + pin : undefined }); else addEdge(S, outP, port.id, 'V', { varFull: node.varFull });
-      if (blk.opaque) { bn.opaque = true; continue; } // 不透明 userblock：斜線方塊，不追內部
-      await pinsOf(S, bn, blk, dir, new Set([key]), out);
+      if (blk.opaque) { bn.opaque = true; bn.rc = blk.rc || null; if (!(blk.pins || []).length) continue; } // 不透明：無腳位 → 斜線方塊不追；有回推腳 → 照常追
+      await pinsOf(S, bn, blk, dir, new Set([key]), out, null, node.varFull);
     }
     const d = node.depth[dir] + 1;
     for (const vn of out) if (vn.depth[dir] > d) vn.depth[dir] = d;

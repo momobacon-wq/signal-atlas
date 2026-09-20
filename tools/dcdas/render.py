@@ -237,10 +237,21 @@ def _block(o, r):
     _kv(o, "hmi_linked", r["hmi_linked_object"])
     if r.get("library_help") and r["library_help"].get("mht_path"):
         _kv(o, "help", r["library_help"]["mht_path"])
+    rc = r.get("recovered") or {}
+    if r["is_opaque"]:
+        if rc.get("decl") or rc.get("link"):
+            o.line(f"OPAQUE MACRO: internals encrypted; interface recovered from evidence: {rc.get('decl', 0)} declared variables + "
+                   f"{rc.get('link', 0)} L: links (list may be incomplete; directions R = recovered, L = from link)")
+        elif r.get("catalogue"):
+            o.line("OPAQUE MACRO: interface encrypted; no wiring visible. Library catalogue for this type (names + usage only):")
+            o.rows(r["catalogue"], lambda c: f"{c['pin']:<24s} {c['usage']}")
+        else:
+            o.line("OPAQUE MACRO: interface encrypted; no visible pins and no library catalogue")
     o.line(f"PINS ({len(r['pins'])})")
     o.rows(r["pins"], lambda p: f"{p['pin']:<24s} {p['dir']:<4s} {p['conn_kind']:<2s} {_cut(p['to'], 90)}"
            + (f" usage={p['usage']}" if p["usage"] else "") + (f" value={p['value']}" if p["value"] not in (None, "") else "")
-           + (f" alias={p['alias']}" if p["alias"] else "") + f" {p['at']}")
+           + (f" alias={p['alias']}" if p["alias"] else "") + (f" [{p['origin']}]" if p.get("origin") else "")
+           + (f" {_cut(p['desc'], 50)}" if p.get("desc") else "") + f" {p['at']}")
     if r["attrs"]:
         o.line(f"ATTRS ({len(r['attrs'])})")
         o.rows(r["attrs"], lambda a: f"{a['name']} = {_cut(a['value'], 100)}")
@@ -388,6 +399,11 @@ def _coverage(o, r):
            + ("  OVER 5% GATE" if c["frac_unknown"] > 0.05 else ""))
     o.line("PROGRAMS")
     o.rows(r["programs"], lambda p: f"{p['ctrl']:<8s} programs {p['n']:>4d}  encrypted {p['n_encrypted']:>3d}  opaque userblocks {p['n_opaque_userblocks']:>5d}")
+    if r.get("opaque"):
+        t = r["opaque"]
+        o.line(f"OPAQUE MACROS: {t['n']} instances / {t['types']} types; interface recovered {t['recovered']}, "
+               f"library catalogue only {t['catalogue_only']}, no visible pins {t['none']}")
+        o.rows(r.get("opaque_types", [])[:20], lambda x: f"{x['block_type']:<28s} n {x['n']:>5d}  recovered {x['n_recovered']:>5d}  catalogue {x['n_catalogue']:>5d}")
     o.line("UNRESOLVED CONNECTIONS")
     o.rows(r["unresolved"], lambda u: f"{u['ctrl']:<8s} V-no-variable {u['v_unresolved']:>5d}  D-device-pin {u['d_device_pins']:>5d}  L/P-no-target {u['lp_unresolved']:>5d}")
     o.line("PINS BY dir_source: " + "  ".join(f"{k}={v}" for k, v in sorted(r["by_source"].items())))

@@ -252,6 +252,24 @@ def main(docs):
             if bbad <= 5:
                 err(f"block {key}: {'missing' if blkj is None else 'pins ' + str(len(blkj.get('pins', []))) + ' vs ' + str(npins)}")
     (ok if not bbad else err)(f"sampled {len(bsample)} blocks, {bbad} mismatches")
+    # ---- opaque macros with recovered interface pins: rc counts and per-pin origin
+    obad = 0
+    orows = conn.execute("SELECT DISTINCT block_id FROM pin WHERE origin IS NOT NULL").fetchall()
+    for (bid,) in random.sample(orows, min(10, len(orows))):
+        b = conn.execute("SELECT ctrl,path FROM block WHERE id=?", (bid,)).fetchone()
+        key = f"{b[0]}|{b[1]}"
+        ent = task_entry(tkey_of(b[0], b[1]))
+        blkj = ent["b"].get(key) if ent else None
+        want = [conn.execute("SELECT count(*) FROM pin WHERE block_id=? AND origin=?", (bid, o)).fetchone()[0] for o in ("decl", "link")]
+        got_org = sorted(p[11] for p in (blkj or {}).get("pins", []) if p[11])
+        want_org = sorted({"decl": "d", "link": "l"}[r[0]] for r in conn.execute("SELECT origin FROM pin WHERE block_id=? AND origin IS NOT NULL", (bid,)))
+        if blkj is None or not blkj.get("opaque") or blkj.get("rc") != want or got_org != want_org:
+            obad += 1
+            if obad <= 5:
+                err(f"opaque block {key}: rc {(blkj or {}).get('rc')} vs {want}, origins {len(got_org)} vs {len(want_org)}")
+    (ok if not obad else err)(f"sampled {min(10, len(orows))} opaque blocks with recovered pins, {obad} mismatches")
+    li = man.get("lib_iface", {})
+    (ok if li and "AI_INT" in li else err)(f"manifest lib_iface: {len(li)} types")
     # ---- tasks: sample 30 task entries (root first, document order, counts)
     tids = [r[0] for r in conn.execute("SELECT id FROM task")]
     tbad = 0
@@ -267,8 +285,8 @@ def main(docs):
             if tbad <= 5:
                 err(f"task {tkey}: {'missing' if ent is None else 'n ' + str(ent.get('n')) + '/' + str(len(ent['b'])) + ' vs ' + str(len(keys)) + ' or order/root mismatch'}")
             continue
-        # pin tuples carry 11 fields (desc last); vd = descriptions of every variable referenced by the task's pins
-        bad_len = sum(1 for rec in ent["b"].values() for p in rec.get("pins", []) if len(p) != 11)
+        # pin tuples carry 12 fields (desc, origin last); vd = descriptions of every variable referenced by the task's pins
+        bad_len = sum(1 for rec in ent["b"].values() for p in rec.get("pins", []) if len(p) != 12)
         want_vd = {r[0]: r[1].split("\n")[0].strip() for r in conn.execute(
             """SELECT DISTINCT v.full_name, v.description FROM pin p JOIN block b ON b.id=p.block_id JOIN variable v ON v.id=p.var_id
                WHERE b.task_id=? AND v.description IS NOT NULL AND v.description<>''""", (tid,)) if r[1].strip()}

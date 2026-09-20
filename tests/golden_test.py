@@ -134,6 +134,34 @@ def main():
     check("H11.HpDistCV2.RSP mirrors pin HpDistCV2.RSP wired to H11.HpDistCv2PID11_SP",
           mir is not None and mir[1] == "RSP" and mir[2] == "V" and mir[3] == "H11.HpDistCv2PID11_SP", str(tuple(mir)) if mir else "missing")
 
+    # ---- opaque macro interface recovery (origin = decl | link)
+    dff = one(conn, "SELECT id FROM block WHERE ctrl='H11' AND path='HrsgHP_1/ACTUATOR_HpOTFdwtrFlwCV/DFFWD_1'")
+    n_dff = one(conn, "SELECT count(*) FROM pin WHERE block_id=?", dff)
+    check("H11 DFFWD_1 (opaque) has >= 60 recovered pins", (n_dff or 0) >= 60, str(n_dff))
+    rows = {r[0]: r[1:] for r in conn.execute("""SELECT p.name, p.direction, p.conn_kind, p.origin, v.name FROM pin p LEFT JOIN variable v ON v.id=p.var_id
+                                                 WHERE p.block_id=? AND p.name IN ('F_SP_FW','M_WTR_IN_FFWD_C','KP_SCHED_C','A_FILT','GT_FLAME_OFF_C')""", (dff,))}
+    check("DFFWD_1.F_SP_FW recovered as input wired to F_SP_FW (written by DIV_4.OUT)", rows.get("F_SP_FW") == ("I", "V", "decl", "F_SP_FW"), str(rows.get("F_SP_FW")))
+    check("DFFWD_1.M_WTR_IN_FFWD_C recovered as output", rows.get("M_WTR_IN_FFWD_C") == ("O", "A", "decl", "M_WTR_IN_FFWD_C"), str(rows.get("M_WTR_IN_FFWD_C")))
+    check("DFFWD_1.KP_SCHED_C recovered from L: link as output", rows.get("KP_SCHED_C") == ("O", "-", "link", None), str(rows.get("KP_SCHED_C")))
+    check("DFFWD_1.A_FILT recovered as constant input", rows.get("A_FILT") == ("I", "A", "decl", "A_FILT"), str(rows.get("A_FILT")))
+    check("DFFWD_1.GT_FLAME_OFF_C wired to same-address HHP_HrsgNotInSrvc", rows.get("GT_FLAME_OFF_C") == ("I", "V", "decl", "HHP_HrsgNotInSrvc"), str(rows.get("GT_FLAME_OFF_C")))
+    mir = conn.execute("""SELECT m.kind, p.name FROM pin_mirror m JOIN pin p ON p.id=m.pin_id
+                          WHERE m.var_id=(SELECT id FROM variable WHERE ctrl='H11' AND name='GT_FLAME_OFF_C')""").fetchone()
+    mir = tuple(mir) if mir else None
+    check("H11.GT_FLAME_OFF_C is a mirror of DFFWD_1.GT_FLAME_OFF_C (kind I)", mir == ("I", "GT_FLAME_OFF_C"), str(mir))
+    nw = one(conn, "SELECT count(*) FROM pin WHERE direction='O' AND var_id=(SELECT id FROM variable WHERE ctrl='H11' AND name='BlwdnTkLvlLowRedun')")
+    check("H11.BlwdnTkLvlLowRedun (alarm) has a recovered writer (REDUNDANCY_STATUS_V2)", nw == 1, str(nw))
+    n_decl = one(conn, "SELECT count(*) FROM pin WHERE origin='decl'")
+    n_link = one(conn, "SELECT count(*) FROM pin WHERE origin='link'")
+    check("recovered pins: decl >= 1000, link >= 1400", (n_decl or 0) >= 1000 and (n_link or 0) >= 1400, f"decl={n_decl} link={n_link}")
+    bad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin IS NOT NULL AND b.is_opaque=0")
+    check("recovered pins only on opaque blocks", bad == 0, str(bad))
+    bad = one(conn, "SELECT count(*) FROM pin WHERE origin IS NOT NULL AND conn_kind IN ('V','L','P','D') AND direction='?'")
+    check("recovered pins never '?' inside the connected set", bad == 0, str(bad))
+    n_multi = one(conn, """SELECT count(*) FROM (SELECT p.var_id, count(*) AS n, sum(b.kind='block') AS nb FROM pin p JOIN block b ON b.id=p.block_id
+                           WHERE p.direction='O' AND p.var_id IS NOT NULL GROUP BY p.var_id HAVING (nb>1 OR (nb=0 AND n>1)))""")
+    check("multi-writer variables <= 2510 (2485 before recovery)", (n_multi or 0) <= 2510, str(n_multi))
+
     # ---- quality gates
     for c in ("G11", "H11", "WSC1"):
         tot = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.ctrl=? AND p.conn_kind IN ('V','L','P','D')", c)

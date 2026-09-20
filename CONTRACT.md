@@ -42,7 +42,8 @@ docs/data/                     export-web 的輸出（下）
  "source":{"toolbox_version":"V07.10.07C","indexed_at":"2026-09-19T15:00:00+08:00","controllers_minor_rev":{"G11":"2026-08-10T08:05:01"}},
  "controllers":[{"name":"G11","kind":"controller","redundancy":"Triple","product_version":"V07.03.02C","n_vars":53561,"n_blocks":31417,"n_pins":223570,"n_programs":132,"n_encrypted":20,"n_io":11900,"n_tasks":1018}],
  "shards":{"var":4096,"task":4096,"screen":256},
- "dir_legend":{"U":"介面腳 Usage","T":"手冊表/人工覆寫","C":"常數規則","L":"連線投票","H":"命名慣例","?":"未知"},
+ "dir_legend":{"U":"介面腳 Usage","T":"手冊表/人工覆寫","C":"常數規則","L":"連線投票","H":"命名慣例","R":"回推（不透明巨集）","?":"未知"},
+ "opaque":{"n":5082,"recovered":792}, "lib_iface":{"AI_INT":[["Enable","I"],["IN","I"],["DEVICE_STATUS","O"],["OUT","O"]], …},
  "flags":{"1":"has_writer","2":"has_io","4":"has_egd","8":"has_hmi","16":"has_alarm","32":"const","64":"egd_copy","128":"in_encrypted"},
  "encrypted_programs":[["S1","TurbineATSMod"]],
  "block_types":[["MOVE",9802]],
@@ -93,6 +94,12 @@ docs/data/                     export-web 的輸出（下）
 - `b` 的鍵順序 = 原始 XML 文件順序，第一筆是 task 根（`kind:"task"`，其 `pins` 為介面腳）；巢狀 UserBlock 內的方塊同在此 entry（同 task）。
 - 方塊記錄欄位同前（`ctrl program path name type kind ver opaque desc drg pid device hmi attrs pins line file`），新增可選 `lay`（`BlockLayoutData`，同層的 1-based 繪圖順序，含 UserBlock；缺值省略）。空欄位/空陣列/0 一律省略。
 - 腳位 tuple 第 11 欄 `desc` = 腳位自身的描述（`Pin@Description` 第一行；無則 `null`），例如產生器方塊 `L4TTRP_OVR.IN1` = "Generator LCI Trip"。
+- 腳位 tuple 第 12 欄 `org` = 腳位來源：`null` = XML 明文；`"d"` = **回推自宣告在該腳位的變數**；`"l"` = **回推自鄰近方塊的 `L:` 連線**。只出現在不透明巨集
+  （`opaque:1`，整個 UserBlock 含介面腳都加密）上：索引把「`Variables.xml` 宣告位置 = 該方塊.腳位」的變數與「`L:Block.Pin` 指向該方塊」的連線還原成腳位列，
+  方向以證據決定（宣告變數：可調常數→I；位址＝某輸出腳／另一變數→I 並接該來源（後者同時登記為鏡像 `m`）；有讀取者／警報／HMI 且無其他寫入者→O；否則 `?`；
+  連線：與 referrer 相反）。方向來源字母 `R`（回推）或 `L`。**清單只有證據看得到的部分，可能不完整**；宣告變數也可能是巨集內部變數。
+  這類方塊的記錄多 `rc:[nDecl,nLink]`。沒有回推腳位的不透明方塊若型別在 `manifest.lib_iface` 中，前端顯示「目錄介面」（只有腳位名與 Usage 方向 I/O/C/S，無接線）；
+  否則顯示「介面加密，無可見腳位」。`vu` 也涵蓋回推腳位參照的變數。
 - `conn_kind='A'` 且 `var_full_name` 非空 = **宣告在腳位上的變數**（腳位沒有 `Connection`，但組態工具把它發佈成全域變數，例如 PID 的 `HpBypToCrhPressCv.CVO`）；索引以「名稱 `Block.Pin` → 宣告位置 → 同位址唯一」三層規則連結。前端把它當作變數腳位（可走線、可標籤、可追蹤），
   但只在該變數「有人用」時顯示：`vu[full] = [nW, nR, flags]`（全索引中對該變數的輸出腳數、輸入腳數、外部旗標 2=I/O 4=EGD（有其他控制器消費）8=HMI 16=警報），
   顯示條件 = `nW+nR > 1` 或 `flags≠0` 或 (PID 家族的關鍵腳 PV/SP/CVO/CV/CVI/AUTO/RSP/OUT)；「全腳位」開關可全顯。`vu` 只列 task 內有此類腳位的變數。
@@ -118,6 +125,8 @@ docs/data/                     export-web 的輸出（下）
 - 原始組態工具的圖面座標不可得（`DiagramXML` 為專有壓縮格式），用 dagre 自動排版；`lay`（缺值則文件順序）決定同層排序與「頁」的閱讀順序；孤立方塊依連通群組分別排版再依序打包成欄。
 - 走線只畫資料裡確定的關係：同 task 內 `L:` 接線（消費端指向來源）、同 task 內一寫（≤2）多讀（≤4）的變數；其他變數以腳位旁的 xref 標籤呈現（左入右出），點標籤高亮同名所有端點；`P` 介面腳標籤 `⟨pin⟩`；`N/E` 常數為腳位行內文字；`A/D` 預設隱藏。
 - 方向來自索引的推斷值（腳位徽章顯示來源字母）；`?` 方向腳以虛線/灰色；多寫入者變數走線為紅色虛線；不透明 UserBlock 斜紋框、不可展開。
+- 不透明巨集：回推腳位（`org` 非空）顯示規則同「宣告在腳位」的變數腳（有夥伴／有人用／`?pins=1` 才畫），腳位名旁標「推」；有 `rc` 的方塊副標「介面回推 N 腳（可能不完整）」；
+  沒有回推腳但 `lib_iface` 有型別 → 側欄／方塊頁列「目錄介面」；都沒有 → 框內「介面加密，無可見腳位」。訊號圖／追蹤圖遇到有回推腳位的不透明方塊照常經由其腳位擴展，只有無腳位者才是「無法追蹤內部」葉。
 - 規模：Task 圖 ≤300 方塊全畫，301–1000 依連通群組分頁，>1000 先篩選；訊號圖由 BFS 的 200 節點上限保護。
 - 說明顯示三段密度（工具列「說明」循環 完整 / 關 / 精簡；`?desc=full|brief|off`（或 `2|1|0`）；偏好存 `localStorage atlas.dg.desc`，預設完整）：
   完整 = xref 標籤為固定寬 190px 說明卡（名稱一行 + 描述換行最多 3 行）、腳位描述在腳位名下方換行最多 2 行（方塊寬上限 220px）、方塊描述為底部 caption 最多 3 行、訊號圖變數為 200px 卡片；

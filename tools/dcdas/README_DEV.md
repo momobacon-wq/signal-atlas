@@ -6,7 +6,7 @@ Source checkout: `%LOCALAPPDATA%\dcdas\config.json` → `src_root` (or env `DCDA
 vendor names into the repo (code, comments, commit messages); site-specific facts live in the local config and the local
 checkout folder's `CLAUDE.md`.
 
-Pipeline (`tools/dcdas.py build`): vars → logic → lib → io → egd → hmi → ledger → resolve → direction → fts.
+Pipeline (`tools/dcdas.py build`): vars → logic → lib → io → egd → hmi → ledger → resolve → direction → opaque (recover_opaque_pins, refresh_mirror_kinds) → fts. A `schema_version` mismatch in `meta` deletes the DB and rebuilds in full.
 Each stage module exposes `run(conn, root, ctrls, log)` (`ctrls` = list of `inventory.Controller`; project-wide stages
 take `run(conn, root, log)`). A stage must be idempotent for its scope: delete the rows it owns for that controller,
 then insert. Use `db.Batch` for bulk inserts, commit per controller/file, print one line per controller with count + time.
@@ -22,7 +22,12 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
   `UserBlock*` (macro instance, same shape as TopUserBlock, nested arbitrarily),
   `Block*` (`Name`,`BlockType`,`Description`,`BlockLayoutData`,`BlockDataType`) → `Pin*`.
   `ZK2188310901404A` = encrypted blob (skip, count). A Program with zero `Block` and ≥1 ZK = encrypted program.
-  A UserBlock with only ZK children (no Block/Pin) = opaque macro.
+  A UserBlock with only ZK children (no Block/Pin) = opaque macro (`is_opaque=1`, zero XML pins; 5,082 instances / 123 types).
+  `resolve.recover_opaque_pins` (after `direction.run`) re-creates the visible part of their interface as real `pin` rows with
+  `origin='decl'` (a variable whose `decl_connection` = block path + pin; direction from evidence, `dir_source='R'`) or
+  `origin='link'` (a sibling `L:Block.Pin` target; direction opposite to the referrer, `dir_source='L'`). `resolve.run`
+  purges recovered rows for the controllers being built first (post-only builds). `lib_pin_usage` gives a catalogue
+  (names + usage, no wiring) for 12 more types; ~1,216 instances have no visible interface at all.
 * `Pin` attrs: `Name`, `Connection`, `Address`, `Value`, `Description`, `Access`, `Alias`, `AliasOverride`,
   `StatusAddress`, `EgdPage`, `FormatSpecification`, `PermanentConnection`, `NovRam`, `LibName`, `Usage`.
 * `Connection` forms (classify → `pin.conn_kind`):

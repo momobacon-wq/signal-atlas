@@ -396,8 +396,8 @@
   };
 
   /* ------------------------------------------------------------------ 徽章：方向 / 來源 / 旗標 */
-  D.DIR_LABEL = { I: '輸入', O: '輸出', S: '狀態/常數', '?': '方向未知' };
-  D.SRC_LABEL = { U: '介面腳 Usage', T: '手冊表/人工覆寫', C: '常數規則', L: '連線投票', H: '命名慣例', '-': '無' };
+  D.DIR_LABEL = { I: '輸入', O: '輸出', S: '狀態/常數', C: '常數', '?': '方向未知' };
+  D.SRC_LABEL = { U: '介面腳 Usage', T: '手冊表/人工覆寫', C: '常數規則', L: '連線投票', H: '命名慣例', R: '回推', '-': '無' };
   D.dirBadge = function (dir) {
     dir = dir || '?';
     return D.h('span', { class: 'bd dir dir-' + (dir === '?' ? 'q' : dir), text: dir, title: '方向：' + (D.DIR_LABEL[dir] || dir) });
@@ -405,9 +405,35 @@
   D.srcBadge = function (src) {
     src = src || '-';
     const legend = (D.man && D.man.dir_legend && D.man.dir_legend[src]) || D.SRC_LABEL[src] || src;
-    const inferred = src === 'L' || src === 'H';
+    const inferred = src === 'L' || src === 'H' || src === 'R';
     return D.h('span', { class: 'bd src src-' + (src === '-' ? 'none' : src) + (inferred ? ' inferred' : ''), text: src, title: '來源：' + legend + (inferred ? '（推斷）' : '') });
   };
+  /* ---- 不透明巨集（介面在加密區）：回推腳位 org（tuple 第 12 欄 'd' 宣告／'l' 連線／null 明文）、鎖頭圖示、介面說明行、程式庫目錄 */
+  D.ORG_LABEL = { d: '宣告', l: '連線' };
+  D.ORG_TITLE = { d: '由宣告變數回推', l: '由 L: 連線回推' };
+  D.orgOf = (p) => (p && p.length > 11 && p[11]) || null;
+  D.orgLabel = (org) => (org ? D.ORG_LABEL[org] || org : '明文');
+  /** 回推腳位小徽章「推」（class org）；title 說明回推依據 */
+  D.orgBadge = (org) => D.h('span', { class: 'bd org', text: '推', title: D.ORG_TITLE[org] || '回推' });
+  /** 鎖頭（10×11 viewBox；鎖環＋鎖身，只描邊） */
+  D.LOCK_D = 'M3 5V3.5a2 2 0 0 1 4 0V5M1.5 5h7v5.5h-7z';
+  D.lockIcon = (title) => D.svg('svg', { viewBox: '0 0 10 11', class: 'lock-ico', 'aria-hidden': title ? null : 'true', role: title ? 'img' : null }, title ? D.svg('title', { text: title }) : null, D.svg('path', { d: D.LOCK_D }));
+  /** manifest.lib_iface[type]：不透明巨集型別的程式庫目錄 [[pin, dir]…]（只有名稱與方向，無接線）；無 → null */
+  D.libIface = (type) => (D.man && D.man.lib_iface && type && D.man.lib_iface[type]) || null;
+  /** 不透明方塊的介面說明：rc=[nDecl,nLink] → 回推；否則目錄；否則無腳位。回傳 {kind:'rc'|'cat'|'none', n, text, cat} */
+  D.opaqueInfo = function (rec) {
+    const rc = rec && rec.rc;
+    if (Array.isArray(rc) && (Number(rc[0]) || 0) + (Number(rc[1]) || 0) > 0) { const n = (Number(rc[0]) || 0) + (Number(rc[1]) || 0); return { kind: 'rc', n, nd: Number(rc[0]) || 0, nl: Number(rc[1]) || 0, text: '介面回推 ' + n + ' 腳（可能不完整）' }; }
+    const cat = D.libIface(rec && rec.type);
+    if (cat && cat.length) return { kind: 'cat', n: cat.length, cat, text: '目錄介面 ' + cat.length + ' 腳（無接線）' };
+    return { kind: 'none', n: 0, text: '介面加密，無可見腳位' };
+  };
+  /** 介面說明行（鎖頭 + 文字）：側欄／方塊頁共用 */
+  D.opaqueLine = (rec, cls) => { const oi = D.opaqueInfo(rec); return D.h('p', { class: 'opq-line muted small' + (cls ? ' ' + cls : ''), title: oi.kind === 'rc' ? '宣告 ' + oi.nd + '、連線 ' + oi.nl : null }, D.lockIcon(), ' ', oi.text); };
+  /** 程式庫目錄表（腳位／方向）＋說明 caption */
+  D.catalogueTable = (cat) => D.frag(
+    D.h('p', { class: 'cat-cap muted small', text: '程式庫目錄（只有名稱與方向，接線在加密區）' }),
+    D.table(['腳位', '方向'], cat.map(([pn, d]) => [D.mono(pn, 'b'), D.dirBadge(d)]), 'cat compact'));
   D.FLAGS = [[2, 'io', 'I/O', '有 I/O 端子'], [4, 'egd', 'EGD', '跨控制器 EGD'], [8, 'hmi', 'HMI', '出現在 HMI 畫面'], [16, 'alm', '警報', '有警報屬性'],
     [32, 'const', '常數', '常數'], [64, 'copy', 'EGD副本', 'EGD 副本（由他站送來）'], [128, 'enc', '加密', '在加密程式內']];
   D.flagIcons = function (flags) {

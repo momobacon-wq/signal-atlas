@@ -46,6 +46,17 @@ def cmd_build(a):
     path = dbm.db_path()
     if a.full and path.exists():
         path.unlink()
+    if path.exists():   # schema check BEFORE the DDL touches the file (new columns/indexes would fail on an old table)
+        import sqlite3 as _sq
+        try:
+            c0 = _sq.connect(str(path)); have = dbm.get_meta(c0, "schema_version"); c0.close()
+        except Exception:
+            have = None
+        if have != dbm.SCHEMA_VERSION:
+            if a.ctrl:
+                raise SystemExit(f"index schema {have} != {dbm.SCHEMA_VERSION}: run a full build first (py tools/dcdas.py build)")
+            log(f"schema {have} -> {dbm.SCHEMA_VERSION}: rebuilding the index from scratch")
+            path.unlink()
     conn = dbm.open_build(path)
     t0 = time.time()
     all_ctrls = inv.controllers(root)
@@ -113,6 +124,8 @@ def cmd_build(a):
         resolve.run(conn, root, ctrls, log)
         log("[direction]")
         direction.run(conn, HERE, log)
+        log("[opaque]")
+        resolve.recover_opaque_pins(conn, [c.name for c in ctrls], log)
         resolve.refresh_mirror_kinds(conn, log)
         log("[fts]")
         resolve.rebuild_fts(conn, log)

@@ -162,8 +162,10 @@
     return graph;
   };
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-  /** 腳位名寬（brief 含同行描述；描述字較小） */
-  const pinNameW = (p, mode) => dg.measure(dg.trunc(p.pin, 12)) + (mode === 'brief' && p.desc ? dmeasure(NB2 + dline(p.desc, TR_PIN)) : 0);
+  const ORG_TXT = ' 推'; // 回推腳徽章（腳位名後的 tspan.org）
+  /** 腳位名寬（brief 含同行描述；描述字較小；回推腳含「推」徽章） */
+  const pinNameW = (p, mode) => dg.measure(dg.trunc(p.pin, 12)) + (p.org ? dmeasure(ORG_TXT) : 0) + (mode === 'brief' && p.desc ? dmeasure(NB2 + dline(p.desc, TR_PIN)) : 0);
+  const LOCK_W = 11; // 型別行前的鎖頭寬
   /** 標籤卡尺寸（依密度模式）→ 寫回 t.name / t.lines / t.w / t.h；full 有描述 = 固定寬說明卡 */
   function sizeTag(t, mode) {
     t.lines = [];
@@ -228,8 +230,10 @@
       const rows = Math.max(n.left.length, n.right.length);
       const bd = mode === 'brief' ? dline(n.desc, TR_BLK) : '';
       n.descLine = bd;
-      n.titleH = TITLE_H + (bd ? BDESC_H : 0);
-      let need = Math.max(dg.measure(n.name) + 16, dg.measure(n.type || '') + 16, bd ? dmeasure(bd) + 16 : 0);
+      // 不透明方塊：型別行前鎖頭 + 一行介面說明（回推 N 腳／目錄 N 腳／無腳位）
+      n.opqLine = n.opaque ? D.opaqueInfo(n).text : '';
+      n.titleH = TITLE_H + (bd ? BDESC_H : 0) + (n.opqLine ? BDESC_H : 0);
+      let need = Math.max(dg.measure(n.name) + 16, dg.measure(n.type || '') + 16 + (n.opaque ? LOCK_W : 0), bd ? dmeasure(bd) + 16 : 0, n.opqLine ? dmeasure(n.opqLine) + 16 : 0);
       const anyPinDesc = full && n.left.concat(n.right).some((p) => p.desc);
       for (let i = 0; i < rows; i++) {
         const l = n.left[i], r = n.right[i];
@@ -397,7 +401,7 @@
   function renderNode(graph, n) {
     const cls = ['node', n.kind === 'ub' ? 'blk ub' : n.kind === 'block' ? 'blk' : n.kind, n.cls || ''].join(' ').trim();
     const g = D.svg('g', { class: cls, 'data-id': n.id, 'data-key': n.key || null, 'data-var': n.kind === 'var' ? n.varFull : null, tabindex: '0', transform: 'translate(' + r1(n.x) + ' ' + r1(n.y) + ')' });
-    const tt = [n.key || n.name || '', n.type ? '[' + n.type + ']' : '', n.sub || '', n.desc || ''].filter(Boolean).join('\n');
+    const tt = [n.key || n.name || '', n.type ? '[' + n.type + ']' : '', n.sub || '', n.opaque ? '不透明：' + (n.opqLine || D.opaqueInfo(n).text) : '', n.desc || ''].filter(Boolean).join('\n');
     g.appendChild(D.svg('title', { text: tt }));
     const bx = n.tagL;
     if (n.kind === 'comment') {
@@ -420,25 +424,31 @@
     g.appendChild(D.svg('rect', { class: 'box', x: r1(bx), y: 0, width: r1(n.boxW), height: r1(n.h), rx: 4 }));
     if (n.kind === 'ub') g.appendChild(D.svg('rect', { class: 'box2', x: r1(bx + 3), y: 3, width: r1(n.boxW - 6), height: r1(n.h - 6), rx: 3 }));
     g.appendChild(D.svg('text', { class: 'name', x: r1(bx + 7), y: 12, text: dg.trunc(n.name || '', 30) }));
-    if (n.type || n.sub) g.appendChild(D.svg('text', { class: 'type', x: r1(bx + 7), y: 23, text: dg.trunc((n.type || '') + (n.sub ? '  ' + n.sub : ''), 40) }));
-    if (n.descLine) g.appendChild(D.svg('text', { class: 'bdesc', x: r1(bx + 7), y: 35, text: n.descLine }));
+    // 不透明方塊：型別前小鎖頭（描邊 path，無 emoji）＋型別下一行介面說明 .opq（size() 算好 n.opqLine）
+    if (n.opaque) g.appendChild(D.svg('path', { class: 'lock', d: D.LOCK_D, transform: 'translate(' + r1(bx + 7) + ' 14.5) scale(0.8)' }));
+    if (n.type || n.sub) g.appendChild(D.svg('text', { class: 'type', x: r1(bx + 7 + (n.opaque ? LOCK_W : 0)), y: 23, text: dg.trunc((n.type || '') + (n.sub ? '  ' + n.sub : ''), 40) }));
+    let ly = 35;
+    if (n.opqLine) { g.appendChild(D.svg('text', { class: 'bdesc opq', x: r1(bx + 7), y: ly, text: n.opqLine })); ly += BDESC_H; }
+    if (n.descLine) g.appendChild(D.svg('text', { class: 'bdesc', x: r1(bx + 7), y: ly, text: n.descLine }));
     const dirCls = (p) => 'dir-' + (p.dir === '?' || !p.dir ? 'q' : p.dir);
     // 腳位列：brief = 左側「pin␣␣描述」、右側「描述␣␣pin」同行（.pdesc tspan；nbsp 不會被折疊）；
     //   full = 腳位名一行，描述換行（p.descLines，size() 算好）在下方 .pdesc；port 圓點對齊腳位名那一行
+    //   回推腳（p.org）：腳位名後加 tspan.org「推」；title 含回推依據
+    const nameSpans = (p, name) => (p.org ? [D.svg('tspan', { text: name }), D.svg('tspan', { class: 'org', text: ORG_TXT })] : [D.svg('tspan', { text: name })]);
     const pinText = (p, right) => {
       const name = dg.trunc(p.pin, 12);
       const attrs = right ? { class: 'pin', x: r1(bx + n.boxW - 7), y: p.y + 3.5, 'text-anchor': 'end' } : { class: 'pin', x: r1(bx + 7), y: p.y + 3.5 };
-      const title = p.desc ? D.svg('title', { text: p.pin + '\n' + p.desc }) : null;
+      const ttl = p.pin + (p.desc ? '\n' + p.desc : '') + (p.org ? '\n' + (D.ORG_TITLE[p.org] || '回推') : '');
+      const title = p.desc || p.org ? D.svg('title', { text: ttl }) : null;
       if (mode === 'full' && p.descLines && p.descLines.length) {
-        attrs.text = name;
-        const grp = D.svg('g', { class: 'pinrow' }, D.svg('text', attrs));
+        const grp = D.svg('g', { class: 'pinrow' }, D.svg('text', attrs, nameSpans(p, name)));
         p.descLines.forEach((d, i) => grp.appendChild(D.svg('text', { class: 'pdesc', x: attrs.x, y: r1(p.y + 15.5 + i * DESC_LH), 'text-anchor': right ? 'end' : null, text: d })));
         grp.appendChild(title);
         return grp;
       }
       const d = mode === 'brief' && p.desc ? dline(p.desc, TR_PIN) : '';
-      if (!d) { attrs.text = name; return D.svg('text', attrs, title); }
-      return D.svg('text', attrs, right ? [D.svg('tspan', { class: 'pdesc', text: d + NB2 }), D.svg('tspan', { text: name })] : [D.svg('tspan', { text: name }), D.svg('tspan', { class: 'pdesc', text: NB2 + d })], title);
+      if (!d) return D.svg('text', attrs, nameSpans(p, name), title);
+      return D.svg('text', attrs, right ? [D.svg('tspan', { class: 'pdesc', text: d + NB2 }), nameSpans(p, name)] : [nameSpans(p, name), D.svg('tspan', { class: 'pdesc', text: NB2 + d })], title);
     };
     for (const p of n.left) {
       g.appendChild(D.svg('circle', { class: 'port ' + dirCls(p), cx: r1(bx), cy: p.y, r: PORT_R, 'data-port': p.id, 'data-var': p.varFull || null }));
@@ -844,6 +854,9 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
 .node .desc,.node .pdesc,.node .bdesc,.tag text.desc{font-size:10px;fill:var(--desc);font-weight:400}
 .tag text.tname{font-size:11px;font-weight:700}
 .node .cap-ln{stroke:var(--border);stroke-width:1}
+.node .lock{fill:none;stroke:var(--muted);stroke-width:1.2;stroke-linejoin:round}
+.node .pin .org{font-size:8px;fill:var(--accent-text);font-weight:700}
+.node .bdesc.opq{fill:var(--muted)}
 `;
   function exportCss() {
     const cs = getComputedStyle(document.documentElement);
@@ -869,6 +882,7 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
     }
     const heads = D.h('div', { class: 'dg-side-tags' }, n.type ? D.tag(n.type, 'lg') : null, ' ', D.tag(n.kind === 'ub' ? 'UserBlock' : (n.kindLabel || 'block')), n.opaque ? D.frag(' ', D.tag('不透明 opaque', 'warn')) : null, n.sub ? D.frag(' ', D.h('span', { class: 'muted small mono', text: n.sub })) : null);
     out.push(heads);
+    if (n.opaque) out.push(D.opaqueLine(n)); // 鎖頭 + 介面回推 N 腳／目錄介面 N 腳／介面加密
     if (n.desc) out.push(D.h('p', { class: 'dg-side-desc small' }, D.lines(dg.trunc(n.desc, 600))));
     const acts = D.h('div', { class: 'dg-side-actions' },
       n.key ? D.link(D.hrefBKey(n.key), '開方塊頁', 'btn sm') : null,
@@ -888,16 +902,24 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
         const port = portByPin.get(name);
         return descTd(pinDesc || (port && (port.desc || port.varDesc)) || (varFull && vdMap[varFull]) || '');
       };
+      // 不透明方塊（有回推腳）多一欄「來源」：明文／宣告／連線
       const rows = pins.map((p) => {
         const [name, dir, src, ck, conn, varFull, tgtKey, tgtPin] = p;
+        const org = D.orgOf(p);
         let to;
-        if (ck === 'V' && varFull) to = D.h('a', { href: D.hrefV(varFull), class: 'lk mono', text: varFull, title: varFull });
+        if ((ck === 'V' || (ck === 'A' && org)) && varFull) to = D.h('a', { href: D.hrefV(varFull), class: 'lk mono', text: varFull, title: varFull });
         else if ((ck === 'L' || ck === 'P') && tgtKey) to = D.h('a', { href: D.hrefBKey(tgtKey), class: 'lk mono', text: tgtKey.slice(tgtKey.lastIndexOf('/') + 1) + '.' + (tgtPin || ''), title: conn || '' });
         else if (ck === 'N' || ck === 'E') to = D.mono(conn || '', 'const');
         else to = D.mono(conn || '—');
-        return [D.frag(D.mono(name, 'b'), ' ', D.dirBadge(dir), D.srcBadge(src)), CK[ck] || ck || '—', to, descCell(name, varFull, p.length > 10 ? p[10] : null)];
+        const row = [D.frag(D.mono(name, 'b'), ' ', D.dirBadge(dir), D.srcBadge(src)), CK[ck] || ck || '—', to, descCell(name, varFull, p.length > 10 ? p[10] : null)];
+        if (n.opaque) row.splice(1, 0, org ? D.frag(D.orgBadge(org), ' ', D.orgLabel(org)) : D.h('span', { class: 'muted', text: '明文' }));
+        return row;
       });
-      out.push(D.h('h4', { text: '腳位（' + pins.length + '）' }), D.table(['腳位', '種類', '連到', '說明'], rows, 'pins compact'));
+      out.push(D.h('h4', { text: '腳位（' + pins.length + '）' }), D.table(n.opaque ? ['腳位', '來源', '種類', '連到', '說明'] : ['腳位', '種類', '連到', '說明'], rows, 'pins compact'));
+    } else if (n.opaque && D.opaqueInfo(n).kind === 'cat') {
+      // 無腳位的不透明方塊：列程式庫目錄（只有名稱與方向）
+      const cat = D.opaqueInfo(n).cat;
+      out.push(D.h('h4', { text: '腳位（目錄 ' + cat.length + '）' }), D.catalogueTable(cat));
     } else if (n.left.length || n.right.length) {
       out.push(D.h('h4', { text: '腳位' }), D.table(['腳位', '方向', '連線', '說明'], n.left.concat(n.right).map((p) =>
         [D.mono(p.pin, 'b'), D.dirBadge(p.dir), p.varFull ? D.h('a', { href: D.hrefV(p.varFull), class: 'lk mono', text: p.varFull }) : D.mono(D.val(p.conn)), descTd(p.desc || p.varDesc || '')])));

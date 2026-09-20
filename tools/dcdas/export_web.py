@@ -332,15 +332,19 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     pins_by_block = defaultdict(list)
     block_vars = defaultdict(set)      # block_id -> var ids referenced by its pins (for the per-task description map)
     a_vars_by_block = defaultdict(set)   # block_id -> var ids on declared-at-pin (A + var) pins
-    for r in conn.execute("""SELECT block_id,name,direction,dir_source,conn_kind,connection,var_id,tgt_block_id,tgt_pin,address,alias,description
+    rc_by_block = {}                   # block_id -> [nDecl, nLink] for opaque macros with recovered interface pins
+    ORG = {"decl": "d", "link": "l"}
+    for r in conn.execute("""SELECT block_id,name,direction,dir_source,conn_kind,connection,var_id,tgt_block_id,tgt_pin,address,alias,description,origin
                              FROM pin ORDER BY block_id,id"""):
         tb = blk.get(r[7]) if r[7] else None
         pins_by_block[r[0]].append([r[1], r[2] or "?", r[3] or "-", r[4] or "-", r[5], var_name.get(r[6]),
                                     (f"{tb[0]}|{tb[2]}" if tb else None), r[8], r[9], r[10],
-                                    (r[11].split("\n")[0].strip() or None) if r[11] else None])
+                                    (r[11].split("\n")[0].strip() or None) if r[11] else None, ORG.get(r[12])])
+        if r[12]:
+            rc_by_block.setdefault(r[0], [0, 0])[0 if r[12] == "decl" else 1] += 1
         if r[6] is not None:
             block_vars[r[0]].add(r[6])
-            if (r[4] or "-") == "A":
+            if (r[4] or "-") == "A" or r[12]:
                 a_vars_by_block[r[0]].add(r[6])
         # (pin id is not selected here; mirrors are attached below by block+pin name)
     var_desc = {r[0]: r[1].split("\n")[0].strip() for r in conn.execute(
@@ -370,7 +374,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         b = {"ctrl": ctrl, "program": prog, "path": path, "name": name, "type": btype, "kind": kind, "ver": ver,
              "opaque": opq, "desc": desc, "drg": ldrg, "pid": p_id, "device": dev, "hmi": hlo, "lay": lay,
              "attrs": attrs.get(bid, {}), "pins": pins_by_block.get(bid, []), "line": ln,
-             "file": f"{ctrl}/_{prog}.xml"}
+             "file": f"{ctrl}/_{prog}.xml", "rc": rc_by_block.get(bid)}
         tkey = task_key(ctrl, path)
         task_items[tkey].append(_dump(key) + ":" + _dump(_compact(b)))
         task_n[tkey] += 1
@@ -458,6 +462,14 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         }
     btypes = [[r[0], r[1]] for r in conn.execute(
         "SELECT block_type,count(*) FROM block WHERE kind='block' GROUP BY block_type ORDER BY 2 DESC")]
+    # interface catalogue (pin name + usage, no wiring) for opaque macro types whose library instances are visible
+    lib_iface = defaultdict(list)
+    for bt, pn, us in conn.execute("""SELECT l.def_name, l.pin_name, l.usage FROM lib_pin_usage l
+                                      WHERE l.pin_name<>'' AND l.def_name IN (SELECT DISTINCT block_type FROM block WHERE is_opaque=1)
+                                      GROUP BY l.def_name, l.pin_name ORDER BY l.def_name, l.usage, l.pin_name"""):
+        lib_iface[bt].append([pn, {"Input": "I", "Output": "O", "Const": "C", "State": "S"}.get(us or "", "?")])
+    n_opaque = conn.execute("SELECT count(*) FROM block WHERE is_opaque=1").fetchone()[0]
+    n_opaque_rec = conn.execute("SELECT count(DISTINCT block_id) FROM pin WHERE origin IS NOT NULL").fetchone()[0]
     man = {
         "site": "Signal Atlas",
         "source": {"toolbox_version": get_meta(conn, "toolbox_version"), "indexed_at": get_meta(conn, "built_at"),
@@ -465,7 +477,9 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         "controllers": [{"name": c["name"], "kind": c["kind"], "redundancy": c["redundancy"],
                          "product_version": c["product_version"], **counts[c["name"]]} for c in ctrls],
         "shards": {"var": 16 ** VAR_SHARDS, "task": 16 ** VAR_SHARDS, "screen": 16 ** SCREEN_SHARDS},
-        "dir_legend": {"U": "介面腳 Usage", "T": "手冊表/人工覆寫", "C": "常數規則", "L": "連線投票", "H": "命名慣例", "?": "未知"},
+        "dir_legend": {"U": "介面腳 Usage", "T": "手冊表/人工覆寫", "C": "常數規則", "L": "連線投票", "H": "命名慣例", "R": "回推（不透明巨集）", "?": "未知"},
+        "opaque": {"n": n_opaque, "recovered": n_opaque_rec},
+        "lib_iface": dict(lib_iface),
         "flags": {"1": "has_writer", "2": "has_io", "4": "has_egd", "8": "has_hmi", "16": "has_alarm", "32": "const",
                   "64": "egd_copy", "128": "in_encrypted"},
         "encrypted_programs": enc_programs,

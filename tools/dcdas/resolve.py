@@ -17,7 +17,7 @@ def _upd(conn, sql, log, label):
 
 
 def link_declared_pins(conn, ctrl_names, log=print):
-    """Address-only pins (conn_kind 'A', no Connection attr) whose value ToolboxST publishes as a global variable
+    """Address-only pins (conn_kind 'A', no Connection attr) whose value the configuration tool publishes as a global variable
     declared AT that pin (GlobalNamePrefix Block/Task/Full). Link pin.var_id so writers/readers/traces/diagrams see it.
     Rules per controller, first hit wins: (1) variable.name == Block.Pin  (2) variable.decl_connection ==
     Program.<path dots>.Pin  (3) unique variable at the same address (prefer names not starting with 'DistributedIO.')."""

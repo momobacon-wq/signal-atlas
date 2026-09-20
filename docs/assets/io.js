@@ -60,7 +60,7 @@
         if (!rows.length) continue;
         list.append(D.section('機櫃 ' + cab, D.table(['模組', 'ID', '冗餘', 'IP', '端子板', '點數'], rows), { count: rows.length }));
       }
-      if (!list.childElementCount) list.append(D.empty(modules.length ? '沒有符合的模組' : '此控制器沒有 I/O 資料（可能尚未匯出或非 Mark VIe）'));
+      if (!list.childElementCount) list.append(D.empty(modules.length ? '沒有符合的模組' : '此控制器沒有 I/O 資料（可能尚未匯出或此控制器沒有分散式 I/O）'));
     }
     filter.addEventListener('input', D.debounce(draw, 120));
     D.set(view, 

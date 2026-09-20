@@ -529,9 +529,9 @@
     const sideBody = D.h('div', { class: 'dg-side-body' });
     const side = D.h('aside', { class: 'dg-side', 'aria-label': '詳細資料' },
       D.h('div', { class: 'dg-side-head' }, sideTitle, D.h('button', { type: 'button', class: 'icon-btn dg-side-close', 'aria-label': '關閉面板', title: '關閉', onclick: () => inst.clear() }, ico(ICONS.close))), sideBody);
-    const wrap = D.h('div', { class: 'dg-wrap' }, canvas, side);
-    const status = D.h('div', { class: 'dg-status muted small', role: 'status', 'aria-live': 'polite' });
-    const root = D.h('div', { class: 'dg', tabindex: '-1' }, bar, wrap, status);
+    const status = D.h('div', { class: 'dg-status', role: 'status', 'aria-live': 'polite' });
+    const wrap = D.h('div', { class: 'dg-wrap' }, canvas, side, status); // 狀態列浮在畫布左下角，不佔高度
+    const root = D.h('div', { class: 'dg', tabindex: '-1' }, bar, wrap);
     inst.el = root; inst.side = side; inst.sideBody = sideBody; inst.canvas = canvas; inst.tools = tools; inst.statusEl = status; inst.titleEl = title;
     document.body.classList.add('wide');
     D.set(view, root);
@@ -565,7 +565,7 @@
       dg.tool('print', '列印', () => inst.print(), { title: '列印（先適應視窗）' }),
       dg.tool('save', '匯出 SVG', () => inst.exportSvg(), { title: '下載 SVG 檔' }));
     inst.addTool = (el) => { extra.appendChild(el); return el; };
-    inst.status = (text) => { status.textContent = text || ''; };
+    inst.status = (text) => { status.textContent = text || ''; status.title = text || ''; };
     inst.setTitle = (t) => { title.textContent = t || ''; };
     inst.setLoading = (msg) => { D.set(canvas, D.loading(msg || '載入中…')); };
     inst.setMessage = (...els) => { D.set(canvas, D.h('div', { class: 'dg-msg' }, els)); };

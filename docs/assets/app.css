@@ -286,9 +286,10 @@ body.auth-locked .app-header, body.auth-locked .app-body { filter: blur(3px); po
 @media print { .app-header, .toast, .topbar-progress, .ph-actions { display: none !important; } .sec { break-inside: avoid; } }
 
 /* ---------------------------------------------------------------- 邏輯方塊圖（assets/diagram.js / dtask.js / dsignal.js） */
-body.wide .main { max-width: none; padding: 8px 12px 16px; }
-.dg { display: flex; flex-direction: column; height: calc(100vh - var(--hdr) - 30px); min-height: 420px; outline: none; }
-.dg-bar { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 2px 0 6px; }
+body.wide .main { max-width: none; padding: 4px 10px 4px; }
+/* 圖面填滿視窗：100dvh 在支援的瀏覽器（iPad Safari 工具列收合時）覆蓋 100vh */
+.dg { display: flex; flex-direction: column; height: calc(100vh - var(--hdr) - 8px); height: calc(100dvh - var(--hdr) - 8px); min-height: 420px; outline: none; }
+.dg-bar { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 0 0 4px; }
 .dg-head { min-width: 0; }
 .dg-title { font-size: 16px; font-weight: 700; color: var(--accent-text); word-break: break-all; }
 .dg-tools { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
@@ -306,7 +307,13 @@ body.wide .main { max-width: none; padding: 8px 12px 16px; }
 .dg-pages { display: flex; flex-wrap: wrap; gap: 4px; }
 .dg-banner { position: absolute; left: 8px; top: 8px; right: 8px; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; font-size: 12.5px; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; box-shadow: 0 2px 6px rgba(20, 30, 50, 0.08); cursor: auto; }
 .dg-banner.warn { color: var(--warn); border-color: var(--warn-bd); background: var(--warn-bg); }
-.dg-status { padding: 4px 2px 0; min-height: 20px; }
+/* 狀態列：浮在畫布左下角，不佔版面高度；超長以 … 截斷（完整文字在 title） */
+.dg-status { position: absolute; left: 6px; bottom: 4px; z-index: 3; max-width: calc(100% - 12px); padding: 1px 7px; font-size: 11px; line-height: 1.5; color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: 5px; opacity: 0.9; pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dg-status:empty { display: none; }
+/* 圖面頁的頁尾只留一行小字（版本表與注意事項在其他頁面仍可看到） */
+body.wide .foot { margin-top: 4px; padding-top: 3px; font-size: 11px; line-height: 1.4; }
+body.wide .foot .foot-row { margin: 0; gap: 2px 12px; }
+body.wide .foot .foot-rev, body.wide .foot .foot-row.small { display: none; }
 /* 側欄 */
 .dg-side { flex: 0 0 320px; width: 320px; display: none; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--surface); }
 .dg-side.open { display: flex; }
@@ -419,7 +426,7 @@ body.wide .main { max-width: none; padding: 8px 12px 16px; }
 [data-theme="dark"] .dg-svg .node.leaf.io .name { fill: #86efac; }
 /* 窄螢幕：側欄變底部抽屜；工具列只留圖示 */
 @media (max-width: 900px) {
-  .dg { height: calc(100vh - var(--hdr) - 24px); min-height: 360px; }
+  .dg { height: calc(100vh - var(--hdr) - 8px); height: calc(100dvh - var(--hdr) - 8px); min-height: 360px; }
   .dg-side { position: absolute; left: 0; right: 0; bottom: 0; width: auto; flex: none; max-height: 45vh; border-left: 0; border-top: 1px solid var(--border-strong); border-radius: 10px 10px 0 0; box-shadow: 0 -6px 20px rgba(20, 30, 50, 0.18); z-index: 4; }
   .dg-side-head { padding: 6px 10px; }
   .dg-side-head::before { content: ""; position: absolute; left: 50%; top: 3px; width: 36px; height: 3px; margin-left: -18px; border-radius: 3px; background: var(--border-strong); }

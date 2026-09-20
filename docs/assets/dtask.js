@@ -1,4 +1,4 @@
-/* Signal Atlas — Task 邏輯圖 #/d/<CTRL>/<Program>/<Task>?ub=<block_path>&f=&pins=1&cm=0|1&sel=<CTRL.VAR>&b=<key>&page=k&all=1&desc=off|brief|full(0|1|2)
+/* Signal Atlas — Task 邏輯圖 #/d/<CTRL>/<Program>/<Task>?ub=<block_path>&f=&pins=1&cm=0|1&sel=<CTRL.VAR>&b=<key>&page=k&all=1&desc=off|brief|full(0|1|2)&pin=cut|wrap|full(0|1|2)
  * 由 task/<hhh>.json 的整份 task 記錄建圖（buildGraph，規則見 plan §二），交給 D.dg（diagram.js）排版／渲染／互動。
  * 說明：腳位 tuple 第 11 欄 → port.desc；entry.vd[varFull] → port.varDesc / tag.desc / graph.varDesc（舊資料 10 欄／無 vd → 無描述）。
  * 宣告於腳位（ck 'A' 且有 varFull）：走線／標籤規則同 V；可見性依 entry.vu[varFull]=[nW,nR,flags]（除自己外還有人接、或 I/O／EGD／HMI／警報）或 PID 家族關鍵腳；?pins=1 全顯。
@@ -317,6 +317,7 @@
     const inst = D.dg.create(view, {
       crumbs, title: rootPath, fileName: ctrl + '_' + rootPath.replace(/\//g, '_'),
       descMode: D.dg.descPref(q), // ?desc=off|brief|full（0|1|2）只影響本次；否則 localStorage／預設 full
+      pinMode: D.dg.pinPref(q), // ?pin=cut|wrap|full（0|1|2）腳位名顯示；同上
       varHint: '雙擊變數標籤：輸入 → 展開到寫入者所在 task；輸出 → 讀取者所在 task。',
       onDblVar: (v, ctx, i) => { expandVar(v, ctx, i, cur).catch((e) => console.warn(e)); },
       nodeActions: (n) => (n.kind === 'ub' && !n.opaque ? D.link(href({ ub: n.key.slice(n.key.indexOf('|') + 1), page: null, f: null }), '展開內部', 'btn sm') : null),

@@ -18,6 +18,10 @@
  *   brief：各處一行截斷（腳位同行 28 字、標籤第二行 36 字、pill 第二行 40 字、方塊型別下一行 36 字）。off：只名稱。
  *   腳位列高逐列計算：max(16 + 12×腳位描述行數, 標籤卡高 + 4)，左右取 max；port 對齊腳位名那一行。tooltip <title> 一律含全文。
  *   切換 → 重新 size→layout→route→render，保留 viewBox／選取／高亮。graph.showDesc（布林 = mode !== 'off'）保留供相容，另有 graph.descMode。
+ * 腳位名顯示（pinMode ∈ 'cut'|'wrap'|'full'，預設 wrap）：`?pin=0|1|2` 或 `cut|wrap|full` 只影響本次（頁面以 D.dg.pinPref(query) 解析）；
+ *   否則 localStorage `atlas.dg.pin`。工具列「腳位：換行」循環 換行 → 完整 → 精簡。
+ *   cut：每側單行 PIN_NAME_CUT px（約 12 字）超過 …；wrap：每側單行 PIN_NAME_MAX px 內撐寬方塊，超過在 _／駝峰邊界換行 ≤PIN_NAME_LINES 行，仍超過 …；
+ *   full：不換行，方塊加寬到放得下（上限 BOX_MAX_P），超過才 …。三者所有腳位 <title> 含全名；port／走線對齊腳位名第一行；列高加 PIN_LH×(行數−1)。
  *
  * 管線（全部掛在 D.dg）：
  *   D.dg.prepare(graph)          正規化：graph.ports Map、port.node/side、varIndex
@@ -33,10 +37,13 @@
  *       inst.descMode／inst.showDesc（目前狀態）／inst.setDesc(mode|boolean|省略=循環)（切換說明密度；重排但保留 viewBox／選取）
  *       opts: { crumbs:[el], title:string, nodeActions(node, inst)→[el], varActions(varFull, inst)→[el],
  *               onSelect(node, inst), onVar(varFull, inst), onDblNode(node, inst), onDblVar(varFull, ctx, inst),
- *               varHint:string（變數面板提示，例「雙擊標籤展開到寫入者所在 task」）, descMode:'off'|'brief'|'full'（省略 → localStorage／預設 full；舊 showDesc:boolean 仍接受）}
+ *               varHint:string（變數面板提示，例「雙擊標籤展開到寫入者所在 task」）, descMode:'off'|'brief'|'full'（省略 → localStorage／預設 full；舊 showDesc:boolean 仍接受）,
+ *               pinMode:'cut'|'wrap'|'full'（省略 → localStorage／預設 wrap）}
  *   D.dg.blockPanel(node, inst) / D.dg.varPanel(varFull, inst)   預設側欄內容（可被 opts 取代）
  *   D.dg.wrapText(text, maxW, maxLines) / D.dg.fitText(s, maxW) / D.dg.measure(text) / D.dg.trunc(s, n) / D.dg.firstLine(s) / D.dg.descAll(s)
  *   D.dg.descPref(query) → 'off'|'brief'|'full' / D.dg.normMode(v) / D.dg.saveDescPref(mode) / D.dg.MODES / D.dg.MODE_LABEL
+ *   D.dg.pinPref(query) → 'cut'|'wrap'|'full' / D.dg.normPinMode(v) / D.dg.savePinPref(mode) / D.dg.PIN_MODES / D.dg.PIN_LABEL / D.dg.wrapPin(name, maxW, maxLines)
+ *   inst.pinMode／inst.setPin(mode|省略=循環)
  * 需先 D.loadScript('dagre.min.js')（全域 dagre）。CSP：無 inline script；SVG 文字皆走 textContent。 */
 'use strict';
 (function () {
@@ -44,7 +51,7 @@
   const dg = (D.dg = D.dg || {});
 
   /* ------------------------------------------------------------------ 常數 */
-  const PIN_H = 16, TITLE_H = 26, BODY_LH = 14, BOX_MIN = 110, BOX_MAX = 260, PORT_R = 3;
+  const PIN_H = 16, TITLE_H = 26, BODY_LH = 14, BOX_MIN = 110, BOX_MAX = 300, PORT_R = 3;
   const TAG_GAP = 10, TAG_PAD = 4, SHEET_H = 1500, SHEET_H_FULL = 2100, GAP_X = 60, GAP_Y = 40; // full 模式卡片較高 → 欄高放大，免得欄數暴增變成超寬圖
   // 說明顯示：brief 方塊寬上限、full 方塊寬（有腳位描述時至少／上限）、單行標籤高、brief 兩行標籤高、pill 高、brief 方塊描述行高、
   //   描述行距、full 說明卡寬（xref 標籤／var pill）、描述字（10px）相對量測字（11px）的寬度比
@@ -53,10 +60,17 @@
   const TAG_CARD_LINES = 3, PIN_DESC_LINES = 2, CAP_LINES = 3, PILL_LINES = 3; // full 模式各處描述行數上限
   const DESC_LS = 'atlas.dg.desc', MODES = ['full', 'off', 'brief']; // 按鈕循環順序
   const TR_PIN = 28, TR_TAG = 36, TR_PILL = 40, TR_BLK = 36; // brief 各處描述截斷字數
+  // 腳位名顯示三段：cut 每側單行 80px（約 12 字）；wrap 每側 120px 內撐寬、超過依 _／駝峰換行 ≤2 行；full 不換行、方塊加寬至 BOX_MAX_P
+  const PIN_LS = 'atlas.dg.pin', PIN_MODES = ['wrap', 'full', 'cut']; // 按鈕循環順序
+  const PIN_NAME_CUT = 80, PIN_NAME_MAX = 120, PIN_LH = 12, PIN_NAME_LINES = 2, BOX_MAX_P = 480;
+  // 型別行字 9.5px 相對量測字 11px 的寬度比；型別下的副標（訊號圖：Program/Task 路徑）獨立成行、在 /／_／駝峰邊界換行 ≤2 行、撐寬方塊至多 SUB_W_MAX
+  const TYPE_K = 9.5 / 11, SUB_LH = 11, SUB_LINES = 2, SUB_W_MAX = 170;
   const NB2 = '\u00a0\u00a0'; // 腳位名與同行描述之間（nbsp 不會被 SVG 折疊）
   dg.C = { PIN_H, TITLE_H, BODY_LH, BOX_MIN, BOX_MAX, BOX_MAX_B, BOX_MAX_D, SHEET_H, SHEET_H_FULL, TAG_H, TAG_H_D, VAR_H, VAR_H_D, DESC_LH, TAG_W_FULL, VAR_W_FULL };
   dg.MODES = MODES;
   dg.MODE_LABEL = { off: '關', brief: '精簡', full: '完整' };
+  dg.PIN_MODES = PIN_MODES;
+  dg.PIN_LABEL = { cut: '精簡', wrap: '換行', full: '完整' };
 
   /* ------------------------------------------------------------------ 文字量測 */
   let ctx = null, fontStr = '';
@@ -112,6 +126,17 @@
     return 'full';
   };
   dg.saveDescPref = function (mode) { try { localStorage.setItem(DESC_LS, dg.normMode(mode) || 'full'); } catch (e) { /* ignore */ } };
+  /** 正規化腳位名顯示模式：'cut'|'wrap'|'full' 原樣；其他 → null */
+  dg.normPinMode = (v) => (v === 'cut' || v === 'wrap' || v === 'full' ? v : null);
+  const Q_PIN = { 0: 'cut', 1: 'wrap', 2: 'full', cut: 'cut', wrap: 'wrap', full: 'full' };
+  /** 解析腳位名顯示偏好：query.pin（0|1|2 或 cut|wrap|full）只影響本次；否則 localStorage atlas.dg.pin；預設 wrap */
+  dg.pinPref = function (query) {
+    const q = query && query.pin;
+    if (q != null && q !== '' && Q_PIN[String(q).toLowerCase()]) return Q_PIN[String(q).toLowerCase()];
+    try { const v = localStorage.getItem(PIN_LS); if (dg.normPinMode(v)) return v; } catch (e) { /* 私密模式 */ }
+    return 'wrap';
+  };
+  dg.savePinPref = function (mode) { try { localStorage.setItem(PIN_LS, dg.normPinMode(mode) || 'wrap'); } catch (e) { /* ignore */ } };
   /** 依像素寬換行（先照 \n 切，再貪婪切字；單字過長則逐字切）；最多 maxLines 行（超出時最後一行截到寬內並加 …） */
   dg.wrapText = function (text, maxW, maxLines) {
     const out = [];
@@ -138,6 +163,55 @@
     }
     return out;
   };
+  /** 腳位名／路徑依像素寬換行：每行盡量在「最強」的分隔符後斷——優先 / 之後，其次 _ 或 . 之後，再其次駝峰（小寫→大寫）與字母→數字，最後逐字；
+   *  同一層級：剩餘兩行放得下時取兩行最均衡的斷點，否則取放得下的最遠斷點；該行至少要有 maxW 的 40%（否則降一層）。最多 maxLines 行（超出時把剩餘接回最後一行並截到寬內加 …）。
+   *  回傳 { lines, cut }（cut = 有 …）。不用 lookbehind（舊 Safari 會整檔語法錯） */
+  dg.wrapPin = function (name, maxW, maxLines) {
+    name = String(name == null ? '' : name);
+    maxLines = Math.max(1, maxLines || 1);
+    if (!name || dg.measure(name) <= maxW) return { lines: [name], cut: false };
+    // 每個位置 i（在第 i 個字之前斷）的層級：0 = / 之後、1 = _ . 之後、2 = 駝峰／字母→數字、3 = 任意
+    const lvlAt = (str, i) => {
+      const a = str[i - 1], b = str[i];
+      if (a === '/') return 0;
+      if (a === '_' || a === '.') return 1;
+      if ((/[a-z]/.test(a) && /[A-Z]/.test(b)) || (/[A-Za-z]/.test(a) && /[0-9]/.test(b))) return 2;
+      return 3;
+    };
+    const lines = [];
+    let rest = name;
+    while (rest && dg.measure(rest) > maxW) {
+      // 剩餘文字兩行放得下 → 在同層級的候選斷點中挑最均衡的（兩行寬度最接近）；否則貪婪取最遠的
+      const total = dg.measure(rest), twoLines = total <= maxW * 2;
+      let best = 0;
+      for (let lvl = 0; lvl < 4 && !best; lvl++) {
+        let pos = 0, score = Infinity;
+        for (let i = 1; i < rest.length; i++) {
+          if (lvlAt(rest, i) > lvl) continue;
+          const w = dg.measure(rest.slice(0, i));
+          if (w > maxW) break;
+          if (twoLines) {
+            if (total - w > maxW) continue; // 第二行放不下
+            const sc = Math.abs(w - total / 2);
+            if (sc < score) { score = sc; pos = i; }
+          } else pos = i;
+        }
+        if (pos && (lvl === 3 || dg.measure(rest.slice(0, pos)) >= maxW * 0.4)) best = pos;
+      }
+      if (!best) best = 1;
+      lines.push(rest.slice(0, best));
+      rest = rest.slice(best);
+    }
+    if (rest) lines.push(rest);
+    let cut = false;
+    if (lines.length > maxLines) {
+      const tail = lines.slice(maxLines - 1).join('');
+      lines.length = maxLines - 1;
+      lines.push(dg.fitText(tail, maxW));
+      cut = true;
+    }
+    return { lines, cut };
+  };
 
   /* ------------------------------------------------------------------ prepare / size */
   dg.prepare = function (graph) {
@@ -163,8 +237,11 @@
   };
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const ORG_TXT = ' 推'; // 回推腳徽章（腳位名後的 tspan.org）
-  /** 腳位名寬（brief 含同行描述；描述字較小；回推腳含「推」徽章） */
-  const pinNameW = (p, mode) => dg.measure(dg.trunc(p.pin, 12)) + (p.org ? dmeasure(ORG_TXT) : 0) + (mode === 'brief' && p.desc ? dmeasure(NB2 + dline(p.desc, TR_PIN)) : 0);
+  const orgW = (p) => (p && p.org ? dmeasure(ORG_TXT) : 0);
+  /** 腳位名撐寬方塊時的計入寬：cut 至多 PIN_NAME_CUT、wrap 至多 PIN_NAME_MAX（超過會換行）、full 全寬 */
+  const PIN_SIDE_MAX = { cut: PIN_NAME_CUT, wrap: PIN_NAME_MAX, full: Infinity };
+  /** 腳位名寬（依腳位名顯示模式封頂；brief 含同行描述；描述字較小；回推腳含「推」徽章） */
+  const pinNameW = (p, mode, pm) => Math.min(dg.measure(p.pin), PIN_SIDE_MAX[pm] || PIN_NAME_MAX) + orgW(p) + (mode === 'brief' && p.desc ? dmeasure(NB2 + dline(p.desc, TR_PIN)) : 0);
   const LOCK_W = 11; // 型別行前的鎖頭寬
   /** 標籤卡尺寸（依密度模式）→ 寫回 t.name / t.lines / t.w / t.h；full 有描述 = 固定寬說明卡 */
   function sizeTag(t, mode) {
@@ -185,6 +262,7 @@
     const mode = graph.descMode = dg.normMode(opts.descMode) || (opts.descMode == null && opts.showDesc != null ? (opts.showDesc ? 'full' : 'off') : 'full');
     const sd = graph.showDesc = mode !== 'off';
     const full = mode === 'full';
+    const pm = graph.pinMode = dg.normPinMode(opts.pinMode) || 'wrap';
     const tagW = new Map(); // portId -> 標籤保留寬（含間距）
     const tagH = new Map(); // portId -> 該腳位最高的標籤卡高
     for (const t of graph.tags) {
@@ -232,33 +310,70 @@
       n.descLine = bd;
       // 不透明方塊：型別行前鎖頭 + 一行介面說明（回推 N 腳／目錄 N 腳／無腳位）
       n.opqLine = n.opaque ? D.opaqueInfo(n).text : '';
-      n.titleH = TITLE_H + (bd ? BDESC_H : 0) + (n.opqLine ? BDESC_H : 0);
-      let need = Math.max(dg.measure(n.name) + 16, dg.measure(n.type || '') + 16 + (n.opaque ? LOCK_W : 0), bd ? dmeasure(bd) + 16 : 0, n.opqLine ? dmeasure(n.opqLine) + 16 : 0);
+      // 型別行只放型別；副標 n.sub（訊號圖的 Program/Task 路徑）另起行，boxW 定了之後再換行（n.subLines）
+      const subW = n.sub ? Math.min(dg.measure(n.sub) * TYPE_K, SUB_W_MAX) : 0;
+      let need = Math.max(dg.measure(n.name) + 16, dg.measure(n.type || '') * TYPE_K + 16 + (n.opaque ? LOCK_W : 0), subW + 16, bd ? dmeasure(bd) + 16 : 0, n.opqLine ? dmeasure(n.opqLine) + 16 : 0);
       const anyPinDesc = full && n.left.concat(n.right).some((p) => p.desc);
       for (let i = 0; i < rows; i++) {
         const l = n.left[i], r = n.right[i];
-        const lw = l ? pinNameW(l, mode) + 7 : 0, rw = r ? pinNameW(r, mode) + 7 : 0;
+        const lw = l ? pinNameW(l, mode, pm) + 7 : 0, rw = r ? pinNameW(r, mode, pm) + 7 : 0;
         need = Math.max(need, lw + rw + (l && r ? 14 : 8));
       }
       for (const b of n.body) need = Math.max(need, dg.measure(b) + 16);
-      // full 且有腳位描述：方塊至少 BOX_MAX_D 寬（描述換行而不撐寬）；brief 上限 BOX_MAX_B；其餘 BOX_MAX
-      n.boxW = anyPinDesc ? Math.max(BOX_MAX_D, clamp(need, BOX_MIN, BOX_MAX)) : clamp(need, BOX_MIN, mode === 'brief' ? BOX_MAX_B : BOX_MAX);
+      // full 且有腳位描述：方塊至少 BOX_MAX_D 寬（描述換行而不撐寬）；brief 上限 BOX_MAX_B；其餘 BOX_MAX；腳位名「完整」模式再放寬到 BOX_MAX_P
+      const bmax0 = mode === 'brief' ? BOX_MAX_B : BOX_MAX, bmax = pm === 'full' ? Math.max(bmax0, BOX_MAX_P) : bmax0;
+      n.boxW = anyPinDesc ? Math.max(BOX_MAX_D, clamp(need, BOX_MIN, bmax)) : clamp(need, BOX_MIN, bmax);
       const inner = n.boxW - 14; // 左右各 7 padding
+      n.subLines = n.sub ? dg.wrapPin(n.sub, inner / TYPE_K, SUB_LINES).lines : [];
+      n.titleH = TITLE_H + SUB_LH * n.subLines.length + (bd ? BDESC_H : 0) + (n.opqLine ? BDESC_H : 0);
       let pinsH = 0;
+      const nameLimit = (av, p) => Math.max((pm === 'cut' ? Math.min(av, PIN_NAME_CUT + orgW(p)) : av) - orgW(p), 30);
+      const maxNL = pm === 'wrap' ? PIN_NAME_LINES : 1;
       for (let i = 0; i < rows; i++) {
         const l = n.left[i], r = n.right[i];
-        let rh = PIN_H;
         if (l) l.descLines = [];
         if (r) r.descLines = [];
+        // 腳位名可用寬：單側列 = 全寬；兩側都有 → 都放得下就各用全寬，否則短側拿自己的寬、長側拿剩下的，都太長則各半。
+        //   放不下 → wrap 模式換行（≤PIN_NAME_LINES 行）、其他模式截到寬內加 …（size 算好 p.nameLines / p.nameCut，render 照畫）
+        const lFull = l ? dg.measure(l.pin) + orgW(l) : 0, rFull = r ? dg.measure(r.pin) + orgW(r) : 0;
+        let lAv = inner - 8, rAv = inner - 8;
+        if (l && r && lFull + rFull + 14 > inner) {
+          const half = inner / 2 - 7;
+          if (lFull <= half) { lAv = lFull; rAv = inner - lFull - 14; }
+          else if (rFull <= half) { rAv = rFull; lAv = inner - rFull - 14; }
+          else lAv = rAv = half;
+        }
+        if (l) { const w = dg.wrapPin(l.pin, nameLimit(lAv, l), maxNL); l.nameLines = w.lines; l.nameCut = w.cut; }
+        if (r) { const w = dg.wrapPin(r.pin, nameLimit(rAv, r), maxNL); r.nameLines = w.lines; r.nameCut = w.cut; }
+        const nameRows = Math.max(l ? l.nameLines.length : 0, r ? r.nameLines.length : 0, 1);
+        let rh = PIN_H + PIN_LH * (nameRows - 1);
+        if (mode === 'brief') {
+          // 同行描述（最後一行腳位名之後）：可用寬 = 該側剩餘；兩側都有 → 都放得下就各用自己的，否則短側保留、長側拿剩下的，都太長則各半；
+          //   不足 24px 就不畫（全文仍在 tooltip）。描述字 10px → 量測寬先除以 DESC_K
+          const lastW = (p) => (p ? dg.measure(p.nameLines[p.nameLines.length - 1]) + orgW(p) : 0);
+          const lD = l && l.desc ? dline(l.desc, TR_PIN) : '', rD = r && r.desc ? dline(r.desc, TR_PIN) : '';
+          const lDW = lD ? dmeasure(NB2 + lD) : 0, rDW = rD ? dmeasure(NB2 + rD) : 0;
+          let lRoom = inner - 8 - lastW(l), rRoom = inner - 8 - lastW(r);
+          if (l && r) {
+            const room = inner - 14 - lastW(l) - lastW(r);
+            if (lDW + rDW <= room) { lRoom = lDW; rRoom = rDW; }
+            else if (lDW <= room / 2) { lRoom = lDW; rRoom = room - lDW; }
+            else if (rDW <= room / 2) { rRoom = rDW; lRoom = room - rDW; }
+            else lRoom = rRoom = room / 2;
+          }
+          const fit = (d, room) => (!d || room < 24 ? '' : dg.fitText(d, (room - dmeasure(NB2)) / DESC_K));
+          if (l) l.briefDesc = fit(lD, lRoom);
+          if (r) r.briefDesc = fit(rD, rRoom);
+        }
         if (full) {
-          // 描述可用寬：兩側都有描述 → 各半；只一側有 → 扣掉另一側腳位名；單側列 → 全寬
+          // 描述可用寬：兩側都有描述 → 各半；只一側有 → 扣掉另一側腳位名（最寬那一行）；單側列 → 全寬
           const ld = !!(l && l.desc), rd = !!(r && r.desc);
-          const lName = l ? dg.measure(dg.trunc(l.pin, 12)) : 0, rName = r ? dg.measure(dg.trunc(r.pin, 12)) : 0;
+          const lName = l ? Math.max(...l.nameLines.map(dg.measure)) + orgW(l) : 0, rName = r ? Math.max(...r.nameLines.map(dg.measure)) + orgW(r) : 0;
           const lW = ld ? (rd ? inner / 2 - 4 : inner - (r ? rName + 8 : 0)) : 0;
           const rW = rd ? (ld ? inner / 2 - 4 : inner - (l ? lName + 8 : 0)) : 0;
           if (ld) l.descLines = wrapDesc(l.desc, Math.max(lW, 30), PIN_DESC_LINES);
           if (rd) r.descLines = wrapDesc(r.desc, Math.max(rW, 30), PIN_DESC_LINES);
-          rh = PIN_H + DESC_LH * Math.max(l ? l.descLines.length : 0, r ? r.descLines.length : 0);
+          rh += DESC_LH * Math.max(l ? l.descLines.length : 0, r ? r.descLines.length : 0);
         }
         rh = Math.max(rh, tagRowH(l), tagRowH(r));
         if (l) l.y = n.titleH + pinsH + 8;
@@ -423,32 +538,47 @@
     const mode = graph.descMode || (graph.showDesc ? 'full' : 'off');
     g.appendChild(D.svg('rect', { class: 'box', x: r1(bx), y: 0, width: r1(n.boxW), height: r1(n.h), rx: 4 }));
     if (n.kind === 'ub') g.appendChild(D.svg('rect', { class: 'box2', x: r1(bx + 3), y: 3, width: r1(n.boxW - 6), height: r1(n.h - 6), rx: 3 }));
-    g.appendChild(D.svg('text', { class: 'name', x: r1(bx + 7), y: 12, text: dg.trunc(n.name || '', 30) }));
+    g.appendChild(D.svg('text', { class: 'name', x: r1(bx + 7), y: 12, text: dg.fitText(n.name || '', n.boxW - 14) }));
     // 不透明方塊：型別前小鎖頭（描邊 path，無 emoji）＋型別下一行介面說明 .opq（size() 算好 n.opqLine）
     if (n.opaque) g.appendChild(D.svg('path', { class: 'lock', d: D.LOCK_D, transform: 'translate(' + r1(bx + 7) + ' 14.5) scale(0.8)' }));
-    if (n.type || n.sub) g.appendChild(D.svg('text', { class: 'type', x: r1(bx + 7 + (n.opaque ? LOCK_W : 0)), y: 23, text: dg.trunc((n.type || '') + (n.sub ? '  ' + n.sub : ''), 40) }));
+    if (n.type) g.appendChild(D.svg('text', { class: 'type', x: r1(bx + 7 + (n.opaque ? LOCK_W : 0)), y: 23, text: dg.fitText(n.type, (n.boxW - 14 - (n.opaque ? LOCK_W : 0)) / TYPE_K) }));
     let ly = 35;
+    // 副標（Program/Task 路徑）：型別下方獨立行（size() 算好 n.subLines；舊圖無 subLines → 現算）
+    const subLines = n.subLines || (n.sub ? dg.wrapPin(n.sub, (n.boxW - 14) / TYPE_K, SUB_LINES).lines : []);
+    subLines.forEach((t) => { g.appendChild(D.svg('text', { class: 'type sub', x: r1(bx + 7), y: ly - 1, text: t })); ly += SUB_LH; });
     if (n.opqLine) { g.appendChild(D.svg('text', { class: 'bdesc opq', x: r1(bx + 7), y: ly, text: n.opqLine })); ly += BDESC_H; }
     if (n.descLine) g.appendChild(D.svg('text', { class: 'bdesc', x: r1(bx + 7), y: ly, text: n.descLine }));
     const dirCls = (p) => 'dir-' + (p.dir === '?' || !p.dir ? 'q' : p.dir);
     // 腳位列：brief = 左側「pin␣␣描述」、右側「描述␣␣pin」同行（.pdesc tspan；nbsp 不會被折疊）；
     //   full = 腳位名一行，描述換行（p.descLines，size() 算好）在下方 .pdesc；port 圓點對齊腳位名那一行
-    //   回推腳（p.org）：腳位名後加 tspan.org「推」；title 含回推依據
-    const nameSpans = (p, name) => (p.org ? [D.svg('tspan', { text: name }), D.svg('tspan', { class: 'org', text: ORG_TXT })] : [D.svg('tspan', { text: name })]);
+    //   回推腳（p.org）：腳位名最後一行後加 tspan.org「推」；title 一律含全名（＋描述／回推依據）
+    //   腳位名可能多行（size() 算好 p.nameLines；wrap 模式）：第 2 行起 tspan 帶 x/dy=PIN_LH；brief 的同行描述接在最後一行
     const pinText = (p, right) => {
-      const name = dg.trunc(p.pin, 12);
-      const attrs = right ? { class: 'pin', x: r1(bx + n.boxW - 7), y: p.y + 3.5, 'text-anchor': 'end' } : { class: 'pin', x: r1(bx + 7), y: p.y + 3.5 };
+      const lines = p.nameLines && p.nameLines.length ? p.nameLines : [dg.fitText(p.pin, PIN_NAME_MAX)];
+      const x = right ? r1(bx + n.boxW - 7) : r1(bx + 7);
+      const attrs = right ? { class: 'pin', x, y: p.y + 3.5, 'text-anchor': 'end' } : { class: 'pin', x, y: p.y + 3.5 };
       const ttl = p.pin + (p.desc ? '\n' + p.desc : '') + (p.org ? '\n' + (D.ORG_TITLE[p.org] || '回推') : '');
-      const title = p.desc || p.org ? D.svg('title', { text: ttl }) : null;
+      const title = D.svg('title', { text: ttl });
+      const spans = (d) => {
+        const out = [];
+        lines.forEach((t, i) => {
+          const last = i === lines.length - 1;
+          const parts = [{ text: t }];
+          if (last && p.org) parts.push({ text: ORG_TXT, cls: 'org' });
+          if (last && d) { if (right) parts.unshift({ text: d + NB2, cls: 'pdesc' }); else parts.push({ text: NB2 + d, cls: 'pdesc' }); }
+          parts.forEach((s, j) => { const a = { text: s.text, class: s.cls || null }; if (i && j === 0) { a.x = x; a.dy = PIN_LH; } out.push(D.svg('tspan', a)); });
+        });
+        return out;
+      };
+      const extra = (lines.length - 1) * PIN_LH;
       if (mode === 'full' && p.descLines && p.descLines.length) {
-        const grp = D.svg('g', { class: 'pinrow' }, D.svg('text', attrs, nameSpans(p, name)));
-        p.descLines.forEach((d, i) => grp.appendChild(D.svg('text', { class: 'pdesc', x: attrs.x, y: r1(p.y + 15.5 + i * DESC_LH), 'text-anchor': right ? 'end' : null, text: d })));
+        const grp = D.svg('g', { class: 'pinrow' }, D.svg('text', attrs, spans('')));
+        p.descLines.forEach((d, i) => grp.appendChild(D.svg('text', { class: 'pdesc', x, y: r1(p.y + 15.5 + extra + i * DESC_LH), 'text-anchor': right ? 'end' : null, text: d })));
         grp.appendChild(title);
         return grp;
       }
-      const d = mode === 'brief' && p.desc ? dline(p.desc, TR_PIN) : '';
-      if (!d) return D.svg('text', attrs, nameSpans(p, name), title);
-      return D.svg('text', attrs, right ? [D.svg('tspan', { class: 'pdesc', text: d + NB2 }), nameSpans(p, name)] : [nameSpans(p, name), D.svg('tspan', { class: 'pdesc', text: NB2 + d })], title);
+      const d = mode === 'brief' ? (p.briefDesc != null ? p.briefDesc : (p.desc ? dline(p.desc, TR_PIN) : '')) : '';
+      return D.svg('text', attrs, spans(d), title);
     };
     for (const p of n.left) {
       g.appendChild(D.svg('circle', { class: 'port ' + dirCls(p), cx: r1(bx), cy: p.y, r: PORT_R, 'data-port': p.id, 'data-var': p.varFull || null }));
@@ -517,7 +647,7 @@
     fit: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5', plus: 'M12 5v14M5 12h14', minus: 'M5 12h14',
     print: 'M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v7H6z',
     save: 'M12 3v12M7 10l5 5 5-5M4 21h16', close: 'M6 6l12 12M18 6L6 18', block: 'M4 5h16v14H4zM4 10h16', pins: 'M4 7h6M4 12h6M4 17h6M14 7h6M14 12h6M14 17h6', cm: 'M4 5h16v10H8l-4 4z',
-    desc: 'M4 6h16M4 11h10M4 16h13M17 11h3',
+    desc: 'M4 6h16M4 11h10M4 16h13M17 11h3', pin: 'M4 6h16M4 12h11a3 3 0 0 1 0 6h-4M4 18h4M11 15l-3 3 3 3',
   };
   dg.tool = function (name, text, onclick, opt) {
     opt = opt || {};
@@ -565,11 +695,25 @@
       if (inst.graph && inst.svg) inst.setGraph(inst.graph, Object.assign({}, inst.lastSetOpts || {}, { keepViewport: true }));
       return mode;
     };
+    inst.pinMode = dg.normPinMode(opts.pinMode) || dg.pinPref();
+    const PIN_TITLE = '腳位名顯示：換行（_ 分段最多 2 行）→ 完整（加寬方塊）→ 精簡（約 12 字）循環；?pin=wrap|full|cut（或 1|2|0）只影響本次';
+    const pinBtn = dg.tool('pin', '腳位：' + dg.PIN_LABEL[inst.pinMode], () => inst.setPin(), { title: PIN_TITLE });
+    /** 切換腳位名顯示：mode 省略 → 依 PIN_MODES 循環（換行 → 完整 → 精簡）。記到 localStorage、更新按鈕，重排但保留 viewBox／選取 */
+    inst.setPin = (mode) => {
+      mode = mode == null ? PIN_MODES[(PIN_MODES.indexOf(inst.pinMode) + 1) % PIN_MODES.length] : dg.normPinMode(mode) || 'wrap';
+      inst.pinMode = mode;
+      dg.savePinPref(mode);
+      const lb = '腳位：' + dg.PIN_LABEL[mode];
+      pinBtn.querySelector('.tb-txt').textContent = lb;
+      pinBtn.setAttribute('aria-label', lb);
+      if (inst.graph && inst.svg) inst.setGraph(inst.graph, Object.assign({}, inst.lastSetOpts || {}, { keepViewport: true }));
+      return mode;
+    };
     tools.append(
       dg.tool('fit', '適應', () => inst.fit(), { title: '適應視窗（0 / F）' }),
       dg.tool('plus', '放大', () => inst.zoom(1.25), { title: '放大（+）' }),
       dg.tool('minus', '縮小', () => inst.zoom(0.8), { title: '縮小（−）' }),
-      descBtn);
+      descBtn, pinBtn);
     const extra = D.h('span', { class: 'dg-tools-x' });
     tools.append(extra,
       dg.tool('print', '列印', () => inst.print(), { title: '列印（先適應視窗）' }),
@@ -772,7 +916,7 @@
       inst.lastSetOpts = { layout: o.layout };
       const t = {};
       let t0 = performance.now();
-      dg.prepare(graph); dg.size(graph, { descMode: inst.descMode }); t.size = performance.now() - t0;
+      dg.prepare(graph); dg.size(graph, { descMode: inst.descMode, pinMode: inst.pinMode }); t.size = performance.now() - t0;
       const lay = dg.layout(graph, o.layout); t.layout = lay.ms; t.comps = lay.comps;
       t0 = performance.now(); dg.route(graph); t.route = performance.now() - t0;
       t0 = performance.now();

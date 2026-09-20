@@ -24,6 +24,8 @@
     const b = t.b;
     const vd = t.vd || {}; // {varFull: description}（舊資料無 → 空）
     const vu = t.vu || {}; // {varFull: [nW, nR, flags]} 宣告於腳位變數的全索引用量（舊資料無 → 空）
+    const mm = (D.mirrorMap && D.mirrorMap(t, ctrl)) || null; // Map('key#pin' → [鏡像變數名…])；舊資料無 vm → null
+    const descMode = D.dg.descPref(q);
     const root = b[rootKey] || {};
     const prefix = rootKey + '/';
     const members = [];
@@ -59,7 +61,7 @@
         if (!shown) { meta.nHiddenPins++; continue; }
         if (declared) meta.nDeclared++;
         const port = { id: k + '#' + pin, pin, dir: dir || '?', src, ck, conn, varFull: varFull || null, tgtKey, tgtPin, inline: null,
-          desc: (p.length > 10 && p[10]) || null, varDesc: (varFull && vd[varFull]) || null };
+          desc: (p.length > 10 && p[10]) || null, varDesc: (varFull && vd[varFull]) || null, mirror: (mm && mm.get(k + '#' + pin)) || null };
         if (ck === 'N' || ck === 'E') {
           const txt = stripK(conn);
           if ((rec.type === 'RUNG' || rec.type === 'CALC') && (pin === 'EQN' || pin === 'EQUAT')) node.body = D.dg.wrapText(pin + ' = ' + txt, 240, 3);
@@ -129,6 +131,33 @@
       for (const p of g.W) if (!wired.has(p.id)) tags.push({ port: p.id, side: 'R', text: shortVar(v), varFull: v, desc: dv, cls: 'out', title: v });
       for (const p of g.R) if (!wired.has(p.id)) tags.push({ port: p.id, side: 'L', text: shortVar(v), varFull: v, desc: dv, cls: 'in', title: v });
     }
+    // 腳位值鏡像（entry.vm）：該腳位已有標籤 → 標籤加一行「發佈為 …」（full 模式放在描述卡首行；其他密度只進 tooltip）；
+    // 腳位走內部走線 → 走線標籤下加一行；都沒有（N/E 常數等）→ 只有這一行的小標籤。不新增節點。點該行可開鏡像訊號頁（decorateMirrors）。
+    meta.nMirror = 0;
+    if (mm) {
+      const tagByPort = new Map();
+      for (const tg of tags) if (!tagByPort.has(tg.port)) tagByPort.set(tg.port, tg);
+      const edgeByPort = new Map();
+      for (const e of edges) { if (e.kind === 'sticky') continue; if (!edgeByPort.has(e.from)) edgeByPort.set(e.from, e); if (!edgeByPort.has(e.to)) edgeByPort.set(e.to, e); }
+      for (const n of nodes.values()) {
+        if (n.kind === 'comment') continue;
+        for (const port of n.left.concat(n.right)) {
+          if (!port.mirror || !port.mirror.length) continue;
+          meta.nMirror++;
+          const line = '發佈為 ' + port.mirror.map(shortVar).join('、');
+          const tg = tagByPort.get(port.id);
+          if (tg) {
+            tg.mirror = port.mirror; tg.mirrorLine = line;
+            tg.title = (tg.title || tg.text) + '\n' + line;
+            if (descMode === 'full') tg.desc = line + (tg.desc ? ' — ' + tg.desc : '');
+            continue;
+          }
+          const e = edgeByPort.get(port.id);
+          if (e) { e.mirror = (e.mirror || []).concat(port.mirror); continue; }
+          tags.push({ port: port.id, side: port.dir === 'O' ? 'R' : 'L', text: line, varFull: port.mirror[0], cls: port.dir === 'O' ? 'out' : 'in', title: line + '\n' + port.mirror.join('\n'), mirror: port.mirror, mirrorLine: line, mirrorOnly: true });
+        }
+      }
+    }
     // 註解顯示規則
     const cmOn = q.cm === '1' ? true : q.cm === '0' ? false : comments.length <= CM_HIDE;
     if (!cmOn) { for (const c of comments) nodes.delete(c.id); meta.nHiddenComment = comments.length; }
@@ -139,7 +168,7 @@
     if (q.f) {
       const kw = q.f.toLowerCase();
       const has = (s) => !!s && String(s).toLowerCase().includes(kw);
-      const hit = (n) => [n.name, n.type, n.desc].some(has) || n.left.concat(n.right).some((p) => has(p.varFull) || has(p.conn) || has(p.desc) || has(p.varDesc));
+      const hit = (n) => [n.name, n.type, n.desc].some(has) || n.left.concat(n.right).some((p) => has(p.varFull) || has(p.conn) || has(p.desc) || has(p.varDesc) || (p.mirror && p.mirror.some(has)));
       const keep = new Set();
       for (const n of nodes.values()) if (hit(n)) keep.add(n.id);
       const nodeOf = (pid) => { const p = graph.ports.get(pid); return p ? p.node : pid; };
@@ -151,6 +180,52 @@
       D.dg.prepare(graph);
     }
     return graph;
+  }
+
+  /** 渲染後把「發佈為 …」行變成可點的連結（SVG <a>，pointerdown 不冒泡 → 不觸發圖面的拖曳／點選，click 直接開鏡像訊號頁）：
+   *  標籤：mirrorOnly → 名稱行整行；full 模式描述卡 → 首行的「發佈為 X」前綴；走線 → 在走線標籤下（或無標籤時在走線中點）補一行 .wlabel。 */
+  const cssEsc = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&'));
+  const LK_STYLE = { fill: 'var(--accent-text)', textDecoration: 'underline', cursor: 'pointer' };
+  function decorateMirrors(inst, graph) {
+    const svg = inst.svg;
+    if (!svg) return 0;
+    let n = 0;
+    const mkA = (m, ...kids) => D.svg('a', { href: D.hrefV(m), class: 'mirror-lk', onpointerdown: (e) => e.stopPropagation() }, kids);
+    for (const t of graph.tags || []) {
+      if (!t.mirror || !t.mirror.length) continue;
+      const g = svg.querySelector('.tag[data-port="' + cssEsc(t.port) + '"]');
+      if (!g) continue;
+      const m = t.mirror[0];
+      if (t.mirrorOnly) {
+        const tx = g.querySelector('text:not(.desc)');
+        if (!tx) continue;
+        const s = tx.textContent; tx.textContent = '';
+        tx.appendChild(mkA(m, D.svg('tspan', { text: s, style: LK_STYLE })));
+        n++;
+        continue;
+      }
+      if (graph.descMode !== 'full') continue; // 其他密度：只在 tooltip
+      const tx = g.querySelector('text.desc');
+      if (!tx) continue;
+      const s = tx.textContent, line = t.mirrorLine || '';
+      let head = null, rest = '';
+      if (line && s.startsWith(line)) { head = line; rest = s.slice(line.length); } else if (line && line.startsWith(s.replace(/…$/, ''))) head = s; // 名稱被截／換行 → 整行
+      if (!head) continue;
+      tx.textContent = '';
+      tx.appendChild(mkA(m, D.svg('tspan', { text: head, style: LK_STYLE })));
+      if (rest) tx.appendChild(D.svg('tspan', { text: rest }));
+      n++;
+    }
+    const labels = svg.querySelector('g.wlabels');
+    if (labels) for (const e of graph.edges || []) {
+      if (!e.mirror || !e.mirror.length || !e.labelXY) continue;
+      const line = '發佈為 ' + e.mirror.map(shortVar).join('、');
+      const y = e.label ? (e.labelXY.mid ? e.labelXY.y - 11 : e.labelXY.y + 3.5 + 11) : e.labelXY.y + (e.labelXY.mid ? 0 : 3.5);
+      labels.appendChild(mkA(e.mirror[0], D.svg('text', { class: 'wlabel mirror', x: Math.round(e.labelXY.x * 10) / 10, y: Math.round(y * 10) / 10, 'text-anchor': 'middle', text: D.dg.trunc(line, 30), style: LK_STYLE },
+        D.svg('title', { text: line + '\n' + e.mirror.join('\n') }))));
+      n++;
+    }
+    return n;
   }
 
   /** 依連通群組切成 ≤PAGE_MAX 個非註解節點的頁；回傳 [[nodeId…]…] */
@@ -189,7 +264,11 @@
       if (!groups.size) {
         if (refs.length) { D.toast('寫入者就在本 task 內'); inst.centerVar(varFull); return; }
         const ioIn = (rec.io || []).filter((x) => x.dir === 'I');
+        const m = rec.d && rec.d.m;
         if (ioIn.length) D.toast('現場 I/O 輸入：' + (ioIn[0].module || '') + ' ' + (ioIn[0].point || '') + (ioIn[0].tag ? ' ' + ioIn[0].tag : ''));
+        else if (m && m.src && m.src.k === 'V' && m.src.var) D.go(D.hrefV(m.src.var)); // 腳位值鏡像：跳到腳位的接線來源
+        else if (m && m.src && (m.src.k === 'L' || m.src.k === 'P') && m.src.block) D.go(D.hrefBKey(m.src.block));
+        else if (m && Array.isArray(m.pin) && m.pin.length >= 5) D.go(D.hrefB(m.pin[0], m.pin[2]));
         else if (rec.egd && rec.egd.src) D.go(D.hrefV(rec.egd.src.ctrl + '.' + rec.egd.src.var));
         else if (rec.enc && rec.enc.length) D.toast('加密 — 無法追蹤（' + rec.enc.join('、') + '）');
         else if (rec.d && rec.d.const) D.toast('常數（無寫入者）');
@@ -292,10 +371,12 @@
     await D.yieldMain();
     if (!alive()) return;
     const tm = inst.setGraph(graph);
+    const nMirror = decorateMirrors(inst, graph);
     if (banner) inst.canvas.prepend(banner);
     const nEdges = graph.edges.filter((e) => e.kind !== 'sticky').length;
     const st = ['抓取 ' + (D.fetchCount - f0) + ' 個分片', '方塊 ' + D.int(nBlocks(graph)) + (full.meta.nHiddenComment ? '（隱藏 ' + full.meta.nHiddenComment + ' 個註解）' : ''), '連線 ' + nEdges, '標籤 ' + graph.tags.length, '群組 ' + tm.comps, '排版 ' + Math.round(tm.layout) + ' ms'];
     if (full.meta.nDeclared) st.push('宣告於腳位 ' + full.meta.nDeclared);
+    if (nMirror) st.push('發佈為 ' + nMirror);
     if (full.meta.filter) st.push('篩選「' + full.meta.filter + '」' + full.meta.nMatched + ' 個');
     if (full.meta.warn.length) st.push('警告 ' + full.meta.warn.length);
     inst.status(st.join(' · '));

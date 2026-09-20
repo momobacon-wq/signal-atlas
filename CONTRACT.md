@@ -71,6 +71,9 @@ docs/data/                     export-web 的輸出（下）
   "alm":{"id","cls","def","area","causes","action","conseq","urg"}
 }}}
 ```
+`d.m`（腳位值鏡像）：變數是某個**已接線**腳位的發佈值時，`{"pin":[ctrl, program, block_path, block_type, pin, "-", line], "kind":"I"|"O"|"?",
+"src": {"k":"V","var":full} | {"k":"L"|"P","block":key,"pin":name} | {"k":"N"|"E","text":…} | null}`；`kind I` 的源頭 = `src`（腳位的接線來源），
+`kind O` 的寫入者 = 該方塊腳。前端「來源」規則在 `w` 為空時先看 `d.m`。task entry 的 `vm` = `{mirror_full_name: pin_name}`（該 task 內有鏡像的腳位）。
 `block_path` = `Program/Task/UserBlock/.../Block`（第一段 Program、第二段 Task）；原始檔 = `<ctrl>/_<program>.xml`。
 邏輯圖號（`drg`）取自 block 本身或其所屬 task 的 `LogicDrg`/`P_ID`。HMI 畫面名不分大小寫合併（以選單的拼法為準）。
 前端「來源」判定：`w` 非空 → 邏輯寫入者；否則 `io` 有 `dir:"I"` → 「現場 I/O」；否則 `egd.src` → 「EGD 來自 …」；

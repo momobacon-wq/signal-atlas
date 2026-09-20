@@ -113,6 +113,7 @@ def cmd_build(a):
         resolve.run(conn, root, ctrls, log)
         log("[direction]")
         direction.run(conn, HERE, log)
+        resolve.refresh_mirror_kinds(conn, log)
         log("[fts]")
         resolve.rebuild_fts(conn, log)
 

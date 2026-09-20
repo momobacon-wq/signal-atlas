@@ -94,15 +94,15 @@
 
   /* ------------------------------------------------------------------ BFS（鏡射 trace.js） */
   /** 方塊的另一側腳位：up 取 I/S 腳（左側）、down 取 O 腳（右側）；V（含宣告於腳位的 A+varFull）→ 變數節點＋邊；L → 同 task 鏈；P/N/E 行內；無變數的 A／D 忽略。新觸及的變數節點推入 out */
-  async function pinsOf(S, bn, blk, dir, chain, out) {
+  async function pinsOf(S, bn, blk, dir, chain, out, only) {
     const up = dir === 'up';
-    const done = bn.id + '|' + dir;
+    const done = bn.id + '|' + dir + (only ? '|' + only : '');
     if (S.blockDone.has(done)) return out;
     S.blockDone.add(done);
     for (const t of blk.pins || []) {
       if (S.signal.aborted) throw abortErr();
       const [name, pdir, , ck, conn, varFull, tgtKey, tgtPin] = t;
-      const wanted = up ? (pdir === 'I' || pdir === 'S') : pdir === 'O';
+      const wanted = only ? name === only : (up ? (pdir === 'I' || pdir === 'S') : pdir === 'O'); // only = 只走這一支腳（介面腳來源，不論方向）
       if (!wanted) continue;
       if ((ck === 'V' || ck === 'A') && varFull) {
         const vn = varNode(S, varFull, dir);
@@ -132,6 +132,39 @@
     return out;
   }
 
+  /** 腳位值鏡像（d.m，kind I）的上游：由鏡像腳位的接線來源接到本變數的入腳，邊標「腳位值 <pin>」——
+   *  V → 變數節點；L/P → 目標方塊節點（經其腳位，再走其輸入腳／該介面腳）；N/E → 常數葉；null → 無接線資訊葉 */
+  async function mirrorUp(S, node, m, dir, out, seen) {
+    const [mc, , mpath, , mpin] = m.pin;
+    const mkey = mc + '|' + mpath;
+    const bname = String(mpath).split('/').pop();
+    const inP = node.left[0].id;
+    const lbl = '腳位值 ' + mpin;
+    const s = m.src;
+    if (!s) { leaf(S, inP, dir, '腳位值 ' + bname + '.' + mpin + ' — 無接線資訊', 'muted', D.hrefB(mc, mpath)); return; }
+    if (s.k === 'V' && s.var) {
+      const vn = varNode(S, s.var, dir);
+      if (!vn) return; // 上限
+      addEdge(S, vn.right[0].id, inP, 'V', { varFull: s.var, label: lbl });
+      seen(vn);
+      return;
+    }
+    if ((s.k === 'L' || s.k === 'P') && s.block) {
+      const tb = await D.block(s.block, S.signal);
+      const tname = (tb && tb.name) || s.block.slice(s.block.lastIndexOf('/') + 1);
+      if (!tb) { leaf(S, inP, dir, '方塊分片缺失 ' + tname, 'warn', D.hrefBKey(s.block)); return; }
+      const tn = blockNode(S, s.block, tb);
+      if (!tn) return; // 上限
+      const tp = blockPort(S, tn, s.pin || '?', 'R');
+      addEdge(S, tp.id, inP, 'L', { label: lbl + (s.k === 'P' ? '（介面腳）' : '') });
+      if (tb.opaque) { tn.opaque = true; return; }
+      await pinsOf(S, tn, tb, dir, new Set([mkey, s.block]), out, s.k === 'P' ? s.pin : null);
+      return;
+    }
+    if (s.k === 'N' || s.k === 'E') { leaf(S, inP, dir, lbl + ' = ' + (s.k === 'N' ? '常數 ' : '列舉 ') + stripK(s.text), 'const'); return; }
+    leaf(S, inP, dir, lbl + ' — 接線來源種類 ' + (s.k || '?') + ' 無法追蹤', 'muted', D.hrefB(mc, mpath));
+  }
+
   /** 展開一個變數節點的一側（訊號卡 w/r → 方塊 → 另一側腳位）；回傳新觸及的變數節點（depth 已設） */
   async function expandVar(S, node, dir) {
     const up = dir === 'up';
@@ -145,9 +178,15 @@
     node.desc = (rec.d && rec.d.desc) || '';
     node.isConst = !!(rec.d && rec.d.const);
     node.flag = flagText(rec.d && rec.d.flags) || node.flag;
-    const refs = (up ? rec.w : rec.r) || [];
+    let refs = (up ? rec.w : rec.r) || [];
     const multi = up && refs.length > 1;
     const seen = (vn) => { if (vn && vn.fresh) { vn.fresh = false; out.push(vn); } };
+    // 腳位值鏡像（d.m；舊卡片無 → 略）：上游無寫入者時，kind O → 該方塊腳視同寫入者；kind I → 由腳位接線來源接一條「腳位值 <pin>」邊
+    const m = up && !refs.length && rec.d && rec.d.m && Array.isArray(rec.d.m.pin) && rec.d.m.pin.length >= 5 ? rec.d.m : null;
+    let mirrorOut = false;
+    if (m && m.kind === 'O') { refs = [m.pin]; mirrorOut = true; }
+    const mirrorIn = m && m.kind === 'I' ? m : null;
+    if (mirrorIn) await mirrorUp(S, node, mirrorIn, dir, out, seen);
     if (!up) { // EGD 消費者一律算下游（即使站內也有讀取者）
       for (const c of (rec.egd && rec.egd.c) || []) {
         const vn = varNode(S, c.ctrl + '.' + c.local, dir);
@@ -156,7 +195,7 @@
         seen(vn);
       }
     }
-    if (!refs.length) {
+    if (!refs.length && !mirrorIn) {
       if (up) {
         const ioIn = (rec.io || []).filter((x) => x.dir === 'I');
         if (ioIn.length) for (const x of ioIn) leaf(S, inP, dir, '現場 I/O 輸入：' + (x.module || '') + ' ' + (x.board || '') + ' ' + (x.point || '') + (x.tag ? ' ' + x.tag : ''), 'io', D.hrefIO(x.ctrl, x.module));
@@ -186,7 +225,7 @@
       const bn = blockNode(S, key, blk);
       if (!bn) continue; // 上限
       const port = blockPort(S, bn, pin, up ? 'R' : 'L');
-      if (up) addEdge(S, port.id, inP, 'V', { varFull: node.varFull, multi }); else addEdge(S, outP, port.id, 'V', { varFull: node.varFull });
+      if (up) addEdge(S, port.id, inP, 'V', { varFull: node.varFull, multi, label: mirrorOut ? '輸出腳位值 ' + pin : undefined }); else addEdge(S, outP, port.id, 'V', { varFull: node.varFull });
       if (blk.opaque) { bn.opaque = true; continue; } // 不透明 userblock：斜線方塊，不追內部
       await pinsOf(S, bn, blk, dir, new Set([key]), out);
     }

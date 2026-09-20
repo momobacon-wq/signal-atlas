@@ -205,6 +205,25 @@ def main(docs):
                 nbad += 1
                 err(f"writer ref not found {full}: {ctrl}|{path}.{pin}")
     (ok if not nbad else err)(f"sampled {len(sample)} cards, {nbad} mismatches")
+    # ---- mirror cards: 10 variables from pin_mirror must carry d.m pointing at the right pin
+    mbad = 0
+    mrows = conn.execute("""SELECT v.full_name, b.ctrl, b.path, p.name, m.kind FROM pin_mirror m JOIN variable v ON v.id=m.var_id
+                            JOIN pin p ON p.id=m.pin_id JOIN block b ON b.id=p.block_id ORDER BY v.id LIMIT 200""").fetchall()
+    random.shuffle(mrows)
+    for full, ctrl, path, pname, kind in mrows[:10]:
+        s_ = sh(full)
+        if s_ not in shard_cache:
+            try:
+                shard_cache[s_] = load(data / "var" / f"{s_}.json")["v"]
+            except FileNotFoundError:
+                shard_cache[s_] = {}
+        card = shard_cache[s_].get(full) or {}
+        m = (card.get("d") or {}).get("m")
+        if not m or m.get("pin", [None]*7)[2] != path or m["pin"][4] != pname or m.get("kind") != kind:
+            mbad += 1
+            if mbad <= 3:
+                err(f"mirror card {full}: {m}")
+    (ok if not mbad else err)(f"sampled 10 mirror cards, {mbad} mismatches")
 
     # ---- blocks: sample 300 blocks, check task shard + pin count
     def tkey_of(ctrl, path):

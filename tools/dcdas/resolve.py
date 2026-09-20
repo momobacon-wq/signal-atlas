@@ -58,9 +58,55 @@ def link_declared_pins(conn, ctrl_names, log=print):
     return tot
 
 
+def build_pin_mirror(conn, ctrl_names, log=print):
+    """A variable declared at a pin that ALSO carries its own connection (V/L/P/N/E...) is the published value of that
+    pin ('mirror'). Input pin -> the mirror's source is the pin's wiring; output pin -> the block writes it.
+    Keys: decl_connection == Program.Task….Block.Pin, else name == Block.Pin."""
+    t0 = time.time()
+    conn.execute("CREATE TABLE IF NOT EXISTS pin_mirror(var_id INTEGER PRIMARY KEY, pin_id INTEGER, kind TEXT)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_mirror_pin ON pin_mirror(pin_id)")
+    inlist = ",".join("'" + n.replace("'", "''") + "'" for n in ctrl_names)
+    conn.execute(f"DELETE FROM pin_mirror WHERE var_id IN (SELECT id FROM variable WHERE ctrl IN ({inlist}))")
+    tot = {"decl": 0, "name": 0, "I": 0, "O": 0, "?": 0}
+    for ctrl in ctrl_names:
+        by_decl, by_name = {}, {}
+        for pid, pname, bname, bpath, ck, direction, vid in conn.execute("""
+                SELECT p.id, p.name, b.name, b.path, p.conn_kind, p.direction, p.var_id FROM pin p JOIN block b ON b.id=p.block_id
+                WHERE b.ctrl=? AND p.conn_kind<>'A'""", (ctrl,)):
+            by_decl[f"{bpath.replace('/', '.')}.{pname}"] = (pid, direction, vid)
+            by_name.setdefault(f"{bname}.{pname}", (pid, direction, vid))
+        rows = []
+        for vid, name, decl in conn.execute("SELECT id,name,decl_connection FROM variable WHERE ctrl=?", (ctrl,)):
+            hit = by_decl.get(decl) if decl else None
+            how = "decl"
+            if hit is None:
+                hit = by_name.get(name)
+                how = "name"
+            if hit is None or hit[2] == vid:      # pin's own wiring IS this variable -> not a mirror
+                continue
+            kind = hit[1] if hit[1] in ("I", "O") else "?"
+            rows.append((vid, hit[0], kind))
+            tot[how] += 1
+            tot[kind] += 1
+        conn.executemany("INSERT OR REPLACE INTO pin_mirror(var_id,pin_id,kind) VALUES(?,?,?)", rows)
+        conn.commit()
+    log(f"  pin mirrors: decl={tot['decl']} name={tot['name']}  I={tot['I']} O={tot['O']} ?={tot['?']}  {time.time()-t0:.1f}s")
+    return tot
+
+
+def refresh_mirror_kinds(conn, log=print):
+    """pin_mirror.kind = the pin's inferred direction; must run after direction.run()."""
+    conn.execute("""UPDATE pin_mirror SET kind = coalesce((SELECT CASE WHEN p.direction IN ('I','O') THEN p.direction ELSE '?' END
+                                                            FROM pin p WHERE p.id=pin_mirror.pin_id), '?')""")
+    conn.commit()
+    k = {r[0]: r[1] for r in conn.execute("SELECT kind, count(*) FROM pin_mirror GROUP BY kind")}
+    log(f"  pin mirror kinds: I={k.get('I',0)} O={k.get('O',0)} ?={k.get('?',0)}")
+
+
 def run(conn, root, ctrls, log=print):
     ctrl_names = [c.name for c in ctrls]
     link_declared_pins(conn, ctrl_names, log)
+    build_pin_mirror(conn, ctrl_names, log)
     inlist = ",".join("'" + n.replace("'", "''") + "'" for n in ctrl_names)
     _upd(conn, f"""UPDATE variable SET producer_var_id=(
             SELECT p.id FROM variable p WHERE p.ctrl=variable.device_name

@@ -38,6 +38,8 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 
 - 「宣告在腳位上的變數」：腳位沒有 `Connection`（`conn_kind A`）但被發佈成全域變數（例 PID 的 `HpBypToCrhPressCv.CVO`）；索引以
   名稱 `Block.Pin` → 宣告位置 → 同位址唯一 三層規則連結（約 16.7 萬個腳位），`show` 的寫入者行會註明 `(variable declared at this pin)`。
+- 「腳位值鏡像」：變數是某個**已接線**腳位的發佈值（例 `H11.HpDistCV2.RSP` = Override Station `RSP` 腳的值，該腳接線到 `HpDistCv2PID11_SP`）；
+  索引表 `pin_mirror`，`show` 的 source 會印 `value of pin … <- 來源`，`trace --up` 會穿過腳位追到接線來源；輸出腳的鏡像則寫入者為該方塊。
 - `audit-type <BLOCK_TYPE>`：逐腳位稽核某型別方塊（方向/來源/連線種類/已連結/被使用）；懷疑某類方塊漏接時用它。
 
 ## 命名慣例（判讀訊號名用）

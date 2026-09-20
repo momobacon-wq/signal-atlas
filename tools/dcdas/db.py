@@ -12,7 +12,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 
 def local_dir() -> Path:
@@ -169,6 +169,9 @@ CREATE TABLE IF NOT EXISTS alarm_class(name TEXT PRIMARY KEY, description TEXT, 
 CREATE TABLE IF NOT EXISTS watch(ctrl TEXT, watch_file TEXT, var_name TEXT, datasource TEXT, var_id INTEGER);
 CREATE INDEX IF NOT EXISTS ix_watch_var ON watch(var_id);
 CREATE TABLE IF NOT EXISTS library_help(block_type TEXT PRIMARY KEY, library TEXT, mht_path TEXT, def_file TEXT);
+CREATE TABLE IF NOT EXISTS pin_mirror(
+  var_id INTEGER PRIMARY KEY, pin_id INTEGER, kind TEXT);   -- variable = published value of this (already wired) pin
+CREATE INDEX IF NOT EXISTS ix_mirror_pin ON pin_mirror(pin_id);
 CREATE TABLE IF NOT EXISTS lib_pin_usage(
   library TEXT, def_name TEXT, pin_name TEXT, usage TEXT, PRIMARY KEY(library, def_name, pin_name));
 """

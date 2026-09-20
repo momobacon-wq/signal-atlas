@@ -18,12 +18,12 @@
     const st = { count: 1, capped: false };
     let level = [root];
 
-    async function pinsOf(blk, chain, edgeBase) {
-      // 回傳子節點陣列：up 取 I/S 腳；down 取 O 腳
+    async function pinsOf(blk, chain, edgeBase, only) {
+      // 回傳子節點陣列：up 取 I/S 腳；down 取 O 腳；only = 只走這一支腳（介面腳來源，不論方向）
       const out = [];
       for (const p of blk.pins || []) {
         const [name, pdir, , ck, conn, varFull, tgtKey, tgtPin] = p;
-        const wanted = up ? (pdir === 'I' || pdir === 'S') : pdir === 'O';
+        const wanted = only ? name === only : (up ? (pdir === 'I' || pdir === 'S') : pdir === 'O');
         if (!wanted) continue;
         const edge = Object.assign({}, edgeBase, { pin: name, pdir, src: p[2] });
         if ((ck === 'V' || ck === 'A') && varFull) { // V，或宣告於腳位的 A（有 varFull）
@@ -49,17 +49,47 @@
       return out;
     }
 
+    /** 腳位值鏡像（d.m，kind I）的上游：由鏡像腳位的接線來源繼續——V 變數節點、L/P 目標方塊（走其輸入腳／該介面腳）、N/E 常數葉 */
+    async function mirrorUp(node, m, kids) {
+      const [mc, mprog, mpath, mtype, mpin] = m.pin;
+      const mkey = mc + '|' + mpath;
+      const bname = String(mpath).split('/').pop();
+      const base = { blockKey: mkey, block: bname, btype: mtype, from: node.full, refPin: mpin, program: mprog, path: mpath, pin: mpin, pdir: 'I', src: m.pin[5], mirror: 'I' };
+      const s = m.src;
+      if (!s) { kids.push(Object.assign(leaf('腳位值 ' + bname + '.' + mpin + ' — 無接線資訊', 'muted', D.hrefB(mc, mpath)), { edge: base })); return; }
+      if (s.k === 'V' && s.var) { kids.push({ kind: 'var', full: s.var, edge: base, children: [] }); return; }
+      if ((s.k === 'L' || s.k === 'P') && s.block) {
+        const tb = await D.block(s.block, signal);
+        const tname = (tb && tb.name) || s.block.slice(s.block.lastIndexOf('/') + 1);
+        const via = '腳位值 ' + bname + '.' + mpin + ' ← ' + (s.k === 'P' ? '介面腳 ' : '') + tname + '.' + (s.pin || '?');
+        if (!tb) { kids.push(Object.assign(leaf('方塊分片缺失 ' + tname, 'warn', D.hrefBKey(s.block)), { edge: base })); return; }
+        if (tb.opaque) { kids.push(Object.assign(leaf('不透明 userblock ' + tname + ' — 無法追蹤內部', 'enc', D.hrefBKey(s.block)), { edge: base })); return; }
+        const sub = await pinsOf(tb, new Set([mkey, s.block]), { blockKey: s.block, block: tname, btype: tb.type, from: node.full, via, mirror: 'I' }, s.k === 'P' ? s.pin : null);
+        if (!sub.length) kids.push(Object.assign(leaf('經 ' + tname + '.' + (s.pin || '?') + '（' + (tb.type || tb.kind || '') + '）沒有輸入變數', 'muted', D.hrefBKey(s.block)), { edge: base }));
+        kids.push(...sub);
+        return;
+      }
+      if (s.k === 'N' || s.k === 'E') { kids.push(Object.assign(leaf((s.k === 'N' ? '常數 N: ' : '列舉 E: ') + String(s.text == null ? '' : s.text).replace(/^[NEL]:/, ''), 'const'), { edge: base })); return; }
+      kids.push(Object.assign(leaf('腳位值 ' + bname + '.' + mpin + ' — 接線來源種類 ' + (s.k || '?') + ' 無法追蹤', 'muted', D.hrefB(mc, mpath)), { edge: base }));
+    }
+
     async function expand(node) {
       const rec = await D.varCard(node.full, signal);
       if (!rec) { node.missing = true; node.children.push(leaf('找不到訊號卡', 'warn')); return; }
       node.desc = (rec.d && rec.d.desc) || '';
       node.isConst = !!(rec.d && rec.d.const);
-      const refs = (up ? rec.w : rec.r) || [];
+      let refs = (up ? rec.w : rec.r) || [];
       const kids = [];
+      // 腳位值鏡像（舊卡片無 d.m → 略）：上游無寫入者時，kind O → 該方塊腳視同寫入者；kind I → 由腳位接線來源繼續
+      const m = up && !refs.length && rec.d && rec.d.m && Array.isArray(rec.d.m.pin) && rec.d.m.pin.length >= 5 ? rec.d.m : null;
+      let mirrorOut = false;
+      if (m && m.kind === 'O') { refs = [m.pin]; mirrorOut = true; }
+      const mirrorIn = m && m.kind === 'I' ? m : null;
+      if (mirrorIn) await mirrorUp(node, mirrorIn, kids);
       if (!up) { // EGD 消費者一律算下游（即使站內也有讀取者）
         for (const c of (rec.egd && rec.egd.c) || []) kids.push({ kind: 'var', full: c.ctrl + '.' + c.local, edge: { egd: 'EGD → ' + c.ctrl }, children: [] });
       }
-      if (!refs.length) {
+      if (!refs.length && !mirrorIn) {
         if (up) {
           const ioIn = (rec.io || []).filter((x) => x.dir === 'I');
           if (ioIn.length) kids.push(...ioIn.map((x) => leaf('現場 I/O 輸入：' + (x.module || '') + ' ' + (x.board || '') + ' ' + (x.point || '') + (x.tag ? ' ' + x.tag : ''), 'io', D.hrefIO(x.ctrl, x.module))));
@@ -79,7 +109,7 @@
         if (signal.aborted) throw new DOMException('aborted', 'AbortError');
         const [ctrl, program, path, btype, pin] = ref;
         const key = ctrl + '|' + path;
-        const edgeBase = { blockKey: key, block: path.split('/').pop(), btype, from: node.full, refPin: pin, program, path };
+        const edgeBase = { blockKey: key, block: path.split('/').pop(), btype, from: node.full, refPin: pin, program, path, mirror: mirrorOut ? 'O' : null };
         const blk = await D.block(key, signal);
         if (!blk) { kids.push(Object.assign(leaf('方塊分片缺失 ' + path + '.' + pin, 'warn', D.hrefB(ctrl, path)), { edge: edgeBase })); continue; }
         if (blk.opaque) { kids.push(Object.assign(leaf('不透明 userblock ' + blk.name + ' — 無法追蹤內部', 'enc', D.hrefB(ctrl, path)), { edge: edgeBase })); continue; }
@@ -118,8 +148,9 @@
     if (!e) return null;
     if (e.egd) return D.h('span', { class: 'edge egd', text: e.egd });
     const parts = [];
+    if (e.mirror && !e.via) parts.push(D.h('span', { class: 'bd src src-T', text: e.mirror === 'O' ? '輸出腳位值' : '腳位值', title: e.mirror === 'O' ? '此變數是該方塊輸出腳的發佈值（腳位值鏡像）' : '此變數是該腳位的發佈值（腳位值鏡像）；上游 = 腳位的接線來源' }), ' ');
     if (e.via) parts.push(D.h('span', { class: 'muted small', text: '經 ' + e.via + ' ' }));
-    parts.push(D.h('a', { href: D.hrefBKey(e.blockKey), class: 'lk mono', text: e.block + (e.pin ? '.' + e.pin : ''), title: (e.path || e.blockKey) + (e.refPin ? '（' + (up ? '輸出' : '輸入') + '腳 ' + e.refPin + '）' : '') }));
+    parts.push(D.h('a', { href: D.hrefBKey(e.blockKey), class: 'lk mono', text: e.block + (e.pin ? '.' + e.pin : ''), title: (e.path || e.blockKey) + (e.refPin ? '（' + (e.mirror ? '腳位值' : up ? '輸出' : '輸入') + '腳 ' + e.refPin + '）' : '') }));
     if (e.btype) parts.push(D.h('span', { class: 'ref-type', text: '[' + e.btype + ']' }));
     if (e.pdir) parts.push(D.dirBadge(e.pdir), D.srcBadge(e.src));
     return D.h('span', { class: 'edge' }, up ? '← ' : '→ ', parts);

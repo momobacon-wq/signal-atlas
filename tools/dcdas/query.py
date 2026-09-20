@@ -378,11 +378,43 @@ def _alarm_section(v):
             "normal_severity": v["normal_severity"], "active_severity": v["active_severity"]}
 
 
+def _mirror_info(conn, vid):
+    """If variable `vid` is the published value of an already-wired pin, describe that pin and its wiring source."""
+    m = _row(conn, "SELECT pin_id, kind FROM pin_mirror WHERE var_id=?", (vid,))
+    if not m:
+        return None
+    p = _row(conn, _PIN_SQL + "WHERE p.id=?", (m["pin_id"],))
+    if not p:
+        return None
+    info = {"kind": m["kind"], "pin": _pin_ref(p), "conn_kind": p["conn_kind"], "src": None, "src_text": ""}
+    if not info["pin"]["block_type"]:
+        info["pin"]["block_type"] = p["kind"]      # task / userblock interface pins have no block type
+    k = p["conn_kind"]
+    if k == "V" and p["var_id"]:
+        sv = _var_by_id(conn, p["var_id"])
+        if sv:
+            info["src"] = {"k": "V", "var_id": sv["id"], "full_name": sv["full_name"]}
+            info["src_text"] = sv["full_name"]
+            sw = _var_pins(conn, sv, ("O",))
+            if sw:
+                info["src_text"] += f"  (written by {sw[0]['ctrl']}/{sw[0]['path']}.{sw[0]['pin']} [{sw[0]['block_type'] or sw[0]['kind']}]" + (f" +{len(sw)-1} more" if len(sw) > 1 else "") + ")"
+    elif k in ("L", "P") and p["tgt_block_id"]:
+        tb = _block_by_id(conn, p["tgt_block_id"])
+        if tb:
+            info["src"] = {"k": k, "block_id": tb["id"], "ref": f"{tb['ctrl']}/{tb['path']}.{p['tgt_pin']}", "pin": p["tgt_pin"]}
+            info["src_text"] = f"{p['connection']} = {tb['ctrl']}/{tb['path']}.{p['tgt_pin']} [{tb['block_type'] or tb['kind']}]"
+    elif k in ("N", "E"):
+        info["src"] = {"k": k, "text": p["connection"]}
+        info["src_text"] = f"{p['connection']} [const]"
+    return info
+
+
 def show(conn, signal, all_rows=False):
     v, err = resolve_signal(conn, signal)
     if err:
         return err
     vid = v["id"]
+    mirror = _mirror_info(conn, vid)
     pins = _var_pins(conn, v)
     iface = _interface_info(conn, v)
     names = _full_names(conn, [p["var_id"] for p in pins])
@@ -417,8 +449,21 @@ def show(conn, signal, all_rows=False):
     if refd:
         encset = {r[0] for r in conn.execute("SELECT name FROM program WHERE ctrl=? AND encrypted=1", (v["ctrl"],))}
         enc = [p for p in refd if p in encset]
+    # a published pin value: input pin -> source is the pin's wiring; output pin -> the block writes it
+    if not writers and mirror and mirror["kind"] == "I" and mirror["src"]:
+        w_entries.insert(0, {"ref": mirror["pin"]["ref"], "block_type": mirror["pin"]["block_type"], "dir": mirror["pin"]["dir"],
+                             "at": mirror["pin"]["at"], "inputs": [{"pin": mirror["pin"]["ref"].rsplit(".", 1)[-1], "dir": "I",
+                             "conn_kind": mirror["conn_kind"], "to": mirror["src_text"]}], "inputs_more": 0,
+                             "note": "(published value of this INPUT pin; its wiring is the source)"})
+    elif not writers and mirror and mirror["kind"] == "O":
+        w_entries.insert(0, {"ref": mirror["pin"]["ref"], "block_type": mirror["pin"]["block_type"], "dir": mirror["pin"]["dir"],
+                             "at": mirror["pin"]["at"], "inputs": [], "inputs_more": 0, "note": "(published value of this OUTPUT pin)"})
     # source-of-truth summary
-    if writers:
+    if not writers and mirror and mirror["kind"] == "I" and mirror["src"]:
+        source = f"value of pin {mirror['pin']['ref']} [{mirror['pin']['block_type']}] <- {mirror['src_text']}"
+    elif not writers and mirror and mirror["kind"] == "O":
+        source = f"logic (output pin value): {mirror['pin']['ref']} [{mirror['pin']['block_type']}]"
+    elif writers:
         source = f"logic: {w_entries[0]['ref']}" + (f" (+{len(writers)-1} more writers)" if len(writers) > 1 else "")
     elif iface and (iface["usage"] or "").lower() == "output":
         source = f"interface Output pin {iface['ref']} (no inner writer found" + ("; opaque macro" if iface["opaque"] else "") + ")"
@@ -439,7 +484,7 @@ def show(conn, signal, all_rows=False):
     d = _def_section(conn, v)
     d["interface"] = iface
     return {"kind": "show", "def": d, "source": source,
-            "writers": w_entries, "writers_total": len(writers),
+            "writers": w_entries, "writers_total": max(len(writers), len(w_entries)), "mirror": mirror,
             "readers": r_entries, "readers_total": len(readers),
             "unknown": u_entries, "unknown_total": len(unknown),
             "io": io_rows, "egd": egd, "hmi": hmi, "alarm": alarm, "watch": watch,
@@ -498,6 +543,20 @@ class _Trace:
         if level > up:
             return
         if not writers:
+            mir = _mirror_info(conn, vid)
+            if mir and mir["kind"] == "I" and mir["src"]:
+                if not self.emit(d + 1, f"<= value of pin {mir['pin']['ref']} [{mir['pin']['block_type']}] wired to {mir['conn_kind']}: {mir['src_text'].split('  (')[0]} ({mir['pin']['at']})"):
+                    return
+                sk = mir["src"]["k"]
+                if sk == "V":
+                    self.up_var(mir["src"]["var_id"], d + 2, level + 1, up)
+                elif sk in ("L", "P"):
+                    self.up_block(mir["src"]["block_id"], d + 2, level + 1, up)
+                return
+            if mir and mir["kind"] == "O":
+                self.emit(d + 1, f"<= output pin value {mir['pin']['ref']} [{mir['pin']['block_type']}] ({mir['pin']['at']})")
+                self.up_block(mir["pin"]["block_id"], d + 2, level + 1, up)
+                return
             for s in _rows(conn, "SELECT producer_ctrl,var_name,exchange_id,voffs,match_method,producer_var_id FROM egd_consumed WHERE local_var_id=?", (vid,)):
                 pf = f"{s['producer_ctrl']}.{s['var_name']}"
                 if s["producer_var_id"]:
@@ -1082,6 +1141,10 @@ def where(conn, key):
         items.append({"what": f"{label} {p['ctrl']}/{p['path']}.{p['pin']} [{p['block_type'] or p['kind']}] {_ds(d, p['dir_source'])}"
                       + (" (declared at this pin)" if p.get("decl") else "") + (f" (via interface pin {p['via']})" if p.get("via") else ""),
                       "at": _fl(p["file_path"], p["line_no"])})
+    mir = _mirror_info(conn, v["id"])
+    if mir:
+        items.append({"what": f"mirror of pin {mir['pin']['ref']} [{mir['pin']['block_type']}] kind {mir['kind']}" + (f" <- {mir['src_text']}" if mir['src_text'] else ""),
+                      "at": mir["pin"]["at"]})
     for r in _io_rows(conn, var_id=v["id"]):
         items.append({"what": f"io {r['ctrl']} {r['module'] or ''}/{r['board'] or ''} {r['point']} {r['direction']}", "at": r["at"]})
     for r in _rows(conn, """SELECT x.producer_ctrl, x.exchange_id, p.voffs FROM egd_produced p JOIN egd_exchange x ON x.id=p.exchange_pk

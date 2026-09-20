@@ -6,7 +6,38 @@
   /** 連線種類文字：A 且有變數 = 宣告於腳位的全域變數（索引已連結） */
   const ckLabel = (ck, varFull) => (ck === 'A' && varFull ? CK.AV : CK[ck] || '');
 
-  function pinRow(p) {
+  /** 腳位值鏡像：task entry 的 vm = {mirror_full_name: pin_name} → Map('CTRL|block_path#pin' → [mirror_full_name…])。
+   *  鏡像名慣例 CTRL.<Block>.<Pin>（GlobalNamePrefix=Block）→ 先以「方塊名.腳位名」對到方塊；對不到時，腳位名在 task 內唯一者才採用（腳位名即變數名的情形）。
+   *  舊資料無 vm → null。 */
+  D.mirrorMap = function (t, ctrl) {
+    const vm = t && t.vm;
+    if (!vm || !t.b) return null;
+    const byName = new Map(), byPin = new Map();
+    const push = (m, k, v) => { if (!m.has(k)) m.set(k, []); m.get(k).push(v); };
+    for (const k in t.b) {
+      const r = t.b[k];
+      const nm = r.name || k.slice(k.lastIndexOf('/') + 1);
+      for (const p of r.pins || []) { push(byName, nm + '.' + p[0], k); push(byPin, p[0], k); }
+    }
+    const out = new Map();
+    const pre = (ctrl || String(Object.keys(t.b)[0] || '').split('|')[0]) + '.';
+    for (const m in vm) {
+      const pin = vm[m];
+      if (!pin) continue;
+      const short = m.startsWith(pre) ? m.slice(pre.length) : m;
+      let ks = short.endsWith('.' + pin) ? byName.get(short) : null;
+      if (!ks) { const only = byPin.get(pin); ks = only && only.length === 1 ? only : null; }
+      if (!ks) continue;
+      for (const k of ks) push(out, k + '#' + pin, m);
+    }
+    return out;
+  };
+  /** 「發佈為」欄：鏡像變數連結（多個以換行列出） */
+  const mirrorCell = (mirrors) => (mirrors && mirrors.length
+    ? D.h('div', { class: 'mirror' }, mirrors.map((m, i) => D.frag(i ? D.h('br') : null, D.h('a', { href: D.hrefV(m), class: 'lk mono small', text: m, title: '此腳位的值發佈為變數 ' + m }))))
+    : '—');
+
+  function pinRow(p, mirrors) {
     const [name, dir, src, ck, conn, varFull, tgtKey, tgtPin, addr, alias] = p;
     let connCell;
     if (ck === 'V' && varFull) connCell = D.h('a', { href: D.hrefV(varFull), class: 'lk mono', text: conn || varFull });
@@ -21,11 +52,12 @@
       D.h('td', null, varFull ? D.h('a', { href: D.hrefV(varFull), class: 'lk mono small', text: varFull }) : '—'),
       D.h('td', null, tgtKey ? D.frag(D.h('a', { href: D.hrefBKey(tgtKey), class: 'lk mono small', text: tgtKey.slice(tgtKey.indexOf('|') + 1) }), tgtPin ? D.mono('.' + tgtPin, 'small') : null) : '—'),
       D.h('td', { class: 'nowrap' }, addr ? D.mono(addr) : '—'),
-      D.h('td', null, alias ? D.mono(alias) : '—'));
+      D.h('td', null, alias ? D.mono(alias) : '—'),
+      D.h('td', null, mirrorCell(mirrors)));
   }
 
-  D.pinRow = pinRow; // 邏輯圖側欄（diagram.js）重用
-  D.PIN_HEADS = ['腳位', '方向 / 來源', '連線種類', '連線', '變數', '目標方塊', '位址', '別名'];
+  D.pinRow = pinRow; // 邏輯圖側欄（diagram.js）重用；第二參數 = 該腳位的鏡像變數名陣列（選用）
+  D.PIN_HEADS = ['腳位', '方向 / 來源', '連線種類', '連線', '變數', '目標方塊', '位址', '別名', '發佈為'];
 
   /** 程式樹中的 Task/UserBlock 節點（block_path 第二段）；供 task 頁列方塊、一般方塊頁補邏輯圖號 */
   async function taskEntry(ctrl, program, taskName) {
@@ -81,10 +113,16 @@
       b.hmi ? D.kv('HMI', typeof b.hmi === 'string' ? D.h('a', { href: D.hrefS(b.hmi), class: 'lk mono', text: b.hmi }) : D.mono(JSON.stringify(b.hmi))) : null));
     const attrs = Object.entries(b.attrs || {});
     const pins = b.pins || [];
+    // 腳位值鏡像（task entry 的 vm；D.block 已載入同一 task 檔，這裡只是再查一次快取）
+    const tEntry = await D.task(D.taskKeyOf(key), signal).catch(() => null);
+    const mm = D.mirrorMap(tEntry, ctrl);
+    const nMirror = mm ? pins.filter((p) => mm.has(key + '#' + p[0])).length : 0;
     const secs = [
       D.section('基本資料', meta),
       D.section('屬性（attrs）', attrs.length ? D.h('table', { class: 'kv' }, D.h('tbody', null, attrs.map(([k, v]) => D.kv(k, D.mono(v == null ? '—' : String(v)))))) : D.empty('無屬性'), { count: attrs.length, open: attrs.length > 0 }),
-      D.section('腳位（pins）', pins.length ? D.table(['腳位', '方向 / 來源', '連線種類', '連線', '變數', '目標方塊', '位址', '別名'], pins.map(pinRow), 'pins') : D.empty('沒有腳位'), { count: pins.length }),
+      D.section('腳位（pins）', pins.length ? D.frag(
+        nMirror ? D.h('p', { class: 'muted small', text: '「發佈為」= 該腳位的值被組態工具發佈成的全域變數（腳位值鏡像）；共 ' + nMirror + ' 腳。' }) : null,
+        D.table(D.PIN_HEADS, pins.map((p) => pinRow(p, mm ? mm.get(key + '#' + p[0]) : null)), 'pins')) : D.empty('沒有腳位'), { count: pins.length }),
     ];
     if (isTask && entry) {
       const rows = (entry.task.blocks || []).filter((r) => r[3] !== 'task' && r[0] !== key)

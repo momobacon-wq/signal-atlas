@@ -5,7 +5,7 @@ Layout (all JSON compact, UTF-8, no local absolute paths — the exporter aborts
   manifest.json                 build hash, source info, controllers, shard config, encrypted programs, block types
   names/<CTRL>.json             {ctrl, rows:[[name, desc, flags, alias, datatype]]}   (search index, lazy per controller)
   var/<hhh>.json                {v:{full_name: card}}     shard = sha1(full_name)[:3]  (4096 shards)
-  task/<hhh>.json               {t:{tkey:{n, vd:{full_name: desc}, vu:{full_name:[nW,nR,flags]}, b:{key: block}}}}  tkey = ctrl|Program/Task;
+  task/<hhh>.json               {t:{tkey:{n, vd:{full_name: desc}, vu:{full_name:[nW,nR,flags]}, vm:{mirror_full: pin}, b:{key: block}}}}  tkey = ctrl|Program/Task;
                                 b in document order, root first; pins tuple = [name, dir, src, conn_kind, connection, var_full, tgt_key, tgt_pin, address, alias, desc]
   program/<CTRL>.json           {ctrl, programs:[{name, lib, file, enc, help, tasks:[{name, type, drg, blocks:[[key,name,type,kind,opaque]]}]}]}
   io/<CTRL>.json                {ctrl, modules:[{name, id, cabinet, red, boards:[{name, hw, pos, points:[[name, dir, conn, tag, addr, type, lo, hi, screws]]}]}]}
@@ -157,6 +157,26 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     var_name = {}   # id -> full_name
     for r in conn.execute("SELECT id,full_name FROM variable"):
         var_name[r[0]] = r[1]
+    # pin mirrors: variable -> {pin ref, kind, src}; pin -> mirror full names (for task files)
+    mirror = {}
+    mirror_by_pin = defaultdict(list)
+    for r in conn.execute("""SELECT m.var_id, m.kind, p.id, p.name, p.conn_kind, p.connection, p.var_id, p.tgt_block_id, p.tgt_pin, p.line_no, b.id
+                             FROM pin_mirror m JOIN pin p ON p.id=m.pin_id JOIN block b ON b.id=p.block_id"""):
+        vid, kind, pid, pname, ck, conn_s, pvid, tgt, tpin, ln, bid = r
+        b = blk.get(bid)
+        if not b:
+            continue
+        src = None
+        if kind == "I":
+            if ck == "V" and pvid in var_name:
+                src = {"k": "V", "var": var_name[pvid]}
+            elif ck in ("L", "P") and tgt in blk:
+                tb = blk[tgt]
+                src = {"k": ck, "block": f"{tb[0]}|{tb[2]}", "pin": tpin}
+            elif ck in ("N", "E"):
+                src = {"k": ck, "text": conn_s}
+        mirror[vid] = {"pin": [b[0], b[1], b[2], b[3], pname, "-", ln], "kind": kind, "src": src}
+        mirror_by_pin[pid].append(vid)
 
     # ---------------------------------------------------------------- per-variable aggregates
     log("  aggregating pins per variable")
@@ -272,6 +292,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
             "hmi": hmi.get(vid, []), "watch": watch.get(vid, []),
             "drg": sorted(drg.get(vid, ())), "enc": enc,
         }
+        if vid in mirror:
+            card["d"]["m"] = mirror[vid]
         if wmore.get(vid): card["w_more"] = wmore[vid]
         if rmore.get(vid): card["r_more"] = rmore[vid]
         if v["alarm_id"]:
@@ -297,6 +319,15 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     task_n = defaultdict(int)
     task_vars = defaultdict(set)       # tkey -> var ids referenced anywhere in the task
     task_avars = defaultdict(set)      # tkey -> var ids on declared-at-pin pins (need usage counts)
+    task_vm = defaultdict(dict)        # tkey -> {mirror_full_name: pin name}
+    mirrors_by_block = defaultdict(dict)  # block_id -> {mirror_full: pin name}
+    pin_block = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT id, block_id, name FROM pin WHERE id IN (SELECT pin_id FROM pin_mirror)")}
+    for pid, vids in mirror_by_pin.items():
+        if pid in pin_block:
+            bid_, pname_ = pin_block[pid]
+            for v in vids:
+                if v in var_name:
+                    mirrors_by_block[bid_][var_name[v]] = pname_
     has_layout = bool(conn.execute("SELECT 1 FROM pragma_table_info('block') WHERE name='layout'").fetchone())
     pins_by_block = defaultdict(list)
     block_vars = defaultdict(set)      # block_id -> var ids referenced by its pins (for the per-task description map)
@@ -311,6 +342,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
             block_vars[r[0]].add(r[6])
             if (r[4] or "-") == "A":
                 a_vars_by_block[r[0]].add(r[6])
+        # (pin id is not selected here; mirrors are attached below by block+pin name)
     var_desc = {r[0]: r[1].split("\n")[0].strip() for r in conn.execute(
         "SELECT id, description FROM variable WHERE description IS NOT NULL AND description<>''") if r[1].strip()}
     # usage counts per variable for the diagram's visibility rule on declared-at-pin (A + var) pins
@@ -346,6 +378,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
             task_vars[tkey].update(block_vars[bid])
         if bid in a_vars_by_block:
             task_avars[tkey].update(a_vars_by_block[bid])
+        if bid in mirrors_by_block:
+            task_vm[tkey].update(mirrors_by_block[bid])
         if tid is not None:
             task_blocks[tid].append([key, name, btype, kind, opq])
         n_blocks += 1
@@ -354,7 +388,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     for tkey, items in task_items.items():
         vd = {var_name[v]: var_desc[v] for v in task_vars.get(tkey, ()) if v in var_desc and v in var_name}
         vu = {var_name[v]: [var_nw.get(v, 0), var_nr.get(v, 0), var_ext.get(v, 0)] for v in task_avars.get(tkey, ()) if v in var_name}
-        body = '{"n":%d,"vd":%s,"vu":%s,"b":{%s}}' % (task_n[tkey], _dump(vd), _dump(vu), ",".join(items))
+        body = '{"n":%d,"vd":%s,"vu":%s,"vm":%s,"b":{%s}}' % (task_n[tkey], _dump(vd), _dump(vu), _dump(task_vm.get(tkey, {})), ",".join(items))
         sizes.append(len(body))
         tshards[_shard(tkey)].append(_dump(tkey) + ":" + body)
     for sh, items in tshards.items():

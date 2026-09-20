@@ -125,6 +125,15 @@ def main():
     check("H11 HpBypToCrhPressCv.CVO written by the PID block's CVO pin (O, declared at pin)",
           len(cvo) == 1 and cvo[0][1] == "O" and cvo[0][2] == "A", str(cvo))
 
+    # ---- pin mirrors (published value of an already-wired pin)
+    nm = one(conn, "SELECT count(*) FROM pin_mirror")
+    check("pin_mirror rows >= 25000", (nm or 0) >= 25000, str(nm))
+    mir = conn.execute("""SELECT b.path, p.name, p.conn_kind, w.full_name FROM pin_mirror m JOIN variable v ON v.id=m.var_id
+                          JOIN pin p ON p.id=m.pin_id JOIN block b ON b.id=p.block_id LEFT JOIN variable w ON w.id=p.var_id
+                          WHERE v.ctrl='H11' AND v.name='HpDistCV2.RSP'""").fetchone()
+    check("H11.HpDistCV2.RSP mirrors pin HpDistCV2.RSP wired to H11.HpDistCv2PID11_SP",
+          mir is not None and mir[1] == "RSP" and mir[2] == "V" and mir[3] == "H11.HpDistCv2PID11_SP", str(tuple(mir)) if mir else "missing")
+
     # ---- quality gates
     for c in ("G11", "H11", "WSC1"):
         tot = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.ctrl=? AND p.conn_kind IN ('V','L','P','D')", c)

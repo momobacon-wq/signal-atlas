@@ -57,15 +57,52 @@
     return D.section('定義', D.h('table', { class: 'kv' }, D.h('tbody', null, rows)));
   }
 
+  const stripK = (s) => String(s == null ? '' : s).replace(/^[NEL]:/, '');
+  const lastSeg = (key) => { const s = String(key || ''); return s.slice(Math.max(s.lastIndexOf('/'), s.lastIndexOf('|')) + 1); };
+  /** 腳位值鏡像的接線來源（d.m.src）→ 可點的節點：V 訊號連結、L/P 方塊連結＋腳位名、N/E 常數文字、null 無資訊 */
+  function mirrorSrc(src) {
+    if (!src) return D.h('span', { class: 'muted', text: '（無接線資訊）' });
+    if (src.k === 'V' && src.var) return D.h('a', { href: D.hrefV(src.var), class: 'lk mono b', text: src.var });
+    if ((src.k === 'L' || src.k === 'P') && src.block) {
+      return D.frag(D.h('span', { class: 'muted small', text: src.k === 'P' ? '介面腳 ' : '同 task 方塊腳 ' }),
+        D.h('a', { href: D.hrefBKey(src.block), class: 'lk mono b', text: lastSeg(src.block) + (src.pin ? '.' + src.pin : ''), title: src.block }));
+    }
+    if (src.k === 'N' || src.k === 'E') return D.frag(D.h('span', { class: 'muted small', text: src.k === 'N' ? '常數 ' : '列舉 ' }), D.mono(stripK(src.text), 'const'));
+    return D.mono(src.text || src.var || src.block || '?');
+  }
+  /** 腳位值鏡像（d.m）：w 空時的來源規則。回傳 {note, body} 或 null（沒有 m 或 kind 不是 I/O） */
+  function mirrorSource(m, full) {
+    if (!m || !Array.isArray(m.pin) || m.pin.length < 5) return null;
+    const [mc, mprog, mpath, mtype, mpin] = m.pin;
+    const pinLink = D.frag(D.h('a', { href: D.hrefB(mc, mpath), class: 'lk mono b', text: lastSeg(mpath) + '.' + mpin, title: mc + '/' + mpath }), ' ', D.h('span', { class: 'ref-type', text: '[' + (mtype || '?') + ']' }));
+    const tail = (txt) => D.frag(D.h('span', { class: 'muted small', text: txt }), ' ', D.h('a', { href: D.hrefD(mc, mprog, D.taskOf(mpath), { sel: full }), class: 'lk small', text: '圖', title: '在邏輯方塊圖中高亮此訊號' }));
+    if (m.kind === 'I') {
+      return { note: '腳位值（接線來源）', body: [
+        D.h('p', null, '腳位值：', pinLink, ' 的值，接線來源 = ', mirrorSrc(m.src)),
+        D.refRow(m.pin, 'I', { tail: tail('腳位值（接線來源見上）') })] };
+    }
+    if (m.kind === 'O') {
+      return { note: '方塊輸出腳位值', body: [
+        D.h('p', null, '方塊輸出腳位值：', pinLink),
+        D.refRow(m.pin, 'O', { tail: tail('輸出腳位值') })] };
+    }
+    return null;
+  }
+
   function sourceSection(rec, full) {
     const w = rec.w || [];
     const body = [];
     let note = '';
+    const m = rec.d && rec.d.m;
+    const ms = w.length ? null : mirrorSource(m, full);
     if (w.length) {
       note = '邏輯寫入者';
       body.push(w.map((r) => D.refRow(r, 'O', { tail: D.h('a', { href: D.hrefD(r[0], r[1], D.taskOf(r[2]), { sel: full }), class: 'lk small', text: '圖', title: '在邏輯方塊圖中高亮此訊號' }) })));
       if (w.length > 1) body.push(D.h('p', { class: 'warn-text', text: '多個寫入者（' + w.length + '）— 可能是不同 task 交替寫入，或方向推斷有誤。' }));
       if (rec.w_more) body.push(D.h('p', { class: 'muted small', text: '另有 ' + D.int(rec.w_more) + ' 筆寫入者未列出（超過 400 筆）。' }));
+    } else if (ms) { // 腳位值鏡像：緊接在真正的寫入者之後、I/O／EGD／加密之前
+      note = ms.note;
+      body.push(ms.body);
     } else {
       const ioIn = (rec.io || []).filter((x) => x.dir === 'I');
       if (ioIn.length) {
@@ -86,8 +123,11 @@
         note = '無';
         body.push(D.h('p', { class: 'muted' }, rec.d && rec.d.const ? '常數（沒有寫入者）。' : '找不到寫入者：可能為 HMI/外部寫入、常數，或腳位方向未推斷出來（見「方向未知的腳」）。'));
       }
+      if (m && Array.isArray(m.pin) && m.pin.length >= 5 && m.kind !== 'I' && m.kind !== 'O') { // kind '?'：只補一行說明
+        body.push(D.h('p', { class: 'muted small' }, '此變數是腳位 ', D.h('a', { href: D.hrefB(m.pin[0], m.pin[2]), class: 'lk mono', text: lastSeg(m.pin[2]) + '.' + m.pin[4] }), ' 的發佈值（腳位方向未知）', m.src ? D.frag('，接線 = ', mirrorSrc(m.src)) : null, '。'));
+      }
     }
-    return D.section('來源（寫入者）', body, { count: w.length, note });
+    return D.section('來源（寫入者）', body, { count: w.length + (ms ? 1 : 0), note });
   }
 
   function egdSection(egd, full) {

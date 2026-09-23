@@ -122,10 +122,14 @@ def recover_opaque_pins(conn, ctrl_names, log=print):
               conn 'V' to the AI's '{Device}' variable / the FF_AI's OUT variable). Naming-pair INFERENCE, not XML
               evidence: the sibling's output has no visible reader in the same task (517/517 measured) and the user's
               configuration tool confirms one instance; never overrides a 'decl'/'link' row for IN.
+              For AI_<k> pairs (IN variable '<stem>_AI') the outputs are recovered too: OUT -> variable 'ai_<stem>',
+              DEVICE_STATUS -> '<stem>_DS' (direction O), but only when that variable's ReferencedIn lists the block's
+              program while no visible pin of that program references it (so the reference must be inside the
+              encrypted block). FF_AI pairs have no such naming and get IN only.
     Runs AFTER direction.run (needs the XML pins' directions) and BEFORE refresh_mirror_kinds. Directions carry
     dir_source 'R' (recovered) for 'decl' rows and 'L' for 'link' rows. The list is only as complete as the evidence."""
     t0 = time.time()
-    tot = {"decl": 0, "link": 0, "pair": 0, "blocks": 0, "conflict": 0, "I": 0, "O": 0, "?": 0, "mirror": 0}
+    tot = {"decl": 0, "link": 0, "pair": 0, "pair_out": 0, "pair_skip": 0, "blocks": 0, "conflict": 0, "I": 0, "O": 0, "?": 0, "mirror": 0}
     n_opaque = conn.execute("SELECT count(*) FROM block WHERE is_opaque=1").fetchone()[0]
     next_id = (conn.execute("SELECT coalesce(max(id),0) FROM pin").fetchone()[0] or 0) + 1
     for ctrl in ctrl_names:
@@ -187,8 +191,9 @@ def recover_opaque_pins(conn, ctrl_names, log=print):
             rows[(bid, tp)] = {"bid": bid, "name": tp, "addr": None, "desc": None, "line": line_no, "origin": "link", "src": "L", "ck": "-", "var": None, "mirror": None, "dir": d}
             tot["link"] += 1
         # --- pair rows: opaque AI_INT_<k> beside AI_<k> ('{Device}' output) or FF_AI_<k> (OUT) in the same parent
-        for bid, name, parent, line_no in conn.execute(
-                "SELECT id, name, parent_id, line_no FROM block WHERE ctrl=? AND is_opaque=1 AND block_type='AI_INT' AND parent_id IS NOT NULL", (ctrl,)):
+        prog_name = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM program WHERE ctrl=?", (ctrl,))}
+        for bid, name, parent, line_no, prog_id in conn.execute(
+                "SELECT id, name, parent_id, line_no, program_id FROM block WHERE ctrl=? AND is_opaque=1 AND block_type='AI_INT' AND parent_id IS NOT NULL", (ctrl,)):
             k = name[len("AI_INT_"):]
             if not k:
                 continue
@@ -205,6 +210,26 @@ def recover_opaque_pins(conn, ctrl_names, log=print):
             rows[(bid, "IN")] = {"bid": bid, "name": "IN", "addr": None, "desc": None, "line": line_no, "origin": "pair", "src": "R",
                                  "ck": "V", "var": src[0], "conn": src[1], "mirror": None, "dir": "I"}
             tot["pair"] += 1
+            # outputs (AI pairs only): OUT -> ai_<stem>, DEVICE_STATUS -> <stem>_DS, evidenced by ReferencedIn
+            if not src[1].endswith("_AI"):
+                continue
+            stem = src[1][:-3]
+            for pname, vname in (("OUT", "ai_" + stem), ("DEVICE_STATUS", stem + "_DS")):
+                v = conn.execute("SELECT id, referenced_in FROM variable WHERE ctrl=? AND name=?", (ctrl, vname)).fetchone()
+                if not v or prog_name.get(prog_id) not in (v[1] or "").split(","):
+                    tot["pair_skip"] += 1
+                    continue
+                vis = conn.execute("""SELECT 1 FROM pin p JOIN block b ON b.id=p.block_id
+                                      WHERE p.var_id=? AND b.program_id=? AND p.origin IS NULL LIMIT 1""", (v[0], prog_id)).fetchone()
+                if vis:
+                    tot["pair_skip"] += 1
+                    continue
+                if (bid, pname) in rows:
+                    tot["conflict"] += 1
+                    continue
+                rows[(bid, pname)] = {"bid": bid, "name": pname, "addr": None, "desc": None, "line": line_no, "origin": "pair", "src": "R",
+                                      "ck": "V", "var": v[0], "conn": vname, "mirror": None, "dir": "O"}
+                tot["pair_out"] += 1
         if not rows:
             continue
         order = {"I": 0, "O": 1, "S": 2, "?": 3}
@@ -222,7 +247,7 @@ def recover_opaque_pins(conn, ctrl_names, log=print):
         conn.commit()
         tot["blocks"] += len({k[0] for k in rows})
         tot["mirror"] += len(mir)
-    log(f"  opaque interface recovered: decl={tot['decl']} link={tot['link']} pair={tot['pair']} blocks={tot['blocks']}/{n_opaque} "
+    log(f"  opaque interface recovered: decl={tot['decl']} link={tot['link']} pair={tot['pair']}(+{tot['pair_out']} outputs, {tot['pair_skip']} skipped) blocks={tot['blocks']}/{n_opaque} "
         f"I={tot['I']} O={tot['O']} ?={tot['?']} mirrors={tot['mirror']} conflicts={tot['conflict']}  {time.time()-t0:.1f}s")
     return tot
 

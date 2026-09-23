@@ -51,7 +51,7 @@ _PIN_SQL = """SELECT p.id, p.name AS pin, p.direction, p.dir_source, p.conn_kind
 
 ORIGIN_NOTE = {"decl": "(recovered: variable declared at this pin of an opaque macro)",
                "link": "(recovered: sibling L: link into this opaque macro)",
-               "pair": "(recovered: IN paired with the sibling AI_k/FF_AI_k of the same number; inferred)"}
+               "pair": "(recovered: paired with the sibling AI_k/FF_AI_k of the same number; outputs by ai_<stem>/<stem>_DS naming + ReferencedIn; inferred)"}
 
 
 def _pin_ref(p):
@@ -1184,8 +1184,9 @@ def lint(conn, limit=40):
     limit = int(limit or 40)
     multi = []
     # a task/userblock interface pin declared as the variable + the inner block writing it is ONE signal path,
-    # so only count ordinary-block writers (or interface writers when there is no block writer)
-    for vid, full, n, nb in conn.execute("""SELECT v.id, v.full_name, count(*) AS n, sum(b.kind='block') AS nb
+    # so only count ordinary-block writers (or interface writers when there is no block writer); a recovered pin of an
+    # opaque macro (origin set) is that macro's own write and counts as a block writer
+    for vid, full, n, nb in conn.execute("""SELECT v.id, v.full_name, count(*) AS n, sum(b.kind='block' OR p.origin IS NOT NULL) AS nb
                                             FROM pin p JOIN variable v ON v.id=p.var_id JOIN block b ON b.id=p.block_id
                                             WHERE p.direction='O' GROUP BY v.id HAVING (nb>1 OR (nb=0 AND n>1))
                                             ORDER BY nb DESC, n DESC, v.full_name LIMIT ?""", (limit,)):
@@ -1194,7 +1195,7 @@ def lint(conn, limit=40):
                       "writers": [f"{p['ctrl']}/{p['path']}.{p['pin']} [{p['block_type'] or p['kind']}] {_ds(p['direction'], p['dir_source'])} "
                                   f"{_fl(p['file_path'], p['line_no'])}" for p in ws[:3]],
                       "writers_more": max(0, len(ws) - 3)})
-    n_multi = conn.execute("""SELECT count(*) FROM (SELECT p.var_id, count(*) AS n, sum(b.kind='block') AS nb FROM pin p JOIN block b ON b.id=p.block_id
+    n_multi = conn.execute("""SELECT count(*) FROM (SELECT p.var_id, count(*) AS n, sum(b.kind='block' OR p.origin IS NOT NULL) AS nb FROM pin p JOIN block b ON b.id=p.block_id
                               WHERE p.direction='O' AND p.var_id IS NOT NULL GROUP BY p.var_id HAVING (nb>1 OR (nb=0 AND n>1)))""").fetchone()[0]
     # logic writer AND field input on the same variable
     wio = _rows(conn, """SELECT v.full_name, i.ctrl, i.name AS point, i.device_tag,

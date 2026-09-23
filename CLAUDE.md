@@ -41,7 +41,7 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 - 「腳位值鏡像」：變數是某個**已接線**腳位的發佈值（例 `H11.HpDistCV2.RSP` = Override Station `RSP` 腳的值，該腳接線到 `HpDistCv2PID11_SP`）；
   索引表 `pin_mirror`，`show` 的 source 會印 `value of pin … <- 來源`，`trace --up` 會穿過腳位追到接線來源；輸出腳的鏡像則寫入者為該方塊。
 - 「不透明巨集」（`is_opaque=1`，整個 UserBlock 含介面腳都加密，5,082 個實例／123 種型別）：索引把有證據的腳位**回推**成 `pin` 列並標 `origin`
-  （`decl` = 宣告在該方塊腳位上的變數，方向來源字母 `R`；`link` = 鄰近方塊的 `L:` 連線，方向來源 `L`；`pair` = 不透明 `AI_INT_k` 旁同層同編號的 `AI_k`／`FF_AI_k`，回推 `IN` 讀其裝置名輸出，**命名配對推斷**，來源 `R`）。`block` 會印
+  （`decl` = 宣告在該方塊腳位上的變數，方向來源字母 `R`；`link` = 鄰近方塊的 `L:` 連線，方向來源 `L`；`pair` = 不透明 `AI_INT_k` 旁同層同編號的 `AI_k`／`FF_AI_k`，回推 `IN` 讀其裝置名輸出，`AI_k` 配對再依 `ai_<名>`／`<名>_DS` 命名加 `ReferencedIn` 證據回推 `OUT`／`DEVICE_STATUS`，**命名配對推斷**，來源 `R`）。`block` 會印
   `OPAQUE MACRO: … interface recovered …`，沒有回推腳但程式庫目錄有型別時列「catalogue（只有名稱與 Usage，無接線）」，都沒有就是
   `interface encrypted: no visible pins`。回答時**一定要說明**：回推清單只有證據看得到的部分、可能不完整；宣告變數也可能是巨集內部變數；
   約 1,216 個實例（2oo3_Basic、TIMER_SEC、SIGNAL_CON、RSLEW、AO_INT…）沒有任何可見腳位，這是加密造成的，不是索引漏掉。

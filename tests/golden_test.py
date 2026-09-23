@@ -140,10 +140,16 @@ def main():
                          LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path='HardwireInputs_1/HW_ISC_HEATEX/AI_INT_153' AND p.name='IN'""").fetchone()
     check("H11 AI_INT_153.IN paired to H11.HpOTHeatExOutNearSideTemp6_AI (I/R, origin pair)",
           pr is not None and tuple(pr) == ("I", "R", "V", "pair", "H11.HpOTHeatExOutNearSideTemp6_AI"), str(tuple(pr)) if pr else "missing")
+    po = conn.execute("""SELECT p.name,p.direction,p.dir_source,p.conn_kind,v.full_name FROM pin p JOIN block b ON b.id=p.block_id
+                         LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path='HardwireInputs_1/HW_ISC_HEATEX/AI_INT_153'
+                         AND p.origin='pair' AND p.name IN ('OUT','DEVICE_STATUS') ORDER BY p.name""").fetchall()
+    check("H11 AI_INT_153 OUT -> ai_HpOTHeatExOutNearSideTemp6, DEVICE_STATUS -> HpOTHeatExOutNearSideTemp6_DS (O/R, pair)",
+          [tuple(r) for r in po] == [("DEVICE_STATUS", "O", "R", "V", "H11.HpOTHeatExOutNearSideTemp6_DS"), ("OUT", "O", "R", "V", "H11.ai_HpOTHeatExOutNearSideTemp6")],
+          str([tuple(r) for r in po]))
     npair = one(conn, "SELECT count(*) FROM pin WHERE origin='pair'")
-    check("pair rows >= 1000 (1037 expected)", (npair or 0) >= 1000, str(npair))
-    nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='pair' AND NOT (b.is_opaque=1 AND b.block_type='AI_INT' AND p.name='IN')")
-    check("pair rows only on opaque AI_INT.IN", nbad == 0, str(nbad))
+    check("pair rows >= 2000 (1037 IN + ~1032 outputs expected)", (npair or 0) >= 2000, str(npair))
+    nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='pair' AND NOT (b.is_opaque=1 AND b.block_type='AI_INT' AND p.name IN ('IN','OUT','DEVICE_STATUS'))")
+    check("pair rows only on opaque AI_INT IN/OUT/DEVICE_STATUS", nbad == 0, str(nbad))
 
     # ---- pin mirrors (published value of an already-wired pin)
     nm = one(conn, "SELECT count(*) FROM pin_mirror")
@@ -178,9 +184,10 @@ def main():
     check("recovered pins only on opaque blocks", bad == 0, str(bad))
     bad = one(conn, "SELECT count(*) FROM pin WHERE origin IS NOT NULL AND conn_kind IN ('V','L','P','D') AND direction='?'")
     check("recovered pins never '?' inside the connected set", bad == 0, str(bad))
-    n_multi = one(conn, """SELECT count(*) FROM (SELECT p.var_id, count(*) AS n, sum(b.kind='block') AS nb FROM pin p JOIN block b ON b.id=p.block_id
+    # same rule as query.lint: a recovered pin of an opaque macro counts as a block writer (interface pin + block = one path)
+    n_multi = one(conn, """SELECT count(*) FROM (SELECT p.var_id, count(*) AS n, sum(b.kind='block' OR p.origin IS NOT NULL) AS nb FROM pin p JOIN block b ON b.id=p.block_id
                            WHERE p.direction='O' AND p.var_id IS NOT NULL GROUP BY p.var_id HAVING (nb>1 OR (nb=0 AND n>1)))""")
-    check("multi-writer variables <= 2510 (2485 before recovery)", (n_multi or 0) <= 2510, str(n_multi))
+    check("multi-writer variables <= 2510 (2485 before recovery; 2503 with pairing)", (n_multi or 0) <= 2510, str(n_multi))
 
     # ---- quality gates
     for c in ("G11", "H11", "WSC1"):

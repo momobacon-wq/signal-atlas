@@ -126,7 +126,7 @@
     const oi = b.opaque ? D.opaqueInfo(b) : null;
     let pinsBody;
     if (pins.length) pinsBody = D.frag(
-      nOrg ? D.h('p', { class: 'muted small', text: '「腳位來源」= 明文（組態檔內列出）／宣告（由宣告在該腳位的變數回推）／連線（由同層方塊的 L: 連線回推）／配對（同層同編號的 AI／FF_AI 方塊，IN 讀其輸出，命名推斷）；回推腳共 ' + nOrg + ' 腳，方向由證據推斷、可能不完整。' }) : null,
+      nOrg ? D.h('p', { class: 'muted small', text: '「腳位來源」= 明文（組態檔內列出）／宣告（由宣告在該腳位的變數回推）／連線（由同層方塊的 L: 連線回推）／配對（同層同編號的 AI／FF_AI 方塊：IN 讀其輸出，OUT／DEVICE_STATUS 依 ai_<名>／<名>_DS 命名與 ReferencedIn 推斷）；回推腳共 ' + nOrg + ' 腳，方向由證據推斷、可能不完整。' }) : null,
       nMirror ? D.h('p', { class: 'muted small', text: '「發佈為」= 該腳位的值被組態工具發佈成的全域變數（腳位值鏡像）；共 ' + nMirror + ' 腳。' }) : null,
       D.table(D.PIN_HEADS, pins.map((p) => pinRow(p, mm ? mm.get(key + '#' + p[0]) : null)), 'pins'));
     else if (oi && oi.kind === 'cat') pinsBody = D.catalogueTable(oi.cat);

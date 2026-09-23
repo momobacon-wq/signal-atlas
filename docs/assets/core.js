@@ -410,7 +410,7 @@
   };
   /* ---- 不透明巨集（介面在加密區）：回推腳位 org（tuple 第 12 欄 'd' 宣告／'l' 連線／'p' 同編號配對／null 明文）、鎖頭圖示、介面說明行、程式庫目錄 */
   D.ORG_LABEL = { d: '宣告', l: '連線', p: '配對' };
-  D.ORG_TITLE = { d: '由宣告變數回推', l: '由 L: 連線回推', p: '由同層同編號的 AI／FF_AI 方塊配對推斷（IN 讀其輸出）' };
+  D.ORG_TITLE = { d: '由宣告變數回推', l: '由 L: 連線回推', p: '由同層同編號的 AI／FF_AI 方塊配對推斷（IN 讀其輸出；OUT／DEVICE_STATUS 依 ai_<名>／<名>_DS 命名與 ReferencedIn 推斷）' };
   D.orgOf = (p) => (p && p.length > 11 && p[11]) || null;
   D.orgLabel = (org) => (org ? D.ORG_LABEL[org] || org : '明文');
   /** 回推腳位小徽章「推」（class org）；title 說明回推依據 */

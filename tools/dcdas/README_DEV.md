@@ -27,7 +27,9 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
   `origin='decl'` (a variable whose `decl_connection` = block path + pin; direction from evidence, `dir_source='R'`) or
   `origin='link'` (a sibling `L:Block.Pin` target; direction opposite to the referrer, `dir_source='L'`) or
   `origin='pair'` (opaque `AI_INT_<k>` next to `AI_<k>` / `FF_AI_<k>` in the same parent: pin `IN` reads that block's
-  device-named output variable; naming-pair inference, `dir_source='R'`, ~1,000 rows). `resolve.run`
+  device-named output variable; for `AI_<k>` pairs also `OUT`→`ai_<stem>` and `DEVICE_STATUS`→`<stem>_DS` when the
+  variable's `ReferencedIn` lists the block's program and nothing visible there references it; naming-pair inference,
+  `dir_source='R'`, ~2,000 rows). `resolve.run`
   purges recovered rows for the controllers being built first (post-only builds). `lib_pin_usage` gives a catalogue
   (names + usage, no wiring) for 12 more types; ~1,216 instances have no visible interface at all.
 * `Pin` attrs: `Name`, `Connection`, `Address`, `Value`, `Description`, `Access`, `Alias`, `AliasOverride`, `LibName`,

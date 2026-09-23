@@ -75,7 +75,7 @@ INSERT_LOCAL_VAR = """INSERT INTO variable(id,
   normal_severity,active_severity,is_program_local,decl_file,decl_line)
 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
 INSERT_PIN = """INSERT INTO pin(id,block_id,name,conn_kind,connection,var_id,tgt_block_id,tgt_pin,address,value,alias,
-alias_override,usage_declared,description,line_no) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+alias_override,usage_declared,description,line_no,lib_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
 
 STAT_KEYS = ("programs", "tasks", "fftasks", "blocks", "userblocks", "opaque", "pins", "attrs", "encrypted", "zk",
              "local_vars", "unres_V", "unres_L", "unres_P", "skipped_files")
@@ -208,9 +208,10 @@ def parse_program_file(conn, ctrl: str, path: Path, root: Path, ids: _Ids, vardi
                 fr = stack[-1]
                 fr.n_pin += 1
                 a = el.attrib
+                ln = a.get("LibName")       # template pin name ('{Device}', '{Device}{Type}', ...): the instance name is expanded per block
                 pins.append([ids.next("pin"), fr, a.get("Name", ""), a.get("Connection"), a.get("Address"),
                              a.get("Value"), a.get("Alias"), a.get("AliasOverride"), a.get("Usage"),
-                             a.get("Description"), el.sourceline])
+                             a.get("Description"), el.sourceline, ln if ln and "{" in ln else None])
             _clear(el)
         elif tag in AUTO_PINS:
             if stack:
@@ -218,7 +219,7 @@ def parse_program_file(conn, ctrl: str, path: Path, root: Path, ids: _Ids, vardi
                 a = el.attrib
                 pins.append([ids.next("pin"), fr, a.get("Name", "_" + tag), a.get("Connection"), a.get("Address"),
                              a.get("Value"), a.get("Alias"), a.get("AliasOverride"), a.get("Usage") or AUTO_PINS[tag],
-                             a.get("Description"), el.sourceline])
+                             a.get("Description"), el.sourceline, None])
             _clear(el)
         elif tag == "Attribute":
             par = el.getparent()
@@ -273,7 +274,7 @@ def parse_program_file(conn, ctrl: str, path: Path, root: Path, ids: _Ids, vardi
 
     # ---- resolve connections (whole file is known now) and insert
     seen = set()
-    for pid, fr, name, connection, address, value, alias, alias_ov, usage, desc, line in pins:
+    for pid, fr, name, connection, address, value, alias, alias_ov, usage, desc, line, lib_name in pins:
         key = (fr.id, name)
         if key in seen:             # UNIQUE(block_id,name); not observed in the checkout
             continue
@@ -303,7 +304,7 @@ def parse_program_file(conn, ctrl: str, path: Path, root: Path, ids: _Ids, vardi
                 stats["unres_P"] += 1
         batches["pin"].add((pid, fr.id, name, kind, connection, var_id, tgt, y, address, value, alias,
                             1 if (alias_ov or "").lower() == "true" else (0 if alias_ov else None),
-                            usage, desc, line))
+                            usage, desc, line, lib_name))
     encrypted = 1 if (n_block_file == 0 and n_zk_file >= 1) else 0
     conn.execute(INSERT_PROGRAM, (prog_id, ctrl, prog_name, prog_lib, rel, encrypted, n_block_file, n_task, prog_help))
     for t in tasks:

@@ -28,7 +28,7 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
   `origin='link'` (a sibling `L:Block.Pin` target; direction opposite to the referrer, `dir_source='L'`). `resolve.run`
   purges recovered rows for the controllers being built first (post-only builds). `lib_pin_usage` gives a catalogue
   (names + usage, no wiring) for 12 more types; ~1,216 instances have no visible interface at all.
-* `Pin` attrs: `Name`, `Connection`, `Address`, `Value`, `Description`, `Access`, `Alias`, `AliasOverride`,
+* `Pin` attrs: `Name`, `Connection`, `Address`, `Value`, `Description`, `Access`, `Alias`, `AliasOverride`, `LibName`,
   `StatusAddress`, `EgdPage`, `FormatSpecification`, `PermanentConnection`, `NovRam`, `LibName`, `Usage`.
 * `Connection` forms (classify → `pin.conn_kind`):
   `V` bare name → variable (program-local `<Variable>` first, then controller `variable(ctrl,name)`; `NAME[n]` resolves
@@ -44,6 +44,14 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
   Block/Task/Full; same address). `resolve.link_declared_pins` links `pin.var_id` by (1) name `Block.Pin`, (2)
   `decl_connection == Program.Task….Pin`, (3) unique same-address variable (non-`DistributedIO.` preferred); conn_kind
   stays 'A'. ~167k pins. Multi-writer lint counts ordinary-block writers only (interface pin + inner block = one path).
+* Template pins: a `Pin` whose `LibName` contains `{...}` (`{Device}`, `{Device}{Type}`, `{Device}{BlockSuffix}`) gets its
+  instance `Name` expanded from the block's `Device`/`Type`/`BlockSuffix` attributes (the `Device` attribute itself may be a
+  literal `{Unit}{Device}` expanded by the enclosing macro, so never match on `block.device`). Stored in `pin.lib_name`
+  (NULL otherwise). Seen only on AI (`{Device}` = the scaled output the manual calls OUT), the selectors
+  (DUALSEL/MEDSEL/QUADSEL), the device macros (M_O_V/S_O_V/STARTER/GRP/BREAKER/PID_MA_ENH/OVR_ST_ENH), LOGIC_BUILDER(_SC)
+  (`{Device}{Type}`) and FF_AI/FF_AO/FF_DO. `direction.py` keys every decision on `coalesce(lib_name, name)` and
+  `tools/pin_dir_overrides.csv` lists them under the template (`AI,{Device},O`); FF_AI's template pin is self-wired to its
+  own OUT (`L:FF_AI_n.OUT`) and is left to the link vote.
 * Pin direction is NOT in the XML (except `Usage` on interface pins). `direction.py` infers it post-hoc
   (U > T manual table/overrides > C constants > L link votes > H name heuristics > `?`).
 * `block.path` = `Program/Task/UserBlock/…/Block` (task names repeat across programs, so the program is part of the key).

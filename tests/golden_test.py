@@ -125,6 +125,16 @@ def main():
     check("H11 HpBypToCrhPressCv.CVO written by the PID block's CVO pin (O, declared at pin)",
           len(cvo) == 1 and cvo[0][1] == "O" and cvo[0][2] == "A", str(cvo))
 
+    # ---- template (LibName) pins: the AI block's output is named after its Device attribute
+    ai = conn.execute("""SELECT b.path,p.direction,p.dir_source,p.conn_kind,p.lib_name FROM pin p JOIN block b ON b.id=p.block_id
+                         JOIN variable v ON v.id=p.var_id WHERE v.ctrl='H11' AND v.name='HpOTHeatExOutNearSideTemp6_AI' AND p.direction='O'""").fetchall()
+    check("H11.HpOTHeatExOutNearSideTemp6_AI written by AI_153's {Device} pin (O/T, declared at pin)",
+          len(ai) == 1 and ai[0][0].endswith("/AI_153") and ai[0][2] == "T" and ai[0][3] == "A" and ai[0][4] == "{Device}", str(ai))
+    nq = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.block_type='AI' AND p.lib_name='{Device}' AND p.direction='?'")
+    check("no AI {Device} pin left with direction '?'", nq == 0, str(nq))
+    pd = conn.execute("SELECT direction, source FROM pin_dir WHERE block_type='AI' AND pin_name='{Device}'").fetchone()
+    check("pin_dir has (AI,{Device}) = O/T", pd is not None and tuple(pd) == ("O", "T"), str(pd))
+
     # ---- pin mirrors (published value of an already-wired pin)
     nm = one(conn, "SELECT count(*) FROM pin_mirror")
     check("pin_mirror rows >= 25000", (nm or 0) >= 25000, str(nm))

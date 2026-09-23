@@ -46,6 +46,9 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
   `interface encrypted: no visible pins`。回答時**一定要說明**：回推清單只有證據看得到的部分、可能不完整；宣告變數也可能是巨集內部變數；
   約 1,216 個實例（2oo3_Basic、TIMER_SEC、SIGNAL_CON、RSLEW、AO_INT…）沒有任何可見腳位，這是加密造成的，不是索引漏掉。
 - `audit-type <BLOCK_TYPE>`：逐腳位稽核某型別方塊（方向/來源/連線種類/已連結/被使用）；懷疑某類方塊漏接時用它。
+- 「裝置名腳位」：`LibName` 是樣板（`{Device}`、`{Device}{Type}`、`{Device}{BlockSuffix}`）的腳位，每個實例的腳位名都不同（AI 方塊的輸出腳就叫裝置名，
+  例 `AI_153.HpOTHeatExOutNearSideTemp6_AI`）；索引存 `pin.lib_name`，方向以樣板為鍵、由 `tools/pin_dir_overrides.csv` 判 O（來源字母 `T`，
+  依據是同型別全部實例都沒有其他寫入者、有讀取者或上 EGD/HMI）；`audit-type` 把它們合併成一列顯示樣板名。回答時照規則標示為推斷。
 
 ## 命名慣例（判讀訊號名用）
 

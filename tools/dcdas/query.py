@@ -1236,7 +1236,7 @@ def coverage(conn, limit=40):
         ctrls.append({"ctrl": ctrl, "n_pins": n_pins, "n_connected": n_conn, "n_unknown": n_unk or 0,
                       "frac_unknown": (n_unk or 0) / n_conn if n_conn else 0.0})
     top = [{"block_type": bt, "pin_name": pn, "n": n} for bt, pn, n in conn.execute(f"""
-        SELECT coalesce(b.block_type,''), p.name, count(*) AS n FROM pin p JOIN block b ON b.id=p.block_id
+        SELECT coalesce(b.block_type,''), coalesce(p.lib_name, p.name), count(*) AS n FROM pin p JOIN block b ON b.id=p.block_id
         WHERE p.direction='?' AND p.conn_kind IN {inlist} GROUP BY 1,2 ORDER BY n DESC, 1, 2 LIMIT {limit}""")]
     src = {r[0] or "-": r[1] for r in conn.execute("SELECT dir_source, count(*) FROM pin GROUP BY dir_source")}
     dirs = {r[0] or "?": r[1] for r in conn.execute("SELECT direction, count(*) FROM pin GROUP BY direction")}
@@ -1266,13 +1266,14 @@ def coverage(conn, limit=40):
 
 # -------------------------------------------------------------------------------------------------- audit-type
 def audit_type(conn, block_type, ctrl=None, limit=200):
-    """Per-pin audit of one block type: direction/source/conn_kind distribution, declared-at-pin linking, usage."""
+    """Per-pin audit of one block type: direction/source/conn_kind distribution, declared-at-pin linking, usage.
+    Pins are grouped by coalesce(lib_name, name), so template pins ('{Device}', ...) appear as ONE row under the template."""
     where = "b.block_type=?" + (" AND b.ctrl=?" if ctrl else "")
     args = [block_type] + ([ctrl] if ctrl else [])
     n_blocks = conn.execute(f"SELECT count(*) FROM block b WHERE {where}", args).fetchone()[0]
     pins = []
     for r in conn.execute(f"""
-        SELECT p.name, count(*) AS n,
+        SELECT coalesce(p.lib_name, p.name) AS pkey, count(*) AS n,
                sum(p.direction='I') AS n_i, sum(p.direction='O') AS n_o, sum(p.direction='S') AS n_s, sum(p.direction='?') AS n_q,
                group_concat(DISTINCT p.dir_source) AS srcs,
                sum(p.conn_kind='V') AS ck_v, sum(p.conn_kind='L') AS ck_l, sum(p.conn_kind='P') AS ck_p,
@@ -1283,11 +1284,12 @@ def audit_type(conn, block_type, ctrl=None, limit=200):
                sum(p.var_id IS NOT NULL AND (EXISTS(SELECT 1 FROM egd_produced e WHERE e.var_id=p.var_id)
                                             OR EXISTS(SELECT 1 FROM hmi_point h WHERE h.var_id=p.var_id)
                                             OR EXISTS(SELECT 1 FROM io_point i WHERE i.var_id=p.var_id))) AS egd_hmi_io
-        FROM pin p JOIN block b ON b.id=p.block_id WHERE {where} GROUP BY p.name ORDER BY n DESC, p.name""", args):
+        FROM pin p JOIN block b ON b.id=p.block_id WHERE {where} GROUP BY pkey ORDER BY n DESC, pkey""", args):
         pins.append({"pin": r[0], "n": r[1], "I": r[2], "O": r[3], "S": r[4], "unknown": r[5], "sources": r[6] or "",
                      "V": r[7], "L": r[8], "P": r[9], "const": r[10], "A": r[11], "none": r[12],
                      "linked": r[13], "a_linked": r[14], "used_by_other_pin": r[15], "egd_hmi_io": r[16]})
     manual = {r[0]: r[1] for r in conn.execute("SELECT pin_name, direction FROM pin_dir_table WHERE block_type=?", (block_type,))}
+    manual.update({r[0]: r[1] for r in conn.execute("SELECT pin_name, direction FROM pin_dir_override WHERE block_type=?", (block_type,))})
     unknown = [p for p in pins if p["unknown"] and p["unknown"] == p["n"]]
     return {"kind": "audit", "block_type": block_type, "ctrl": ctrl, "n_blocks": n_blocks, "n_pin_names": len(pins),
             "pins": pins[:limit], "pins_more": max(0, len(pins) - limit), "manual_pins": len(manual),

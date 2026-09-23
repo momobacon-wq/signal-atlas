@@ -1,2 +1,24 @@
 block_type,pin_name,direction,note
 # manual corrections (direction I|O), loaded on every build, take precedence over pin_dir_table.csv; lines starting with # are ignored
+# template pins (LibName '{...}'): the instance pin name is expanded per block, so the key is the template itself
+AI,{Device},O,scaled value published under the device tag (manual names it OUT); readers only, no other writer
+DUALSEL_V2,{Device},O,selected value published under the device tag; readers only
+MEDSEL_V2,{Device},O,selected value published under the device tag; readers only
+MEDSEL_S2,{Device},O,selected value published under the device tag; readers only
+QUADSEL_V2,{Device},O,selected value published under the device tag; readers only
+DUALSEL_S2,{Device},O,selected value published under the device tag; readers only
+PID_MA_ENH_V2,{Device},O,device status bit published to EGD/HMI; no other writer
+PID_MA_ENH_V3,{Device},O,device status bit published to EGD/HMI; no other writer
+OVR_ST_ENH_V2,{Device},O,device status bit published to EGD/HMI; no other writer
+M_O_V_V4,{Device},O,device status bit published to EGD/HMI; no other writer
+M_O_V_V3,{Device},O,device status bit published to EGD/HMI; no other writer
+M_O_V_JOG_V3,{Device},O,device status bit published to EGD/HMI; no other writer
+M_O_V_JOG_V2,{Device},O,device status bit published to EGD/HMI; no other writer
+S_O_V_V3,{Device},O,device status bit published to EGD/HMI; no other writer
+STARTER_V3,{Device},O,device status bit published to EGD/HMI; no other writer
+GRP_V3,{Device},O,device status bit published to EGD/HMI; no other writer
+BREAKER_V2,{Device},O,device status bit published to EGD/HMI; no other writer
+LOGIC_BUILDER,{Device}{Type},O,named permissive/force bit (alias of OUT_VAL); EGD-produced, no other writer
+LOGIC_BUILDER_SC,{Device}{Type},O,named permissive/force bit (alias of OUT_VAL); EGD-produced, no other writer
+FF_AO,{Device}{BlockSuffix},O,status bit published to EGD; no other writer
+FF_DO,{Device}{BlockSuffix},O,status bit published to EGD; no other writer

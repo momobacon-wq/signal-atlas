@@ -16,6 +16,11 @@ dir_source: which evidence decided it (letters are the same in pin.dir_source an
   H  name heuristics (regexes O_RE / I_RE below).
   -  nothing decided -> '?'.
 
+Pin key: every (block_type, pin) decision is keyed on coalesce(pin.lib_name, pin.name).  Pins carrying a LibName
+template ('{Device}', '{Device}{Type}', '{Device}{BlockSuffix}') have a different expanded name on every instance
+(the AI block's output pin is named after its Device attribute, the manual calls it OUT), so the template is the
+only stable key; the override CSV lists them under the template name (e.g. AI,{Device},O).
+
 Per-pin precedence (highest first):
   1. Pin@Usage on the pin itself (U).
   2. The per-(block_type,pin_name) decision table when it was decided by U (lib / instance usage) or T (manual).
@@ -75,7 +80,7 @@ def _aggregates(conn, log):
     t0 = time.time()
     agg: Dict[Tuple[str, str], list] = {}
     for bt, pn, n, ui, uo, ux, nc, nl in conn.execute("""
-        SELECT coalesce(b.block_type,''), p.name, count(*),
+        SELECT coalesce(b.block_type,''), coalesce(p.lib_name, p.name), count(*),
                sum(p.usage_declared='Input'), sum(p.usage_declared='Output'),
                sum(p.usage_declared IS NOT NULL AND p.usage_declared NOT IN ('Input','Output')),
                sum(p.conn_kind IN ('N','E')),
@@ -88,8 +93,9 @@ def _aggregates(conn, log):
     t0 = time.time()
     targeted: Dict[Tuple[str, str], int] = {}
     for bt, pn, n in conn.execute("""
-        SELECT coalesce(tb.block_type,''), p.tgt_pin, count(*)
+        SELECT coalesce(tb.block_type,''), coalesce(t.lib_name, p.tgt_pin), count(*)
         FROM pin p JOIN block tb ON tb.id=p.tgt_block_id
+        LEFT JOIN pin t ON t.block_id=p.tgt_block_id AND t.name=p.tgt_pin
         WHERE p.conn_kind='L' AND p.tgt_pin IS NOT NULL
           AND (p.usage_declared IS NULL OR p.usage_declared<>'Output')
         GROUP BY 1,2"""):
@@ -194,7 +200,7 @@ def run(conn, repo_dir, log=print) -> dict:
     conn.execute("UPDATE pin SET direction='?', dir_source='-'")
     cur = conn.execute("""UPDATE pin SET direction=d.direction, dir_source=d.source
         FROM block b, temp.dir_tab d
-        WHERE b.id=pin.block_id AND d.block_type=coalesce(b.block_type,'') AND d.pin_name=pin.name""")
+        WHERE b.id=pin.block_id AND d.block_type=coalesce(b.block_type,'') AND d.pin_name=coalesce(pin.lib_name, pin.name)""")
     n_tab = cur.rowcount
     cur = conn.execute("""UPDATE pin SET direction=CASE usage_declared WHEN 'Input' THEN 'I' WHEN 'Output' THEN 'O' ELSE 'S' END,
         dir_source='U' WHERE usage_declared IS NOT NULL AND usage_declared<>''""")
@@ -204,7 +210,7 @@ def run(conn, repo_dir, log=print) -> dict:
         SELECT p.id AS id, CASE t.usage_declared WHEN 'Output' THEN 'O' ELSE 'I' END AS direction
         FROM pin p JOIN pin t ON t.block_id=p.tgt_block_id AND t.name=p.tgt_pin
         JOIN block b ON b.id=p.block_id
-        LEFT JOIN temp.dir_tab d ON d.block_type=coalesce(b.block_type,'') AND d.pin_name=p.name
+        LEFT JOIN temp.dir_tab d ON d.block_type=coalesce(b.block_type,'') AND d.pin_name=coalesce(p.lib_name, p.name)
         WHERE p.conn_kind='P' AND t.usage_declared IN ('Input','Output','Const')
           AND (d.source IS NULL OR d.source NOT IN ('U','T'))""")
     cur = conn.execute("UPDATE pin SET direction=q.direction, dir_source='U' FROM temp.p_dir q "
@@ -259,7 +265,7 @@ def coverage(conn, limit: int = 20) -> dict:
     top = []
     if limit:
         top = [{"block_type": bt, "pin_name": pn, "n": n} for bt, pn, n in conn.execute(f"""
-            SELECT coalesce(b.block_type,''), p.name, count(*) AS n FROM pin p JOIN block b ON b.id=p.block_id
+            SELECT coalesce(b.block_type,''), coalesce(p.lib_name, p.name), count(*) AS n FROM pin p JOIN block b ON b.id=p.block_id
             WHERE p.direction='?' AND p.conn_kind IN {CONNECTED}
             GROUP BY 1,2 ORDER BY n DESC, 1, 2 LIMIT {int(limit)}""")]
     return {"controllers": ctrls, "top_unknown": top}

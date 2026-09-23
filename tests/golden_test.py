@@ -135,6 +135,16 @@ def main():
     pd = conn.execute("SELECT direction, source FROM pin_dir WHERE block_type='AI' AND pin_name='{Device}'").fetchone()
     check("pin_dir has (AI,{Device}) = O/T", pd is not None and tuple(pd) == ("O", "T"), str(pd))
 
+    # ---- paired opaque AI_INT: IN reads the sibling AI_k device output (naming-pair inference)
+    pr = conn.execute("""SELECT p.direction,p.dir_source,p.conn_kind,p.origin,v.full_name FROM pin p JOIN block b ON b.id=p.block_id
+                         LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path='HardwireInputs_1/HW_ISC_HEATEX/AI_INT_153' AND p.name='IN'""").fetchone()
+    check("H11 AI_INT_153.IN paired to H11.HpOTHeatExOutNearSideTemp6_AI (I/R, origin pair)",
+          pr is not None and tuple(pr) == ("I", "R", "V", "pair", "H11.HpOTHeatExOutNearSideTemp6_AI"), str(tuple(pr)) if pr else "missing")
+    npair = one(conn, "SELECT count(*) FROM pin WHERE origin='pair'")
+    check("pair rows >= 1000 (1037 expected)", (npair or 0) >= 1000, str(npair))
+    nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='pair' AND NOT (b.is_opaque=1 AND b.block_type='AI_INT' AND p.name='IN')")
+    check("pair rows only on opaque AI_INT.IN", nbad == 0, str(nbad))
+
     # ---- pin mirrors (published value of an already-wired pin)
     nm = one(conn, "SELECT count(*) FROM pin_mirror")
     check("pin_mirror rows >= 25000", (nm or 0) >= 25000, str(nm))

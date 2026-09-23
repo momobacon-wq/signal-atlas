@@ -37,7 +37,7 @@
     ? D.h('div', { class: 'mirror' }, mirrors.map((m, i) => D.frag(i ? D.h('br') : null, D.h('a', { href: D.hrefV(m), class: 'lk mono small', text: m, title: '此腳位的值發佈為變數 ' + m }))))
     : '—');
 
-  /** 腳位列（方塊頁／側欄共用）：第 12 欄 org（回推腳，只在不透明方塊上）→「腳位來源」欄：明文／宣告（推）／連線（推） */
+  /** 腳位列（方塊頁／側欄共用）：第 12 欄 org（回推腳，只在不透明方塊上）→「腳位來源」欄：明文／宣告（推）／連線（推）／配對（推） */
   function pinRow(p, mirrors) {
     const [name, dir, src, ck, conn, varFull, tgtKey, tgtPin, addr, alias] = p;
     const org = D.orgOf(p);
@@ -126,7 +126,7 @@
     const oi = b.opaque ? D.opaqueInfo(b) : null;
     let pinsBody;
     if (pins.length) pinsBody = D.frag(
-      nOrg ? D.h('p', { class: 'muted small', text: '「腳位來源」= 明文（組態檔內列出）／宣告（由宣告在該腳位的變數回推）／連線（由同層方塊的 L: 連線回推）；回推腳共 ' + nOrg + ' 腳，方向由證據推斷、可能不完整。' }) : null,
+      nOrg ? D.h('p', { class: 'muted small', text: '「腳位來源」= 明文（組態檔內列出）／宣告（由宣告在該腳位的變數回推）／連線（由同層方塊的 L: 連線回推）／配對（同層同編號的 AI／FF_AI 方塊，IN 讀其輸出，命名推斷）；回推腳共 ' + nOrg + ' 腳，方向由證據推斷、可能不完整。' }) : null,
       nMirror ? D.h('p', { class: 'muted small', text: '「發佈為」= 該腳位的值被組態工具發佈成的全域變數（腳位值鏡像）；共 ' + nMirror + ' 腳。' }) : null,
       D.table(D.PIN_HEADS, pins.map((p) => pinRow(p, mm ? mm.get(key + '#' + p[0]) : null)), 'pins'));
     else if (oi && oi.kind === 'cat') pinsBody = D.catalogueTable(oi.cat);

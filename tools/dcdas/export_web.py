@@ -332,8 +332,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     pins_by_block = defaultdict(list)
     block_vars = defaultdict(set)      # block_id -> var ids referenced by its pins (for the per-task description map)
     a_vars_by_block = defaultdict(set)   # block_id -> var ids on declared-at-pin (A + var) pins
-    rc_by_block = {}                   # block_id -> [nDecl, nLink] for opaque macros with recovered interface pins
-    ORG = {"decl": "d", "link": "l"}
+    rc_by_block = {}                   # block_id -> [nDecl, nLink, nPair] for opaque macros with recovered interface pins
+    ORG = {"decl": "d", "link": "l", "pair": "p"}
     for r in conn.execute("""SELECT block_id,name,direction,dir_source,conn_kind,connection,var_id,tgt_block_id,tgt_pin,address,alias,description,origin
                              FROM pin ORDER BY block_id,id"""):
         tb = blk.get(r[7]) if r[7] else None
@@ -341,7 +341,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
                                     (f"{tb[0]}|{tb[2]}" if tb else None), r[8], r[9], r[10],
                                     (r[11].split("\n")[0].strip() or None) if r[11] else None, ORG.get(r[12])])
         if r[12]:
-            rc_by_block.setdefault(r[0], [0, 0])[0 if r[12] == "decl" else 1] += 1
+            rc_by_block.setdefault(r[0], [0, 0, 0])[{"decl": 0, "link": 1}.get(r[12], 2)] += 1
         if r[6] is not None:
             block_vars[r[0]].add(r[6])
             if (r[4] or "-") == "A" or r[12]:

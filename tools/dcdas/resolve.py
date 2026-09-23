@@ -117,10 +117,15 @@ def recover_opaque_pins(conn, ctrl_names, log=print):
               and the declared variable becomes a pin_mirror of this pin); otherwise 'A' var=itself with O only when the
               variable has readers/alarm/HMI/IO-output AND no other writer/field input/EGD source, else '?'.
       'link'  a sibling pin wired 'L:Block.PIN' to the block: direction opposite to the referrer ('-', no variable).
+      'pair'  AI_INT_<k> only: an opaque analog-input interface macro sitting next to AI_<k> / FF_AI_<k> (same parent,
+              same number) is assumed to read that block's device-named output on its catalogue pin IN (direction I,
+              conn 'V' to the AI's '{Device}' variable / the FF_AI's OUT variable). Naming-pair INFERENCE, not XML
+              evidence: the sibling's output has no visible reader in the same task (517/517 measured) and the user's
+              configuration tool confirms one instance; never overrides a 'decl'/'link' row for IN.
     Runs AFTER direction.run (needs the XML pins' directions) and BEFORE refresh_mirror_kinds. Directions carry
     dir_source 'R' (recovered) for 'decl' rows and 'L' for 'link' rows. The list is only as complete as the evidence."""
     t0 = time.time()
-    tot = {"decl": 0, "link": 0, "blocks": 0, "conflict": 0, "I": 0, "O": 0, "?": 0, "mirror": 0}
+    tot = {"decl": 0, "link": 0, "pair": 0, "blocks": 0, "conflict": 0, "I": 0, "O": 0, "?": 0, "mirror": 0}
     n_opaque = conn.execute("SELECT count(*) FROM block WHERE is_opaque=1").fetchone()[0]
     next_id = (conn.execute("SELECT coalesce(max(id),0) FROM pin").fetchone()[0] or 0) + 1
     for ctrl in ctrl_names:
@@ -181,24 +186,43 @@ def recover_opaque_pins(conn, ctrl_names, log=print):
             line_no = conn.execute("SELECT line_no FROM block WHERE id=?", (bid,)).fetchone()[0]
             rows[(bid, tp)] = {"bid": bid, "name": tp, "addr": None, "desc": None, "line": line_no, "origin": "link", "src": "L", "ck": "-", "var": None, "mirror": None, "dir": d}
             tot["link"] += 1
+        # --- pair rows: opaque AI_INT_<k> beside AI_<k> ('{Device}' output) or FF_AI_<k> (OUT) in the same parent
+        for bid, name, parent, line_no in conn.execute(
+                "SELECT id, name, parent_id, line_no FROM block WHERE ctrl=? AND is_opaque=1 AND block_type='AI_INT' AND parent_id IS NOT NULL", (ctrl,)):
+            k = name[len("AI_INT_"):]
+            if not k:
+                continue
+            src = conn.execute("""SELECT p.var_id, v.name FROM block s JOIN pin p ON p.block_id=s.id JOIN variable v ON v.id=p.var_id
+                                  WHERE s.parent_id=? AND s.is_opaque=0 AND p.var_id IS NOT NULL
+                                    AND ((s.block_type='AI' AND s.name=? AND p.lib_name='{Device}')
+                                      OR (s.block_type='FF_AI' AND s.name=? AND p.name='OUT'))
+                                  ORDER BY s.block_type LIMIT 1""", (parent, "AI_" + k, "FF_AI_" + k)).fetchone()
+            if not src:
+                continue
+            if (bid, "IN") in rows:
+                tot["conflict"] += 1
+                continue
+            rows[(bid, "IN")] = {"bid": bid, "name": "IN", "addr": None, "desc": None, "line": line_no, "origin": "pair", "src": "R",
+                                 "ck": "V", "var": src[0], "conn": src[1], "mirror": None, "dir": "I"}
+            tot["pair"] += 1
         if not rows:
             continue
         order = {"I": 0, "O": 1, "S": 2, "?": 3}
         ins, mir = [], []
         for key in sorted(rows, key=lambda k: (k[0], order.get(rows[k]["dir"], 9), k[1])):
             r = rows[key]
-            ins.append((next_id, r["bid"], r["name"], r["dir"], r["src"], r["ck"], r["var"], r["addr"], r["desc"], r["line"], r["origin"]))
+            ins.append((next_id, r["bid"], r["name"], r["dir"], r["src"], r["ck"], r["var"], r["addr"], r["desc"], r["line"], r["origin"], r.get("conn")))
             if r["mirror"] is not None:
                 mir.append((r["mirror"], next_id, "I"))
             tot[r["dir"]] = tot.get(r["dir"], 0) + 1
             next_id += 1
-        conn.executemany("""INSERT OR IGNORE INTO pin(id, block_id, name, direction, dir_source, conn_kind, var_id, address, description, line_no, origin)
-                            VALUES(?,?,?,?,?,?,?,?,?,?,?)""", ins)
+        conn.executemany("""INSERT OR IGNORE INTO pin(id, block_id, name, direction, dir_source, conn_kind, var_id, address, description, line_no, origin, connection)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", ins)
         conn.executemany("INSERT OR REPLACE INTO pin_mirror(var_id, pin_id, kind) VALUES(?,?,?)", mir)
         conn.commit()
         tot["blocks"] += len({k[0] for k in rows})
         tot["mirror"] += len(mir)
-    log(f"  opaque interface recovered: decl={tot['decl']} link={tot['link']} blocks={tot['blocks']}/{n_opaque} "
+    log(f"  opaque interface recovered: decl={tot['decl']} link={tot['link']} pair={tot['pair']} blocks={tot['blocks']}/{n_opaque} "
         f"I={tot['I']} O={tot['O']} ?={tot['?']} mirrors={tot['mirror']} conflicts={tot['conflict']}  {time.time()-t0:.1f}s")
     return tot
 

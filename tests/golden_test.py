@@ -29,7 +29,7 @@ def main():
     conn = sqlite3.connect(f"file:{dbm.db_path().as_posix()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     # ---- counts
-    check("variable total 319081", one(conn, "SELECT count(*) FROM variable WHERE is_program_local=0") == 319081,
+    check("variable total 329601 (319081 + 10520 alarm sub-variables)", one(conn, "SELECT count(*) FROM variable WHERE is_program_local=0") == 329601,
           str(one(conn, "SELECT count(*) FROM variable WHERE is_program_local=0")))
     g11_blocks = one(conn, "SELECT count(*) FROM block WHERE ctrl='G11' AND kind='block'")
     check("G11 blocks 31417", g11_blocks == 31417, str(g11_blocks))
@@ -168,13 +168,17 @@ def main():
                                      ("NooM_Basic_2", "I", "T", "V", "xref", "H11.HpOTHeatExOutNearSideTemp6")], str([tuple(r) for r in xr]))
     vp = {r[0]: (r[1], r[2]) for r in conn.execute("""SELECT p.name, p.direction, v.name FROM pin p JOIN block b ON b.id=p.block_id
                          LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_HpOTHeatExOutTemp/NooM_Basic_1' AND p.origin='xref'""")}
-    check("H11 NooM_Basic_1: 21 xref pins, INA=FarSideTemp1, INL=NearSideTemp6, INT=NearSideTemp10, OUT -> PRO_HpOTHeatExOutTemp2Hi (O)",
-          len(vp) == 21 and vp.get("INA") == ("I", "HpOTHeatExOutFarSideTemp1") and vp.get("INL") == ("I", "HpOTHeatExOutNearSideTemp6")
-          and vp.get("INT") == ("I", "HpOTHeatExOutNearSideTemp10") and vp.get("OUT") == ("O", "PRO_HpOTHeatExOutTemp2Hi"), str(sorted(vp.items()))[:300])
+    check("H11 NooM_Basic_1: 22 xref pins, INA=FarSideTemp1, INL=NearSideTemp6, INT=NearSideTemp10, HI_LIMIT <- k_PRO_HpOTHeatExOutTemp_HH_SP, OUT -> PRO_HpOTHeatExOutTemp2Hi (O)",
+          len(vp) == 22 and vp.get("INA") == ("I", "HpOTHeatExOutFarSideTemp1") and vp.get("INL") == ("I", "HpOTHeatExOutNearSideTemp6")
+          and vp.get("INT") == ("I", "HpOTHeatExOutNearSideTemp10") and vp.get("OUT") == ("O", "PRO_HpOTHeatExOutTemp2Hi")
+          and vp.get("HI_LIMIT") == ("I", "k_PRO_HpOTHeatExOutTemp_HH_SP"), str(sorted(vp.items()))[:300])
+    hl = one(conn, """SELECT v.name FROM pin p JOIN block b ON b.id=p.block_id JOIN variable v ON v.id=p.var_id
+                      WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_HpOTHeatExOutTemp/NooM_Basic_2' AND p.name='HI_LIMIT' AND p.origin='xref'""")
+    check("H11 NooM_Basic_2.HI_LIMIT <- k_PRO_HpOTHeatExOutTemp_H_SP (xref)", hl == "k_PRO_HpOTHeatExOutTemp_H_SP", str(hl))
     nw = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.PRO_HpOTHeatExOutTemp2Hi' AND p.direction='O'")
     check("H11.PRO_HpOTHeatExOutTemp2Hi has exactly 1 writer (the voter OUT)", nw == 1, str(nw))
     nx = one(conn, "SELECT count(*) FROM pin WHERE origin='xref'")
-    check("xref rows = 221 (204 + 15 H11 2oo3_Basic voter pins + 2 mirrored H12)", nx == 221, str(nx))
+    check("xref rows = 225 (204 + 15 H11 2oo3_Basic voter pins + 2 mirrored H12 + 4 NooM_Basic HI_LIMIT)", nx == 225, str(nx))
     n40 = one(conn, """SELECT count(*) FROM (SELECT b.id FROM pin p JOIN block b ON b.id=p.block_id JOIN variable v ON v.id=p.var_id
                         WHERE b.path LIKE 'HardwireInputs_1/HW_ISC_HEATEX/AI_INT_%' AND v.name LIKE '%HpOTHeatExOut%SideTemp%'
                         GROUP BY b.id HAVING sum(p.origin='xref')=3 AND count(*)=3)""")
@@ -189,8 +193,8 @@ def main():
     check("vote rows only on opaque 2oo3_Basic, dir_source R", nbad == 0, str(nbad))
     v3 = {r[0]: r[1:] for r in conn.execute("""SELECT p.name, p.direction, p.conn_kind, p.connection, p.origin FROM pin p JOIN block b ON b.id=p.block_id
                          WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_HpStmTermAttOutPress/2oo3_Basic_3'""")}
-    check("H11 HpStmTermAttOutPress 2oo3_Basic_3: 9 pins all xref, BQB is a .BQ field row (D), OUT -> PRO_HpStmTermAttOutPress2Hi (O)",
-          len(v3) == 9 and all(v[3] == "xref" for v in v3.values()) and v3.get("BQB") == ("I", "D", "ai_HpStmTermAttOutPressB.BQ", "xref")
+    check("H11 HpStmTermAttOutPress 2oo3_Basic_3: 9 pins all xref, BQB reads the .BQ alarm sub-variable (V), OUT -> PRO_HpStmTermAttOutPress2Hi (O)",
+          len(v3) == 9 and all(v[3] == "xref" for v in v3.values()) and v3.get("BQB") == ("I", "V", "ai_HpStmTermAttOutPressB.BQ", "xref")
           and v3.get("OUT") == ("O", "V", "PRO_HpStmTermAttOutPress2Hi", "xref") and v3.get("HI_LIMIT", ("",))[2:3] == ("k_PRO_HpStmTermAttOutPress_HH_SP",), str(sorted(v3.items()))[:400])
     v1 = {r[0]: r[1:] for r in conn.execute("""SELECT p.name, p.connection, p.origin FROM pin p JOIN block b ON b.id=p.block_id
                          WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_HpStmTermAttOutPress/2oo3_Basic_1'""")}
@@ -206,6 +210,37 @@ def main():
     check("H11.PRO_HpStmTermAttOutPress2Hi has exactly 1 writer (2oo3_Basic_3.OUT)", nw == 1, str(nw))
     nr = one(conn, """SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.HpOTHeatExOutNearSideTemp6' AND p.direction<>'O'""")
     check("H11.HpOTHeatExOutNearSideTemp6 has 9 reader pins (7 plaintext + 2 xref)", nr == 9, str(nr))
+
+    # ---- alarm sub-pins / sub-variables (AlarmSubPinVariable + AlarmGlobalSubVariable)
+    nsv = one(conn, "SELECT count(*) FROM variable WHERE sub_of IS NOT NULL")
+    check("alarm sub-variables >= 10000 (10520)", (nsv or 0) >= 10000, str(nsv))
+    bad = one(conn, "SELECT count(*) FROM variable s WHERE s.sub_of IS NOT NULL AND NOT EXISTS (SELECT 1 FROM variable p WHERE p.ctrl=s.ctrl AND p.name=s.sub_of)")
+    check("every alarm sub-variable has its parent variable", bad == 0, str(bad))
+    ncls = one(conn, "SELECT count(*) FROM variable WHERE sub_of IS NOT NULL AND alarm_class IS NOT NULL")
+    check("alarm flags (.H/.HH/.L/.BQ... with AlarmClass) >= 4000 (4164)", (ncls or 0) >= 4000, str(ncls))
+    nsp = one(conn, "SELECT count(*) FROM pin WHERE lib_name LIKE '{Alarm}.%'")
+    check("alarm sub-pins >= 9000 (9,310 pins named <var>.<SUFFIX> in plaintext programs, lib_name {Alarm}.<SUFFIX>)", (nsp or 0) >= 9000, str(nsp))
+    bad = one(conn, "SELECT count(*) FROM pin WHERE lib_name LIKE '{Alarm}.%' AND (direction NOT IN ('I','O') OR (var_id IS NULL AND conn_kind<>'L'))")
+    check("alarm sub-pins: direction I/O and linked to a variable (except the 20 'L:' inhibits)", bad == 0, str(bad))
+    sp = {r[0].rsplit(".", 1)[-1]: r[1:] for r in conn.execute("""SELECT p.name, p.direction, p.dir_source, p.conn_kind, v.name FROM pin p JOIN block b ON b.id=p.block_id
+                         LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path='InputSignalConditioning_1/HrsgHeatEx_ISC' AND p.name LIKE 'HpOTHeatExOutFarSideTemp1.%'""")}
+    check("H11 HrsgHeatEx_ISC HpOTHeatExOutFarSideTemp1: 9 sub-pins; HH O/U/A = itself; HH_SP I/U/V <- k_PRO_HpOTHeatExOutTemp_HH_SP; HYST <- k_HpOTHeatExOutTemp_HYST; INH I/A",
+          len(sp) == 9 and sp.get("HH") == ("O", "U", "A", "HpOTHeatExOutFarSideTemp1.HH") and sp.get("HH_SP") == ("I", "U", "V", "k_PRO_HpOTHeatExOutTemp_HH_SP")
+          and sp.get("HYST") == ("I", "U", "V", "k_HpOTHeatExOutTemp_HYST") and sp.get("INH") == ("I", "U", "A", "HpOTHeatExOutFarSideTemp1.INH"), str(sorted(sp.items()))[:400])
+    mk = one(conn, "SELECT m.kind FROM pin_mirror m JOIN variable v ON v.id=m.var_id WHERE v.full_name='H11.HpOTHeatExOutFarSideTemp1.HH_SP'")
+    check("H11.HpOTHeatExOutFarSideTemp1.HH_SP is a kind-I mirror of its sub-pin (value = the constant)", mk == "I", str(mk))
+    for cst, nexp in (("k_PRO_HpOTHeatExOutTemp_H_SP", 21), ("k_PRO_HpOTHeatExOutTemp_HH_SP", 21)):
+        nr = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name=? AND p.direction='I'", "H11." + cst)
+        check(f"H11.{cst}: 21 readers (20 ISC alarm sub-pins + 1 NooM_Basic HI_LIMIT), as the tool's Where-Used shows", nr == nexp, str(nr))
+    sub = conn.execute("SELECT sub_of, alarm_class FROM variable WHERE full_name='H11.ai_HpStmTermAttOutPressB.BQ'").fetchone()
+    check("H11.ai_HpStmTermAttOutPressB.BQ is an alarm sub-variable of ai_HpStmTermAttOutPressB with an AlarmClass",
+          sub is not None and sub[0] == "ai_HpStmTermAttOutPressB" and sub[1], str(tuple(sub)) if sub else "missing")
+    nd = one(conn, "SELECT count(*) FROM pin WHERE conn_kind='D'")
+    check("field-reference pins (conn_kind D) <= 60 (1,556 before the sub-variables were indexed; 54 '.BQ' of *Crctd inputs remain)", (nd or 0) <= 60, str(nd))
+    nbq = one(conn, "SELECT count(*) FROM pin WHERE origin='vote' AND name LIKE 'BQ_' AND conn_kind='V'")
+    check("vote BQ rows linked to a variable >= 250 (261 of 315)", (nbq or 0) >= 250, str(nbq))
+    ne = one(conn, "SELECT count(*) FROM egd_produced WHERE var_id IS NULL")
+    check("every EGD produced point resolves to a variable (5,308 HMI-page '.H/.BQ' points were unresolved before)", ne == 0, str(ne))
 
     # ---- pin mirrors (published value of an already-wired pin)
     nm = one(conn, "SELECT count(*) FROM pin_mirror")

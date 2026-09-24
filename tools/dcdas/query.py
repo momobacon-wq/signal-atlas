@@ -295,7 +295,35 @@ def _def_section(conn, v):
     d["device_name"] = v["device_name"]
     d["producer"] = producer
     d["display_screen"] = v["display_screen"]
+    d["sub_of"] = v["sub_of"]
     return d
+
+
+def _alarm_subs(conn, v):
+    """Alarm sub-variables of v ('<v>.<SUFFIX>' rows, sub_of = v): the attributes the configuration tool attached to the
+    signal. Each row carries the sub-pin (task/block pin of the same name) with its direction and, for set-points/delays/
+    hysteresis, the constant it is wired to."""
+    out = []
+    for sv in _rows(conn, """SELECT id, name, full_name, datatype, alarm_class, egd_page, alias, description, address
+                             FROM variable WHERE ctrl=? AND sub_of=? ORDER BY name""", (v["ctrl"], v["name"])):
+        suffix = sv["name"].rsplit(".", 1)[-1]
+        p = _row(conn, """SELECT p.direction, p.dir_source, p.conn_kind, p.connection, p.var_id, p.line_no, b.ctrl, b.path,
+                                 b.block_type, pr.file_path FROM pin p JOIN block b ON b.id=p.block_id JOIN program pr ON pr.id=b.program_id
+                          WHERE b.ctrl=? AND p.name=? AND p.lib_name=?""", (v["ctrl"], sv["name"], "{Alarm}." + suffix))
+        src = None
+        if p and p["conn_kind"] == "V" and p["var_id"]:
+            cv = _var_by_id(conn, p["var_id"])
+            if cv:
+                src = {"full_name": cv["full_name"], "value": cv["value"], "const": cv["control_constant"]}
+        nw = _row(conn, "SELECT count(*) AS n FROM pin WHERE var_id=? AND direction='O'", (sv["id"],))["n"]
+        nr = _row(conn, "SELECT count(*) AS n FROM pin WHERE var_id=? AND direction<>'O'", (sv["id"],))["n"]
+        out.append({"suffix": suffix, "full_name": sv["full_name"], "datatype": sv["datatype"], "class": sv["alarm_class"],
+                    "egd_page": sv["egd_page"], "alias": sv["alias"], "description": sv["description"],
+                    "dir": p["direction"] if p else None, "dir_source": p["dir_source"] if p else None,
+                    "pin_ref": f"{p['ctrl']}/{p['path']}.{sv['name']}" if p else None,
+                    "at": _fl(p["file_path"], p["line_no"]) if p else None,
+                    "connection": p["connection"] if p else None, "source": src, "writers": nw, "readers": nr})
+    return out
 
 
 def _writer_entry(conn, p, names):
@@ -305,8 +333,12 @@ def _writer_entry(conn, p, names):
         for q in _inner_pins(conn, p["block_id"], p["pin"], ("O",)):
             ins.append({"pin": f"inner {q['path'].split('/')[-1]}.{q['pin']}", "dir": _ds(q["direction"], q["dir_source"]),
                         "conn_kind": "P", "to": f"[{q['block_type'] or q['kind']}] writes this interface pin {_fl(q['file_path'], q['line_no'])}"})
+    # an alarm sub-pin ('<var>.<SUFFIX>' on a task/block) is fed only by its sibling sub-pins of the same variable
+    parent = p["pin"].rsplit(".", 1)[0] + "." if "." in p["pin"] else None
     for q in _pins_of_block(conn, p["block_id"]):
         if q["id"] == p["id"] or q["direction"] == "O" or q["conn_kind"] in ("A", "-"):
+            continue
+        if parent and not q["pin"].startswith(parent):
             continue
         ins.append({"pin": q["pin"], "dir": _ds(q["direction"], q["dir_source"]), "conn_kind": q["conn_kind"],
                     "to": _conn_text(conn, q, names)})
@@ -501,7 +533,12 @@ def show(conn, signal, all_rows=False):
         source = "no writer found in checkout"
     d = _def_section(conn, v)
     d["interface"] = iface
-    return {"kind": "show", "def": d, "source": source,
+    subs = _alarm_subs(conn, v)
+    # a set-point/delay/hysteresis sub-variable mirrors the constant it is wired to; the tool lists the constant's
+    # programs under it, which is not a hidden reference of the sub-variable itself
+    if v["sub_of"] and mirror and mirror["kind"] == "I":
+        hidden = []
+    return {"kind": "show", "def": d, "source": source, "alarm_subs": subs,
             "writers": w_entries, "writers_total": max(len(writers), len(w_entries)), "mirror": mirror,
             "readers": r_entries, "readers_total": len(readers),
             "unknown": u_entries, "unknown_total": len(unknown),

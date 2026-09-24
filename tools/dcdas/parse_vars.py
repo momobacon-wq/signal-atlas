@@ -4,6 +4,12 @@
 Variables.xml root <GlobalVariables> holds one <Variable .../> per controller-global signal (G11: 53,561).
 `Connection` is the DECLARATION site (Program.Variable | Program.Task.Pin | Program.Task.Block.Pin), never the
 writer. `DeviceName` non-empty marks an EGD consumed copy (name is '<producer>.<name>').
+
+<AlarmGlobalSubVariable Name="<var>.<SUFFIX>" .../> (same file, ~11k over the checkout) = the alarm attributes the
+configuration tool attaches to an analog/boolean variable: set-points (.H_SP/.HH_SP/.L_SP...), delays (.H_T...),
+hysteresis (.HYST), inhibit (.INH), and the alarm flags themselves (.H/.HH/.L/.BQ..., BOOL with AlarmClass, published on
+the HMI EGD page). They are indexed as ordinary variables with `sub_of` = the parent variable name; their `Connection`
+is the sub-pin they are declared at (Program.Task.<var>.<SUFFIX>, see parse_logic AlarmSubPinVariable).
 """
 import time
 from pathlib import Path
@@ -18,8 +24,8 @@ INSERT_SQL = """INSERT INTO variable(
   ctrl,name,full_name,description,datatype,address,scope,value,decl_connection,decl_program,decl_task,global_prefix,
   egd_page,alias,format_spec,units,disp_low,disp_high,display_screen,control_constant,device_name,referenced_in,
   alarm_id,alarm_class,alarm_definition,plant_area,potential_causes,operator_action,consequence,urgency,
-  normal_severity,active_severity,is_program_local,decl_file,decl_line)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  normal_severity,active_severity,is_program_local,decl_file,decl_line,sub_of)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(ctrl,name) DO UPDATE SET
   full_name=excluded.full_name, description=excluded.description, datatype=excluded.datatype, address=excluded.address,
   scope=excluded.scope, value=excluded.value, decl_connection=excluded.decl_connection, decl_program=excluded.decl_program,
@@ -30,7 +36,7 @@ ON CONFLICT(ctrl,name) DO UPDATE SET
   alarm_definition=excluded.alarm_definition, plant_area=excluded.plant_area, potential_causes=excluded.potential_causes,
   operator_action=excluded.operator_action, consequence=excluded.consequence, urgency=excluded.urgency,
   normal_severity=excluded.normal_severity, active_severity=excluded.active_severity, is_program_local=0,
-  decl_file=excluded.decl_file, decl_line=excluded.decl_line"""
+  decl_file=excluded.decl_file, decl_line=excluded.decl_line, sub_of=excluded.sub_of"""
 
 
 def _f(v):
@@ -59,7 +65,7 @@ def split_decl(conn_str: str):
     return "", ""
 
 
-def row_from_attrib(ctrl: str, a, decl_file: str, line: int, is_program_local: int = 0):
+def row_from_attrib(ctrl: str, a, decl_file: str, line: int, is_program_local: int = 0, sub_of=None):
     name = a.get("Name", "")
     conn_str = a.get("Connection", "")
     prog, task = split_decl(conn_str)
@@ -73,7 +79,7 @@ def row_from_attrib(ctrl: str, a, decl_file: str, line: int, is_program_local: i
         1 if (a.get("ControlConstant", "").lower() == "true") else 0, a.get("DeviceName"), a.get("ReferencedIn"),
         alarm_id, a.get("AlarmClass"), alarm_def, a.get("PlantArea"), a.get("PotentialCauses"),
         a.get("OperatorAction"), a.get("ConsequenceOfInaction"), a.get("OperatorUrgency"),
-        _i(a.get("NormalSeverity")), _i(a.get("ActiveSeverity")), is_program_local, decl_file, line,
+        _i(a.get("NormalSeverity")), _i(a.get("ActiveSeverity")), is_program_local, decl_file, line, sub_of,
     )
 
 
@@ -81,8 +87,10 @@ def parse_variables_file(conn, ctrl: str, path: Path, root: Path, tag: str = "Va
     rel = rel_to_root(path, root)
     b = Batch(conn, INSERT_SQL, 5000)
     n = 0
+    sub = tag == "AlarmGlobalSubVariable"
     for _ev, el in etree.iterparse(str(path), events=("end",), tag=tag, huge_tree=True):
-        b.add(row_from_attrib(ctrl, el.attrib, rel, el.sourceline))
+        name = el.get("Name", "")
+        b.add(row_from_attrib(ctrl, el.attrib, rel, el.sourceline, 0, name.rsplit(".", 1)[0] if sub and "." in name else None))
         n += 1
         el.clear()
         while el.getprevious() is not None:
@@ -100,8 +108,11 @@ def run(conn, root: Path, ctrls: Iterable[Controller], log=print) -> dict:
         before = {r[0] for r in conn.execute("SELECT name FROM variable WHERE ctrl=? AND is_program_local=0", (c.name,))}
         n = 0
         p = c.folder / "Variables.xml"
+        n_sub = 0
         if p.exists():
             n += parse_variables_file(conn, c.name, p, root, "Variable", log)
+            n_sub = parse_variables_file(conn, c.name, p, root, "AlarmGlobalSubVariable", log)
+            n += n_sub
         p2 = c.folder / "LocalIOVariables.xml"
         if p2.exists():
             n += parse_variables_file(conn, c.name, p2, root, "LocalIOVariable", log)
@@ -111,7 +122,8 @@ def run(conn, root: Path, ctrls: Iterable[Controller], log=print) -> dict:
             # names present before but not re-inserted now: the parse above touched every current name (upsert),
             # so anything with decl_file older than this run's files is stale -> compare by name set
             current = set()
-            for path, tag in ((c.folder / "Variables.xml", "Variable"), (c.folder / "LocalIOVariables.xml", "LocalIOVariable")):
+            for path, tag in ((c.folder / "Variables.xml", "Variable"), (c.folder / "Variables.xml", "AlarmGlobalSubVariable"),
+                              (c.folder / "LocalIOVariables.xml", "LocalIOVariable")):
                 if path.exists():
                     for _ev, el in etree.iterparse(str(path), events=("end",), tag=tag, huge_tree=True):
                         current.add(el.get("Name", ""))
@@ -123,7 +135,7 @@ def run(conn, root: Path, ctrls: Iterable[Controller], log=print) -> dict:
                 gone = len(stale)
         conn.commit()
         stats[c.name] = n
-        log(f"  vars {c.name:7s} {n:7d}  removed {gone:4d}  {time.time()-t0:5.1f}s")
+        log(f"  vars {c.name:7s} {n:7d} (alarm sub-variables {n_sub:5d})  removed {gone:4d}  {time.time()-t0:5.1f}s")
     return stats
 
 

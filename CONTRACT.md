@@ -33,7 +33,7 @@ docs/data/                     export-web 的輸出（下）
 - 通則：JSON 緊湊（`separators=(',',':')`, `ensure_ascii=False`）；**任何檔案不得含本機絕對路徑**（產生器逐檔 regex 自檢，命中即中止）；
   檔案位置一律是相對 checkout 根的路徑（`G11/_LubeOil.xml`）；每檔目標 ≤ 1 MB（超過只警告）；磁碟總量 > 700 MB 中止。
 - 方向字母（`dir`）：`I`/`O`/`S`(state/const)/`?`；來源字母（`src`）：`U` 介面腳 Usage、`T` 手冊表/人工覆寫、`C` 常數規則、`L` 連線投票、`H` 命名慣例、`-` 無。
-- 連線種類（`conn_kind`）：`V` 變數、`L` 同 task 內 `L:Block.Pin`、`P` 外層巨集介面腳 `L:Pin`、`D` device pin `Block.Pin`、`N` 常數/RUNG 方程式、`E` 列舉、`A` 只有位址、`-` 空。
+- 連線種類（`conn_kind`）：`V` 變數、`L` 同 task 內 `L:Block.Pin`、`P` 外層巨集介面腳 `L:Pin`、`D` 欄位參照 `Var.FIELD`（找不到同名變數時才用；警報子變數建入索引後只剩少數 `*Crctd.BQ`）、`N` 常數/RUNG 方程式、`E` 列舉、`A` 只有位址、`-` 空。
 
 ## `manifest.json`
 
@@ -76,6 +76,12 @@ docs/data/                     export-web 的輸出（下）
 `d.m`（腳位值鏡像）：變數是某個**已接線**腳位的發佈值時，`{"pin":[ctrl, program, block_path, block_type, pin, "-", line], "kind":"I"|"O"|"?",
 "src": {"k":"V","var":full} | {"k":"L"|"P","block":key,"pin":name} | {"k":"N"|"E","text":…} | null}`；`kind I` 的源頭 = `src`（腳位的接線來源），
 `kind O` 的寫入者 = 該方塊腳。前端「來源」規則在 `w` 為空時先看 `d.m`。task entry 的 `vm` = `{mirror_full_name: pin_name}`（該 task 內有鏡像的腳位）。
+
+`d.sub`（警報子變數）：變數名 `<訊號>.<後綴>` 是組態工具附在 `<訊號>` 上的警報屬性（`AlarmGlobalSubVariable`）時，`d.sub` = 母訊號名（同控制器）。
+母訊號卡另有 `subs` = `[[後綴, 型別, 警報等級, 方向, 來源變數 full|null, 來源值|null, EGD 頁, 別名]]`：設定值／延時／遲滯（`.H_SP/.HH_SP/.H_T/.HYST…`）
+是 I 腳接常數（子變數 = 該常數的鏡像，`d.m` kind I）；`.H/.HH/.L/.LL/.BQ…` 旗標是 O 腳、警報本身（多發佈在 HMI EGD 頁、帶 AlarmClass）。子腳在 task 分片裡就是母
+task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 Where Used 顯示為 `程式.Task.訊號.後綴`）。names 旗標位元 16（警報）= 有 alarm id，或子變數帶 AlarmClass。
+設定值鏡像子變數的 `hid`（加密引用）不列：工具把常數的宣告程式列在它下面，不是子變數自己的隱藏引用。
 `block_path` = `Program/Task/UserBlock/.../Block`（第一段 Program、第二段 Task）；原始檔 = `<ctrl>/_<program>.xml`。
 邏輯圖號（`drg`）取自 block 本身或其所屬 task 的 `LogicDrg`/`P_ID`。HMI 畫面名不分大小寫合併（以選單的拼法為準）。
 前端「來源」判定：`w` 非空 → 邏輯寫入者；否則 `io` 有 `dir:"I"` → 「現場 I/O」；否則 `egd.src` → 「EGD 來自 …」；
@@ -95,7 +101,7 @@ docs/data/                     export-web 的輸出（下）
 - `b` 的鍵順序 = 原始 XML 文件順序，第一筆是 task 根（`kind:"task"`，其 `pins` 為介面腳）；巢狀 UserBlock 內的方塊同在此 entry（同 task）。
 - 方塊記錄欄位同前（`ctrl program path name type kind ver opaque desc drg pid device hmi attrs pins line file`），新增可選 `lay`（`BlockLayoutData`，同層的 1-based 繪圖順序，含 UserBlock；缺值省略）。空欄位/空陣列/0 一律省略。
 - 腳位 tuple 第 11 欄 `desc` = 腳位自身的描述（`Pin@Description` 第一行；無則 `null`），例如產生器方塊 `L4TTRP_OVR.IN1` = "Generator LCI Trip"。
-- 腳位 tuple 第 12 欄 `org` = 腳位來源：`null` = XML 明文；`"d"` = **回推自宣告在該腳位的變數**；`"l"` = **回推自鄰近方塊的 `L:` 連線**；`"p"` = **同編號配對**（不透明 `AI_INT_k` 的 `IN` 接同層 `AI_k` 的 `{Device}` 輸出或 `FF_AI_k` 的 `OUT` 變數；`AI_k` 配對再依命名補 `OUT`→`ai_<stem>`、`DEVICE_STATUS`→`<stem>_DS`，且該變數的 `ReferencedIn` 須含此程式而程式內無可見引用；命名推斷、方向 I/O／`R`）；`"v"` = **三取二表決推斷**（不透明 `2oo3_Basic`，task `FNCTN_<stem>`：`INA/INB/INC` 接程式內只在加密方塊引用的 `(ai_)<stem>[_Alt]{A,B,C}[Crctd]` 變數、`BQA/BQB/BQC` 接 `<輸入>_BQ` 變數或 `<輸入>.BQ` 欄位（`conn_kind D`、無變數）、`HYST` 接唯一的 `k_…<stem>…_HYST`；task 內只有一顆表決器時再補 `HI_LIMIT` ← 唯一的 `k_…_SP`、`OUT` → 唯一無寫入者的 `PRO_<stem>*Hi|Lo`；一顆實例經工具確認、其餘為推斷，方向來源 `R`）；`"x"` = **人工查證**（使用者在組態工具的交互參照看到、XML 沒有的連線，登錄於 `tools/xref_manual.csv`，方向來源 `T`、徽章「證」）。只出現在不透明巨集
+- 腳位 tuple 第 12 欄 `org` = 腳位來源：`null` = XML 明文；`"d"` = **回推自宣告在該腳位的變數**；`"l"` = **回推自鄰近方塊的 `L:` 連線**；`"p"` = **同編號配對**（不透明 `AI_INT_k` 的 `IN` 接同層 `AI_k` 的 `{Device}` 輸出或 `FF_AI_k` 的 `OUT` 變數；`AI_k` 配對再依命名補 `OUT`→`ai_<stem>`、`DEVICE_STATUS`→`<stem>_DS`，且該變數的 `ReferencedIn` 須含此程式而程式內無可見引用；命名推斷、方向 I/O／`R`）；`"v"` = **三取二表決推斷**（不透明 `2oo3_Basic`，task `FNCTN_<stem>`：`INA/INB/INC` 接程式內只在加密方塊引用的 `(ai_)<stem>[_Alt]{A,B,C}[Crctd]` 變數、`BQA/BQB/BQC` 接 `<輸入>.BQ` 警報子變數或 `<輸入>_BQ` 變數（程式內加密引用者優先；皆無時才是無變數的 `conn_kind D` 欄位列）、`HYST` 接唯一的 `k_…<stem>…_HYST`；task 內只有一顆表決器時再補 `HI_LIMIT` ← 唯一的 `k_…_SP`、`OUT` → 唯一無寫入者的 `PRO_<stem>*Hi|Lo`；一顆實例經工具確認、其餘為推斷，方向來源 `R`）；`"x"` = **人工查證**（使用者在組態工具的交互參照看到、XML 沒有的連線，登錄於 `tools/xref_manual.csv`，方向來源 `T`、徽章「證」）。只出現在不透明巨集
   （`opaque:1`，整個 UserBlock 含介面腳都加密）上：索引把「`Variables.xml` 宣告位置 = 該方塊.腳位」的變數與「`L:Block.Pin` 指向該方塊」的連線還原成腳位列，
   方向以證據決定（宣告變數：可調常數→I；位址＝某輸出腳／另一變數→I 並接該來源（後者同時登記為鏡像 `m`）；有讀取者／警報／HMI 且無其他寫入者→O；否則 `?`；
   連線：與 referrer 相反）。方向來源字母 `R`（回推）或 `L`。**清單只有證據看得到的部分，可能不完整**；宣告變數也可能是巨集內部變數。

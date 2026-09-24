@@ -192,7 +192,7 @@ def main(docs):
         if len(card.get("egd", {}).get("p", [])) != np_:
             nbad += 1
             err(f"card egd produced mismatch {full}: {len(card.get('egd', {}).get('p', []))} vs {np_}")
-        has_alm = bool(v["alarm_id"])
+        has_alm = bool(v["alarm_id"]) or bool(v["sub_of"] and v["alarm_class"])
         if has_alm != ("alm" in card):
             nbad += 1
             err(f"card alarm presence mismatch {full}")
@@ -323,7 +323,7 @@ def main(docs):
         scr = []
     (ok if len(scr) == n_scr_db else err)(f"screens: db {n_scr_db} web {len(scr)}")
     for c in ctrls:
-        n_db = conn.execute("SELECT count(*) FROM variable WHERE ctrl=? AND alarm_id IS NOT NULL", (c,)).fetchone()[0]
+        n_db = conn.execute("SELECT count(*) FROM variable WHERE ctrl=? AND (alarm_id IS NOT NULL OR (sub_of IS NOT NULL AND alarm_class IS NOT NULL))", (c,)).fetchone()[0]
         try:
             n_web = len(load(data / "alarm" / f"{c}.json")["rows"])
         except FileNotFoundError:

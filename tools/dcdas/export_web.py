@@ -12,6 +12,7 @@ Layout (all JSON compact, UTF-8, no local absolute paths — the exporter aborts
   screen/<hh>.json              {s:{screen: {menu:[...], points:[[full_name, source]]}}}  shard = sha1(screen)[:2]
   alarm/<CTRL>.json             {ctrl, rows:[[name, desc, cls, def, area, urgency]]}
 flags bits in names rows: 1=has_writer 2=has_io 4=has_egd 8=has_hmi 16=has_alarm 32=const 64=egd_copy 128=in_encrypted
+has_alarm = alarm_id set, or an alarm sub-variable (sub_of) with an AlarmClass (the .H/.HH/.BQ... flags).
 """
 import base64
 import gzip
@@ -262,7 +263,20 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     cols = ("id ctrl name full_name description datatype address value egd_page alias format_spec units disp_low disp_high "
             "display_screen control_constant device_name producer_var_id referenced_in alarm_id alarm_class alarm_definition "
             "plant_area potential_causes operator_action consequence urgency decl_program decl_task decl_file decl_line "
-            "is_program_local").split()
+            "is_program_local sub_of").split()
+    # alarm sub-pins: (ctrl, '<var>.<SUFFIX>') -> [dir, conn_kind, source var id]; grouped per parent for the card's `subs`
+    sub_pin = {}
+    for r in conn.execute("""SELECT b.ctrl, p.name, p.direction, p.conn_kind, p.var_id FROM pin p JOIN block b ON b.id=p.block_id
+                             WHERE p.lib_name LIKE '{Alarm}.%'"""):
+        sub_pin[(r[0], r[1])] = (r[2], r[3], r[4])
+    var_val = {r[0]: r[1] for r in conn.execute("SELECT id, value FROM variable WHERE control_constant=1 OR sub_of IS NOT NULL")}
+    subs_of = defaultdict(list)
+    for r in conn.execute("""SELECT ctrl, sub_of, name, datatype, alarm_class, egd_page, alias FROM variable
+                             WHERE sub_of IS NOT NULL ORDER BY ctrl, name"""):
+        sp = sub_pin.get((r[0], r[2]))
+        src = var_name.get(sp[2]) if sp and sp[1] == "V" and sp[2] else None
+        subs_of[(r[0], r[1])].append([r[2].rsplit(".", 1)[-1], r[3] or "", r[4] or "", sp[0] if sp else "", src,
+                                      var_val.get(sp[2]) if src else None, r[5] or "", r[6] or ""])
     for r in conn.execute("SELECT " + ",".join(cols) + " FROM variable ORDER BY ctrl,name"):
         v = dict(zip(cols, r))
         vid = v["id"]
@@ -281,7 +295,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         if io.get(vid): flags |= 2
         if egd_p.get(vid) or vid in egd_src or egd_c.get(vid): flags |= 4
         if hmi.get(vid): flags |= 8
-        if v["alarm_id"]: flags |= 16
+        is_alarm = bool(v["alarm_id"]) or bool(v["sub_of"] and v["alarm_class"])
+        if is_alarm: flags |= 16
         if v["control_constant"]: flags |= 32
         if v["device_name"]: flags |= 64
         if enc: flags |= 128
@@ -299,13 +314,19 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
             "hmi": hmi.get(vid, []), "watch": watch.get(vid, []),
             "drg": sorted(drg.get(vid, ())), "enc": enc,
         }
+        if v["sub_of"]:
+            card["d"]["sub"] = v["sub_of"]
+            if vid in mirror and mirror[vid].get("kind") == "I":
+                hid = []        # a set-point mirror: the tool lists the constant's programs, not a hidden reference
         if hid:
             card["hid"] = hid
         if vid in mirror:
             card["d"]["m"] = mirror[vid]
+        if (v["ctrl"], v["name"]) in subs_of:
+            card["subs"] = subs_of[(v["ctrl"], v["name"])]
         if wmore.get(vid): card["w_more"] = wmore[vid]
         if rmore.get(vid): card["r_more"] = rmore[vid]
-        if v["alarm_id"]:
+        if is_alarm:
             card["alm"] = {"id": v["alarm_id"], "cls": v["alarm_class"], "def": v["alarm_definition"], "area": v["plant_area"],
                            "causes": v["potential_causes"], "action": v["operator_action"], "conseq": v["consequence"],
                            "urg": v["urgency"]}
@@ -367,7 +388,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     for r in conn.execute("SELECT DISTINCT producer_var_id FROM egd_consumed WHERE producer_var_id IS NOT NULL"): var_ext[r[0]] |= 4
     for r in conn.execute("SELECT DISTINCT local_var_id FROM egd_consumed WHERE local_var_id IS NOT NULL"): var_ext[r[0]] |= 4
     for r in conn.execute("SELECT DISTINCT var_id FROM hmi_point WHERE var_id IS NOT NULL"): var_ext[r[0]] |= 8
-    for r in conn.execute("SELECT id FROM variable WHERE alarm_id IS NOT NULL"): var_ext[r[0]] |= 16
+    for r in conn.execute("SELECT id FROM variable WHERE alarm_id IS NOT NULL OR (sub_of IS NOT NULL AND alarm_class IS NOT NULL)"): var_ext[r[0]] |= 16
     attrs = defaultdict(dict)
     for r in conn.execute("SELECT block_id,name,value FROM block_attr"):
         attrs[r[0]][r[1]] = r[2]

@@ -44,6 +44,7 @@
     if (!D.blank(d.fs)) rows.push(D.kv('格式（fs）', D.mono(d.fs)));
     rows.push(D.kv('常數 / 區域', D.frag(d.const ? D.tag('常數', 'warn') : '否', '  ', d.local ? D.tag('local') : null)));
     if (!D.blank(d.device_name)) rows.push(D.kv('裝置（device）', D.mono(d.device_name)));
+    if (!D.blank(d.sub)) rows.push(D.kv('警報子變數', D.frag('屬於 ', D.h('a', { href: D.hrefV(ctrl + '.' + d.sub), class: 'lk mono', text: ctrl + '.' + d.sub }), ' 的警報屬性 ', D.mono('.' + String(full).slice(String(full).lastIndexOf('.') + 1)))));
     if (!D.blank(d.producer)) rows.push(D.kv('Producer', D.mono(d.producer)));
     if (d.decl) {
       const [prog, task, file, line] = d.decl;
@@ -188,6 +189,20 @@
     return D.section('警報說明', D.h('table', { class: 'kv' }, D.h('tbody', null, rows)), { note: a.cls || a.def || '' });
   }
 
+  /** 警報子腳（subs）：[suffix, dt, cls, dir, srcFull, srcVal, egd_page, alias] — 組態工具掛在訊號上的警報屬性 */
+  function subsSection(subs, ctrl, full) {
+    if (!subs || !subs.length) return null;
+    const rows = subs.map((x) => {
+      const [suf, dt, cls, dir, src, val, egd, alias] = x;
+      const to = src ? D.frag('← ', D.h('a', { href: D.hrefV(src), class: 'lk mono', text: src }), val == null ? null : D.mono(' = ' + val, 'muted'))
+        : (dir === 'O' ? D.h('span', { class: 'muted', text: '警報狀態（此訊號發佈）' }) : D.h('span', { class: 'muted', text: '—' }));
+      return [D.h('a', { href: D.hrefV(full + '.' + suf), class: 'lk mono', text: '.' + suf }), D.mono(dt), dir ? D.dirBadge(dir) : '', cls ? D.tag(cls, cls === 'DIAG' ? '' : 'warn') : '', to, D.mono(egd || ''), D.mono(alias || '')];
+    });
+    return D.section('警報子腳', D.frag(
+      D.h('p', { class: 'muted small', text: '組態工具附在這個訊號上的警報屬性：設定值／延時／遲滯接常數（I），.H/.HH/.L/.BQ 等旗標是警報本身（O，多半發佈到 HMI EGD 頁）。組態工具的 Where Used 以 程式.Task.訊號.後綴 顯示。' }),
+      D.table(['子腳', '型別', '方向', '等級', '來源', 'EGD 頁', '別名'], rows)), { count: subs.length });
+  }
+
   D.page('v', async ({ route, view, signal }) => {
     const full = route.segs.join('/');
     if (!full) { D.set(view, D.errorBox('缺少訊號名')); return; }
@@ -221,6 +236,7 @@
       ioSection(rec.io),
       hmiSection(rec.hmi),
       almSection(rec.alm),
+      subsSection(rec.subs, ctrl, full),
       rec.watch && rec.watch.length ? D.section('Watch', D.h('ul', { class: 'plain' }, rec.watch.map((w) => D.h('li', null, D.mono(w[0]), ' ', D.mono(w[1], 'muted')))), { count: rec.watch.length }) : null,
       rec.drg && rec.drg.length ? D.section('邏輯圖號 / P&ID', D.table(['邏輯圖號', 'P&ID'], rec.drg.map((x) => [D.mono(D.val(x[0])), D.mono(D.val(x[1]))])), { count: rec.drg.length }) : null,
       rec.enc && rec.enc.length ? D.section('加密程式', D.frag(

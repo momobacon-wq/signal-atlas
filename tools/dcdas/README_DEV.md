@@ -31,7 +31,8 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
   variable's `ReferencedIn` lists the block's program and nothing visible there references it; naming-pair inference,
   `dir_source='R'`, ~2,000 rows). `resolve.recover_vote_pins` then adds `origin='vote'` rows for opaque `2oo3_Basic`
   voters in `FNCTN_<stem>` tasks: `INA/B/C` from the program's encrypted-only ('hidden') references named
-  `(ai_)<stem>[_Alt]{A,B,C}[Crctd]`, `BQA/B/C` from `<input>_BQ` or the `.BQ` field (`conn_kind 'D'`), the task's single
+  `(ai_)<stem>[_Alt]{A,B,C}[Crctd]`, `BQA/B/C` from the `<input>.BQ` alarm sub-variable or `<input>_BQ` (the hidden one
+  first; the `.BQ` field as `conn_kind 'D'` only when neither exists), the task's single
   `HYST` constant, and for single-voter tasks the single `_SP` constant (`HI_LIMIT`) and the single writer-less
   `PRO_<stem>*Hi|Lo` (`OUT`); one instance was confirmed in the tool, the rest is inference (`dir_source='R'`).
   `resolve.load_xref` then adds `origin='xref'` rows from `tools/xref_manual.csv`
@@ -53,8 +54,21 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
   holder's direction: Output → holder is O, Input → holder is I);
   `D` `Block.Pin` (dotted, no prefix) not found as a variable → device-block pin reference (store raw);
   `N` `N:...` constant / RUNG equation; `E` `E:...` enum constant; `A` no Connection but has Address; `-` nothing.
-  Dotted names ARE often real variables (`G11.L27QE1_A`, `HpStmBypGrp.OFF`, `1-HS-CW011-3.ON`) — check the
-  variable table before classifying as `D`.
+  Dotted names ARE often real variables (`G11.L27QE1_A`, `HpStmBypGrp.OFF`, `1-HS-CW011-3.ON`, and every alarm
+  sub-variable `X.BQ` / `X.HH` / `X.INH`) — check the variable table before classifying as `D` (54 `D` pins remain:
+  `.BQ` of `*Crctd` inputs that have no sub-variable).
+* Alarm sub-pins: `<AlarmSubPinVariable Name="<var>.<SUFFIX>" …/>` inside a task or `Block` (H11 1,886; checkout
+  ~10.5k, 1:1 with `<AlarmGlobalSubVariable>` in `Variables.xml`) are the alarm attributes the configuration tool
+  attaches to a variable: set-points `.H_SP/.HH_SP/.HHH_SP/.L_SP…`, delays `.H_T…`, `.HYST`, inhibit `.INH`, and the
+  flags `.H/.HH/.HHH/.L/.LL/.LLL/.BQ` (BOOL, `AlarmClass`, EGD page HMI, KKS alias). The tool's Where-Used shows them
+  as `Program.Task.<var>.<SUFFIX>`. Indexed as pins of the enclosing task/block named `<var>.<SUFFIX>` with
+  `lib_name='{Alarm}.<SUFFIX>'` (template key for the direction table): with `Connection` → `V` to the constant,
+  Usage Input → I, and the global sub-variable (same address as the constant) becomes a `pin_mirror` kind I; address-only
+  with `AlarmClass` = the flag the alarm publishes → stored `usage_declared='Output'` → O, `conn_kind 'A'`,
+  `var_id` = the sub-variable; unconnected `.INH` (and one delay) stay Input/A/self. `variable.sub_of` = the parent
+  name. Effects: `X.BQ`/`X.HH` connections on plaintext pins resolve to `V` (1,556 → 54 `D` pins), the HMI-page EGD
+  points `X.H` resolve (5,308 → 0 unresolved produced points), the flags join the alarm lists (`alarm_class`, no
+  `Alarm` id), and `show <parent>` prints an ALARM SUB-PINS section.
 * Address-only pins (`conn_kind='A'`) are often published as global variables declared AT the pin (`GlobalNamePrefix`
   Block/Task/Full; same address). `resolve.link_declared_pins` links `pin.var_id` by (1) name `Block.Pin`, (2)
   `decl_connection == Program.Task….Pin`, (3) unique same-address variable (non-`DistributedIO.` preferred); conn_kind
@@ -70,7 +84,8 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
 * Pin direction is NOT in the XML (except `Usage` on interface pins). `direction.py` infers it post-hoc
   (U > T manual table/overrides > C constants > L link votes > H name heuristics > `?`).
 * `block.path` = `Program/Task/UserBlock/…/Block` (task names repeat across programs, so the program is part of the key).
-* `Variables.xml` `Connection` = declaration site, never the writer.
+* `Variables.xml` `Connection` = declaration site, never the writer. `<AlarmGlobalSubVariable>` rows are parsed like
+  `<Variable>` plus `sub_of` (their `Connection` = the sub-pin `Program.Task.<var>.<SUFFIX>`).
 * `DistributedIO.Xml`: `DistributedIO` → `HardwareGroups/...` → `LanModules/LanModule`(Name, ModuleId, GroupName=cabinet,
   BarCodeR, IoRedundancy, LibraryVersion, ...Port*IPAddress) → `IoPacks/IoPack`(HostName="TBTYPE-Jxx-barcode"),
   `Parameters/Parameter`, `InternalPoints/Point`, `TerminalBoards/TerminalBoard`(Name, HardwareForm, PositionInGroupR)

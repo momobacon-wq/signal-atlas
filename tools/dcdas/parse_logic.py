@@ -3,9 +3,17 @@
 (+ program-local <Variable> declarations -> variable with is_program_local=1).
 
 Tree (verified, see README_DEV.md):
-  Program -> Variable* + AlarmSubVariable* (ignored) + (TopUserBlock | FFTask)*  (= task)
+  Program -> Variable* + (TopUserBlock | FFTask)*  (= task)
     task -> Heartbeat/Enable/BlockCPUTicks (auto pins, Usage=Output/Input/Output), Pin* (interface pins, Usage=...),
-            Attribute*, UserBlock* (nested arbitrarily), Block* -> Attribute*, Pin*
+            AlarmSubPinVariable*, Attribute*, UserBlock* (nested arbitrarily), Block* -> Attribute*, Pin*, AlarmSubPinVariable*
+  AlarmSubPinVariable Name="<var>.<SUFFIX>" = alarm attribute of a variable owned by that task/block (the configuration
+  tool's Where-Used shows it as Program.Task.<var>.<SUFFIX>): indexed as a pin of the enclosing task/block row named
+  '<var>.<SUFFIX>' with lib_name '{Alarm}.<SUFFIX>' (the direction table's template key).  Set-points / delays /
+  hysteresis / connected inhibits carry Connection="<constant>" -> conn_kind V, Usage Input -> I (the global
+  sub-variable '<var>.<SUFFIX>' shares the constant's address and becomes its pin_mirror).  Address-only sub-pins are
+  the alarm flags (.H/.HH/.L/.LL/.BQ..., BOOL with AlarmClass): the XML marks every sub-pin Usage=Input, but these are
+  the states the alarm publishes, so usage_declared is stored as 'Output' -> O, conn_kind A, var_id = the sub-variable
+  itself.  Unconnected .INH (and one delay) stay Input/A/var_id=itself.
   ZK2188310901404A = encrypted blob (never read, only counted); DiagramXML attribute = ignored.
   FFTask (Foundation Fieldbus task, e.g. G11/_FFBInputs_7HA03.xml) has the same shape as TopUserBlock and is
   indexed as a task too (README_DEV only mentions TopUserBlock).
@@ -50,7 +58,7 @@ ZK_TAG = "ZK2188310901404A"
 LIFTED_ATTRS = {"LogicDrg": "logic_drg", "P_ID": "p_id", "Device": "device", "HMILinkedObject": "hmi_linked_object",
                 "Desc": "description"}
 # elements whose subtree is complete at their 'end' event and can be dropped from memory
-CLEAR_TAGS = SCOPE_TAGS + ("Pin", "Attribute", "Variable", "AlarmSubVariable", ZK_TAG, "BlockwareGeneratorData",
+CLEAR_TAGS = SCOPE_TAGS + ("Pin", "Attribute", "Variable", "AlarmSubPinVariable", ZK_TAG, "BlockwareGeneratorData",
                            "ExecutionGroup", "Heartbeat", "Enable", "BlockCPUTicks")
 
 INSERT_PROGRAM = """INSERT INTO program(id,ctrl,name,library_type,file_path,encrypted,block_count,task_count,help_file)
@@ -72,13 +80,13 @@ INSERT_LOCAL_VAR = """INSERT INTO variable(id,
   ctrl,name,full_name,description,datatype,address,scope,value,decl_connection,decl_program,decl_task,global_prefix,
   egd_page,alias,format_spec,units,disp_low,disp_high,display_screen,control_constant,device_name,referenced_in,
   alarm_id,alarm_class,alarm_definition,plant_area,potential_causes,operator_action,consequence,urgency,
-  normal_severity,active_severity,is_program_local,decl_file,decl_line)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+  normal_severity,active_severity,is_program_local,decl_file,decl_line,sub_of)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
 INSERT_PIN = """INSERT INTO pin(id,block_id,name,conn_kind,connection,var_id,tgt_block_id,tgt_pin,address,value,alias,
 alias_override,usage_declared,description,line_no,lib_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
 
 STAT_KEYS = ("programs", "tasks", "fftasks", "blocks", "userblocks", "opaque", "pins", "attrs", "encrypted", "zk",
-             "local_vars", "unres_V", "unres_L", "unres_P", "skipped_files")
+             "local_vars", "unres_V", "unres_L", "unres_P", "skipped_files", "alarm_sub")
 
 
 class _Ids:
@@ -221,6 +229,20 @@ def parse_program_file(conn, ctrl: str, path: Path, root: Path, ids: _Ids, vardi
                              a.get("Value"), a.get("Alias"), a.get("AliasOverride"), a.get("Usage") or AUTO_PINS[tag],
                              a.get("Description"), el.sourceline, None])
             _clear(el)
+        elif tag == "AlarmSubPinVariable":
+            par = el.getparent()
+            if stack and par is not None and par.tag in SCOPE_TAGS:
+                fr = stack[-1]
+                a = el.attrib
+                name = a.get("Name", "")
+                suffix = name.rsplit(".", 1)[-1] if "." in name else name
+                # alarm flags (address-only, AlarmClass set) are what the alarm publishes -> Output; everything else reads
+                usage = "Output" if (not a.get("Connection") and a.get("AlarmClass")) else "Input"
+                pins.append([ids.next("pin"), fr, name, a.get("Connection"), a.get("Address"), a.get("Value"),
+                             a.get("Alias"), a.get("AliasOverride"), usage, a.get("Description"), el.sourceline,
+                             "{Alarm}." + suffix])
+                stats["alarm_sub"] += 1
+            _clear(el)
         elif tag == "Attribute":
             par = el.getparent()
             if stack and par is not None and par.tag in SCOPE_TAGS:
@@ -281,6 +303,8 @@ def parse_program_file(conn, ctrl: str, path: Path, root: Path, ids: _Ids, vardi
         seen.add(key)
         kind, x, y = classify(connection, address)
         var_id = tgt = None
+        if kind == "A" and lib_name and lib_name.startswith("{Alarm}."):
+            var_id = vardict.get(name)          # the global alarm sub-variable declared at this sub-pin
         if kind == "V":
             var_id = vardict.get(connection)
             if var_id is None and connection.endswith("]"):
@@ -362,7 +386,7 @@ def run(conn, root: Path, ctrls: Iterable[Controller], log=print) -> dict:
         log(f"  logic {c.name:7s} prog {s['programs']:3d} (enc {s['encrypted']:2d})  task {s['tasks']:4d}"
             f"{' (+ff ' + str(s['fftasks']) + ')' if s['fftasks'] else ''}  block {s['blocks']:6d}  ub {s['userblocks']:5d}"
             f" (opaque {s['opaque']})  pin {s['pins']:7d}  attr {s['attrs']:6d}  localvar {s['local_vars']:5d}"
-            f"  unresolved V/L/P {s['unres_V']}/{s['unres_L']}/{s['unres_P']}  zk {s['zk']}  {time.time()-t0:5.1f}s")
+            f"  alarm-sub {s['alarm_sub']:5d}  unresolved V/L/P {s['unres_V']}/{s['unres_L']}/{s['unres_P']}  zk {s['zk']}  {time.time()-t0:5.1f}s")
         all_stats[c.name] = stats
     log(f"  logic total {time.time()-t_all:.0f}s")
     return all_stats

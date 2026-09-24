@@ -268,8 +268,9 @@ def recover_vote_pins(conn, ctrl_names, log=print):
       INA/INB/INC  the one hidden variable '(ai_)<stem>(_Alt)<L>(Crctd)(_suffix)' per letter (shared by every voter of the
                    task, as the tool's Where-Used showed); skipped when a letter has 0 or >1 candidates (e.g. four
                    transmitter sets in one task).
-      BQA/BQB/BQC  the hidden variable '<input>_BQ' when it exists, else the field '<input>.BQ' (conn_kind 'D', no variable:
-                   the macro always wires the bad-quality field of an ai_ input).
+      BQA/BQB/BQC  the hidden alarm sub-variable '<input>.BQ' or the hidden variable '<input>_BQ' (whichever the program
+                   references only inside encrypted blocks), else the '<input>.BQ' sub-variable when it exists, else the
+                   field '<input>.BQ' as conn_kind 'D' without a variable (the macro always wires the bad-quality flag).
       HYST         the one hidden 'k_…<stem>…_HYST*' constant (shared by the task's voters).
       HI_LIMIT     only when the task has ONE voter and ONE hidden 'k_…<stem>…_SP' constant (several voters = several
                    set-points whose assignment the tool alone can show).
@@ -320,8 +321,8 @@ def recover_vote_pins(conn, ctrl_names, log=print):
                     inputs[L] = cand[0]
                 else:
                     tot["skip_in"] += 1
-            hyst = [h for h in hid if re.search(r"_hyst\d*$", h[2])]
-            sps = [h for h in hid if h[2].endswith("_sp")]
+            hyst = [h for h in hid if re.search(r"_hyst\d*$", h[2]) and "." not in h[1]]   # not the '<var>.HYST' sub-variables
+            sps = [h for h in hid if h[2].endswith("_sp") and "." not in h[1]]
             outs = [r for r in refs.get(pid, []) if re.fullmatch(rf"pro_{re.escape(nb)}\d*(hi|lo)", r[2]) and r[0] not in writers]
             single = len(insts) == 1
             if not single or len(sps) != 1:
@@ -332,9 +333,12 @@ def recover_vote_pins(conn, ctrl_names, log=print):
                 rows = []
                 for L, (vid, name, _) in inputs.items():
                     rows.append(("IN" + L, "I", "V", name, vid)); tot["in"] += 1
-                    bq = byname.get(name + "_BQ")
-                    if bq is not None and any(h[0] == bq for h in hid):
-                        rows.append(("BQ" + L, "I", "V", name + "_BQ", bq)); tot["bq"] += 1
+                    hidset = {h[0] for h in hid}
+                    bqn = next((c for c in (name + ".BQ", name + "_BQ") if byname.get(c) in hidset), None)
+                    if bqn is None and byname.get(name + ".BQ") is not None:
+                        bqn = name + ".BQ"
+                    if bqn is not None:
+                        rows.append(("BQ" + L, "I", "V", bqn, byname[bqn])); tot["bq"] += 1
                     else:
                         rows.append(("BQ" + L, "I", "D", name + ".BQ", None)); tot["bqf"] += 1
                 if len(hyst) == 1:
@@ -399,7 +403,7 @@ def load_xref(conn, repo_dir, ctrl_names, log=print):
         b = conn.execute("SELECT id, is_opaque, line_no FROM block WHERE ctrl=? AND path=?", (ctrl, bpath)).fetchone()
         v = conn.execute("SELECT id FROM variable WHERE ctrl=? AND name=?", (ctrl, var)).fetchone()
         field = False
-        if not v and "." in var:   # '<var>.<FIELD>' -> field reference (conn_kind 'D'), the base variable must exist
+        if not v and "." in var:   # '<var>.<FIELD>' with no such sub-variable -> field reference (conn_kind 'D'), base must exist
             field = conn.execute("SELECT 1 FROM variable WHERE ctrl=? AND name=?", (ctrl, var.rsplit(".", 1)[0])).fetchone() is not None
         if d not in ("I", "O"):
             why = f"direction must be I or O, got {d!r}"

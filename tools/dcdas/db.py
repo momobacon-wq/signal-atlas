@@ -12,7 +12,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = "8"
+SCHEMA_VERSION = "9"
 
 
 def local_dir() -> Path:
@@ -111,12 +111,13 @@ CREATE TABLE IF NOT EXISTS variable(
   referenced_in TEXT, alarm_id TEXT, alarm_class TEXT, alarm_definition TEXT, plant_area TEXT,
   potential_causes TEXT, operator_action TEXT, consequence TEXT, urgency TEXT,
   normal_severity INTEGER, active_severity INTEGER, is_program_local INTEGER DEFAULT 0,
-  decl_file TEXT, decl_line INTEGER, UNIQUE(ctrl, name));
+  decl_file TEXT, decl_line INTEGER, sub_of TEXT, UNIQUE(ctrl, name));
 CREATE INDEX IF NOT EXISTS ix_var_name ON variable(name);
 CREATE INDEX IF NOT EXISTS ix_var_alias ON variable(alias);
 CREATE INDEX IF NOT EXISTS ix_var_device ON variable(device_name);
 CREATE INDEX IF NOT EXISTS ix_var_addr ON variable(ctrl, address);
 CREATE INDEX IF NOT EXISTS ix_var_full ON variable(full_name);
+CREATE INDEX IF NOT EXISTS ix_var_sub ON variable(ctrl, sub_of);
 
 CREATE TABLE IF NOT EXISTS pin_dir(
   block_type TEXT, pin_name TEXT, direction TEXT, source TEXT,

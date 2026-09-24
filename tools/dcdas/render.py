@@ -100,6 +100,8 @@ def _show(o, r):
         _kv(o, "const", "control constant")
     if d["is_program_local"]:
         _kv(o, "scope", "program-local variable")
+    if d.get("sub_of"):
+        _kv(o, "sub_of", f"{d['ctrl']}.{d['sub_of']}  (alarm attribute .{d['name'].rsplit('.', 1)[-1]} of that signal)")
     dc = d["decl"]
     decl = " ".join(x for x in (f"{dc['program']}.{dc['task']}" if dc["task"] else dc["program"], dc["at"]) if x)
     _kv(o, "decl", decl or f"({dc['connection'] or 'no declaration site'})")
@@ -186,6 +188,17 @@ def _show(o, r):
         if a["normal_severity"] is not None or a["active_severity"] is not None:
             _kv(o, "severity", f"normal {_s(a['normal_severity'])} active {_s(a['active_severity'])}")
 
+    if r.get("alarm_subs"):
+        o.line(f"ALARM SUB-PINS ({len(r['alarm_subs'])})   (alarm attributes of this signal; sub-variable = <signal>.<suffix>)")
+        for x in r["alarm_subs"]:
+            if x["source"]:
+                tail = f"<- {x['source']['full_name']}" + (f" (const {x['source']['value']})" if x["source"]["const"] else f" (value {_s(x['source']['value'])})")
+            elif x["connection"]:
+                tail = f"<- {x['connection']}"
+            else:
+                tail = f"readers {x['readers']} writers {x['writers']}"
+            o.line(f"  {x['suffix']:<8s} {_s(x['datatype']):<5s} {_s(x['dir'])}/{_s(x['dir_source'])}  cls {_s(x['class']):<6s} "
+                   f"egd {_s(x['egd_page']):<8s} {tail}" + (f"  alias {x['alias']}" if x["alias"] else ""))
     if r["watch"]:
         o.line(f"WATCH ({len(r['watch'])})")
         o.rows(r["watch"], lambda w: f"{w['ctrl']} {w['watch_file']}" + (f" (datasource {w['datasource']})" if w["datasource"] and w["datasource"] != w["ctrl"] else ""))

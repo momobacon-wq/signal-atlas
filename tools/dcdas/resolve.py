@@ -325,8 +325,10 @@ def xref_paste(conn, repo_dir, text_path, ctrl, date=None, dry_run=False, log=pr
     """Turn a pasted Where-Used tree from the configuration tool into xref_manual.csv rows. Input: first non-empty line =
     the variable ('Program.Task.Var (…)' or 'Var (…)'), every later line 'Program.Task[.Block…].PIN (…)'. A line whose block
     is not in the index is matched on shorter prefixes (the tail is then the path inside the encrypted block, kept in the
-    note). Only lines on an opaque block whose pin is not indexed yet are appended (direction assumed I, said so in the
-    note); everything else is reported. Returns the list of appended rows."""
+    note). Appended: lines on an opaque block whose pin is not indexed yet (direction assumed I, said so in the note) and
+    lines on a recovered pin (origin decl/link/pair): the tool confirms the inference, so a verified row replaces it on
+    the next build (direction kept from the recovered pin). Plaintext and xref pins are reported only. Returns the
+    appended rows."""
     from pathlib import Path
     pm = _pm()
     path = pm._tools_dir(Path(repo_dir)) / XREF_CSV
@@ -364,8 +366,9 @@ def xref_paste(conn, repo_dir, text_path, ctrl, date=None, dry_run=False, log=pr
             else:
                 log(f"  - {m.group('path')}: path inside the encrypted block, nothing to add")
             continue
-        ex = conn.execute("SELECT origin FROM pin WHERE block_id=? AND name=?", (b[0], pin)).fetchone()
-        if ex:
+        ex = conn.execute("""SELECT p.origin, p.direction, v.name FROM pin p LEFT JOIN variable v ON v.id=p.var_id
+                             WHERE p.block_id=? AND p.name=?""", (b[0], pin)).fetchone()
+        if ex and ex[0] in (None, "xref"):
             log(f"  = {b[2]}.{pin}: already indexed ({ex[0] or 'plaintext'})")
             continue
         if not b[1]:
@@ -375,9 +378,19 @@ def xref_paste(conn, repo_dir, text_path, ctrl, date=None, dry_run=False, log=pr
         if key in have:
             log(f"  = {b[2]}.{pin}: already in {path.name}")
             continue
-        added.append([ctrl, var, b[2], pin, "I", f"tool cross-reference {date or ''}".strip() + "; direction assumed I"])
+        stamp = f"tool cross-reference {date or ''}".strip()
+        if ex:   # recovered (decl/link/pair) pin: the tool confirms it -> verified row, replaces the recovered one on build
+            d = ex[1] if ex[1] in ("I", "O") else "I"
+            note = f"{stamp}; confirms the recovered ({ex[0]}) pin, direction kept from it"
+            if ex[2] and ex[2] != var:
+                note += f"; NOTE recovered row had {ex[2]}"
+                log(f"  ! {b[2]}.{pin}: recovered row reads {ex[2]}, tool says {var} (verified wins)")
+            added.append([ctrl, var, b[2], pin, d, note])
+            log(f"  ^ {b[2]}.{pin} <- {var} ({d}, upgrades {ex[0]} -> xref)")
+        else:
+            added.append([ctrl, var, b[2], pin, "I", stamp + "; direction assumed I"])
+            log(f"  + {b[2]}.{pin} <- {var} (I assumed)")
         have.add(key)
-        log(f"  + {b[2]}.{pin} <- {var} (I assumed)")
     if added and not dry_run:
         import csv
         new = not path.exists()

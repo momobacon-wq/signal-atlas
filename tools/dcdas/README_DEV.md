@@ -32,7 +32,8 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
   `dir_source='R'`, ~2,000 rows). `resolve.load_xref` then adds `origin='xref'` rows from `tools/xref_manual.csv`
   (connections the user verified in the configuration tool's Where-Used but the XML cannot show, e.g. pins of a fully
   encrypted voter instance; `dir_source='T'`; opaque blocks only; verified beats inferred). `dcdas.py xref-paste <txt>
-  --ctrl X` turns a pasted Where-Used tree into such rows. `query.show` / the web card also report `hidden_ref` / `hid`:
+  --ctrl X` turns a pasted Where-Used tree into such rows: new pins of opaque blocks, and recovered (decl/link/pair) pins
+  the tool confirms, which the next build then replaces with the verified row. `query.show` / the web card also report `hidden_ref` / `hid`:
   ReferencedIn programs (not encrypted) in which no pin of the variable is indexed at all, i.e. the reference sits inside an
   encrypted block (~90k variables). `resolve.run`
   purges recovered rows for the controllers being built first (post-only builds). `lib_pin_usage` gives a catalogue

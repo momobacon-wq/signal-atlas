@@ -301,7 +301,7 @@ def main(argv=None):
     p = add("coverage", cmd_coverage); p.add_argument("--limit", type=int, default=40)
     p = add("audit-type", cmd_audit_type, help="per-pin audit of one block type"); p.add_argument("block_type"); p.add_argument("--ctrl"); p.add_argument("--limit", type=int, default=200)
     p = add("pindir-import", cmd_pindir_import); p.add_argument("--pdf", nargs="*", help="manual PDFs (default: known set)")
-    p = add("xref-paste", cmd_xref_paste, help="pasted Where-Used tree -> tools/xref_manual.csv rows (encrypted blocks only)")
+    p = add("xref-paste", cmd_xref_paste, help="pasted Where-Used tree -> tools/xref_manual.csv rows (opaque blocks only; new pins added, recovered pins upgraded)")
     p.add_argument("txt"); p.add_argument("--ctrl", required=True); p.add_argument("--date"); p.add_argument("--dry-run", action="store_true")
     p = add("export-web", cmd_export_web); p.add_argument("docs", nargs="?", default=str(HERE.parent / "docs"))
     p.add_argument("--key-file", help="file holding the site passphrase (default: web_key_file in the local config)")

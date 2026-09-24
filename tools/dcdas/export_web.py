@@ -150,7 +150,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     prog_id = {(r[1], r[2]): r[0] for r in conn.execute("SELECT id, ctrl, name FROM program")}
     # (var_id, program_id) pairs that have at least one pin (plaintext or recovered): a ReferencedIn program missing here
     # can only reference the variable inside an encrypted block -> card "hid"
-    var_prog_seen = set(conn.execute("SELECT DISTINCT p.var_id, b.program_id FROM pin p JOIN block b ON b.id=p.block_id WHERE p.var_id IS NOT NULL"))
+    var_prog_seen = {(r[0], r[1]) for r in conn.execute(   # plain tuples: sqlite3.Row objects would never match a tuple lookup
+        "SELECT DISTINCT p.var_id, b.program_id FROM pin p JOIN block b ON b.id=p.block_id WHERE p.var_id IS NOT NULL")}
 
     # ---------------------------------------------------------------- lookups
     prog_by_id = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT id,ctrl,name FROM program")}

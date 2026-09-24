@@ -178,7 +178,17 @@ def main():
     nw = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.PRO_HpOTHeatExOutTemp2Hi' AND p.direction='O'")
     check("H11.PRO_HpOTHeatExOutTemp2Hi has exactly 1 writer (the voter OUT)", nw == 1, str(nw))
     nx = one(conn, "SELECT count(*) FROM pin WHERE origin='xref'")
-    check("xref rows = 287 (251 + 36: AnalogPeerIOHealth_67..70 peer inputs/outputs, CondHotWellLvl set C10MAG11 -> _2; H11 + H12)", nx == 287, str(nx))
+    check("xref rows = 541 (287 + 254: peer-input task sheets AnalogPeerIOHealth_44..78 + DigitalPeerIOHealth_221/226/227/229..237, hotwell voters _4/_5, condenser pressure voter; H11 + H12)", nx == 541, str(nx))
+    cp = {r[0]: r[1] for r in conn.execute("""SELECT p.name, p.origin FROM pin p JOIN block b ON b.id=p.block_id
+                         WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_Condpress/2oo3_Basic_2'""")}
+    check("H11 Condpress 2oo3_Basic_2: IN/BQ verified by the sheet labels (xref), HYST/HI_LIMIT/OUT still vote",
+          sum(v == "xref" for v in cp.values()) == 6 and cp.get("OUT") == "vote" and cp.get("INA") == "xref", str(sorted(cp.items())))
+    c4 = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.ctrl='H11' AND b.path LIKE 'HRSG_Protection_1/FNCTN_CondHotWellLvl/2oo3_Basic_%' AND p.origin='xref'")
+    check("H11 CondHotWellLvl voters _2.._5: 24 xref pins (4 sets x IN A/B/C + BQ A/B/C)", c4 == 24, str(c4))
+    dg = {r[0]: r[1:] for r in conn.execute("""SELECT p.name, p.direction, p.connection FROM pin p JOIN block b ON b.id=p.block_id
+                         WHERE b.ctrl='H11' AND b.path='ControlPeerToPeer_HRSG_H_BOP_Interface_1/Software_Peer_Inputs_BOP/DigitalPeerIOHealth_235'""")}
+    check("H11 DigitalPeerIOHealth_235 (opaque): PEER_INPUT <- WSC1.1-HS-CW011-1.ON, OUT -> CirculatingWaterPmpA_ON",
+          dg == {"PEER_INPUT": ("I", "WSC1.1-HS-CW011-1.ON"), "OUT": ("O", "CirculatingWaterPmpA_ON")}, str(dg))
     ph = {r[0]: r[1:] for r in conn.execute("""SELECT p.name, p.direction, p.connection FROM pin p JOIN block b ON b.id=p.block_id
                          WHERE b.ctrl='H11' AND b.path='ControlPeerToPeer_HRSG_H_BOP_Interface_1/Software_Peer_Inputs_BOP/AnalogPeerIOHealth_68'""")}
     check("H11 AnalogPeerIOHealth_68 (opaque): PEER_INPUT <- WSC1.C10MAG10BL901_XQ01BOut, OUT -> CondHotWellLvlB_C10MAG10, UNHEALTHY -> ..._BQ (4 xref pins)",

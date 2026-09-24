@@ -137,14 +137,14 @@ def main():
 
     # ---- paired opaque AI_INT: IN reads the sibling AI_k device output (naming-pair inference)
     pr = conn.execute("""SELECT p.direction,p.dir_source,p.conn_kind,p.origin,v.full_name FROM pin p JOIN block b ON b.id=p.block_id
-                         LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path='HardwireInputs_1/HW_ISC_HEATEX/AI_INT_157' AND p.name='IN'""").fetchone()
-    check("H11 AI_INT_157.IN paired to H11.HpOTHeatExOutNearSideTemp7_AI (I/R, origin pair)",
-          pr is not None and tuple(pr) == ("I", "R", "V", "pair", "H11.HpOTHeatExOutNearSideTemp7_AI"), str(tuple(pr)) if pr else "missing")
+                         LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path='HardwireInputs_1/HW_ISC_HEATEX/AI_INT_1' AND p.name='IN'""").fetchone()
+    check("H11 AI_INT_1.IN paired to H11.HpOTHeatExInFarSideTemp1_AI (I/R, origin pair)",
+          pr is not None and tuple(pr) == ("I", "R", "V", "pair", "H11.HpOTHeatExInFarSideTemp1_AI"), str(tuple(pr)) if pr else "missing")
     po = conn.execute("""SELECT p.name,p.direction,p.dir_source,p.conn_kind,v.full_name FROM pin p JOIN block b ON b.id=p.block_id
-                         LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path='HardwireInputs_1/HW_ISC_HEATEX/AI_INT_157'
+                         LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path='HardwireInputs_1/HW_ISC_HEATEX/AI_INT_1'
                          AND p.origin='pair' AND p.name IN ('OUT','DEVICE_STATUS') ORDER BY p.name""").fetchall()
-    check("H11 AI_INT_157 OUT -> ai_HpOTHeatExOutNearSideTemp7, DEVICE_STATUS -> HpOTHeatExOutNearSideTemp7_DS (O/R, pair)",
-          [tuple(r) for r in po] == [("DEVICE_STATUS", "O", "R", "V", "H11.HpOTHeatExOutNearSideTemp7_DS"), ("OUT", "O", "R", "V", "H11.ai_HpOTHeatExOutNearSideTemp7")],
+    check("H11 AI_INT_1 OUT -> ai_HpOTHeatExInFarSideTemp1, DEVICE_STATUS -> HpOTHeatExInFarSideTemp1_DS (O/R, pair)",
+          [tuple(r) for r in po] == [("DEVICE_STATUS", "O", "R", "V", "H11.HpOTHeatExInFarSideTemp1_DS"), ("OUT", "O", "R", "V", "H11.ai_HpOTHeatExInFarSideTemp1")],
           str([tuple(r) for r in po]))
     # ---- AI_INT_153: the same pair inference, but IN and OUT were confirmed in the tool -> xref rows replaced the pair rows
     px = conn.execute("""SELECT p.name,p.direction,p.dir_source,p.origin,v.full_name FROM pin p JOIN block b ON b.id=p.block_id
@@ -155,7 +155,7 @@ def main():
                                      ("IN", "I", "T", "xref", "H11.HpOTHeatExOutNearSideTemp6_AI"),
                                      ("OUT", "O", "T", "xref", "H11.ai_HpOTHeatExOutNearSideTemp6")], str([tuple(r) for r in px]))
     npair = one(conn, "SELECT count(*) FROM pin WHERE origin='pair'")
-    check("pair rows >= 2000 (1037 IN + ~1032 outputs expected)", (npair or 0) >= 2000, str(npair))
+    check("pair rows >= 1900 (~2069 recovered, 120 replaced by xref rows)", (npair or 0) >= 1900, str(npair))
     nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='pair' AND NOT (b.is_opaque=1 AND b.block_type='AI_INT' AND p.name IN ('IN','OUT','DEVICE_STATUS'))")
     check("pair rows only on opaque AI_INT IN/OUT/DEVICE_STATUS", nbad == 0, str(nbad))
 
@@ -174,7 +174,11 @@ def main():
     nw = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.PRO_HpOTHeatExOutTemp2Hi' AND p.direction='O'")
     check("H11.PRO_HpOTHeatExOutTemp2Hi has exactly 1 writer (the voter OUT)", nw == 1, str(nw))
     nx = one(conn, "SELECT count(*) FROM pin WHERE origin='xref'")
-    check("xref rows = 87 (H11 + H12, 2 voters x 21, + AI_INT_153 IN/OUT/DEVICE_STATUS)", nx == 87, str(nx))
+    check("xref rows = 204 (H11 + H12: 2 voters x 21 + 20 outlet-temp AI_INT x 3 pins)", nx == 204, str(nx))
+    n40 = one(conn, """SELECT count(*) FROM (SELECT b.id FROM pin p JOIN block b ON b.id=p.block_id JOIN variable v ON v.id=p.var_id
+                        WHERE b.path LIKE 'HardwireInputs_1/HW_ISC_HEATEX/AI_INT_%' AND v.name LIKE '%HpOTHeatExOut%SideTemp%'
+                        GROUP BY b.id HAVING sum(p.origin='xref')=3 AND count(*)=3)""")
+    check("40 outlet-temp AI_INT instances (H11 + H12) have exactly 3 pins, all xref", n40 == 40, str(n40))
     nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='xref' AND (b.is_opaque=0 OR p.dir_source<>'T' OR p.var_id IS NULL)")
     check("xref rows only on opaque blocks, T, with a variable", nbad == 0, str(nbad))
     nr = one(conn, """SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.HpOTHeatExOutNearSideTemp6' AND p.direction<>'O'""")

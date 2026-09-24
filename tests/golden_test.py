@@ -150,8 +150,8 @@ def main():
     px = conn.execute("""SELECT p.name,p.direction,p.dir_source,p.origin,v.full_name FROM pin p JOIN block b ON b.id=p.block_id
                          LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path='HardwireInputs_1/HW_ISC_HEATEX/AI_INT_153'
                          ORDER BY p.name""").fetchall()
-    check("H11 AI_INT_153: IN/OUT verified (xref, T), DEVICE_STATUS still pair (R); one row per pin",
-          [tuple(r) for r in px] == [("DEVICE_STATUS", "O", "R", "pair", "H11.HpOTHeatExOutNearSideTemp6_DS"),
+    check("H11 AI_INT_153: IN/OUT/DEVICE_STATUS all verified (xref, T); one row per pin",
+          [tuple(r) for r in px] == [("DEVICE_STATUS", "O", "T", "xref", "H11.HpOTHeatExOutNearSideTemp6_DS"),
                                      ("IN", "I", "T", "xref", "H11.HpOTHeatExOutNearSideTemp6_AI"),
                                      ("OUT", "O", "T", "xref", "H11.ai_HpOTHeatExOutNearSideTemp6")], str([tuple(r) for r in px]))
     npair = one(conn, "SELECT count(*) FROM pin WHERE origin='pair'")
@@ -174,7 +174,7 @@ def main():
     nw = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.PRO_HpOTHeatExOutTemp2Hi' AND p.direction='O'")
     check("H11.PRO_HpOTHeatExOutTemp2Hi has exactly 1 writer (the voter OUT)", nw == 1, str(nw))
     nx = one(conn, "SELECT count(*) FROM pin WHERE origin='xref'")
-    check("xref rows = 86 (H11 + H12, 2 voters x 21, + AI_INT_153 IN/OUT)", nx == 86, str(nx))
+    check("xref rows = 87 (H11 + H12, 2 voters x 21, + AI_INT_153 IN/OUT/DEVICE_STATUS)", nx == 87, str(nx))
     nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='xref' AND (b.is_opaque=0 OR p.dir_source<>'T' OR p.var_id IS NULL)")
     check("xref rows only on opaque blocks, T, with a variable", nbad == 0, str(nbad))
     nr = one(conn, """SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.HpOTHeatExOutNearSideTemp6' AND p.direction<>'O'""")

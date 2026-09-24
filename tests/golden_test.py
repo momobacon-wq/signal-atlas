@@ -178,7 +178,12 @@ def main():
     nw = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.PRO_HpOTHeatExOutTemp2Hi' AND p.direction='O'")
     check("H11.PRO_HpOTHeatExOutTemp2Hi has exactly 1 writer (the voter OUT)", nw == 1, str(nw))
     nx = one(conn, "SELECT count(*) FROM pin WHERE origin='xref'")
-    check("xref rows = 251 (225 + 26: NooM HYST1, HpStmTermAttOutPress HHH/4H HI_LIMIT+OUT, CondHotWellLvl set C10MAG10 -> _3, AnalogPeerIOHealth_67.OUT; H11 + H12)", nx == 251, str(nx))
+    check("xref rows = 287 (251 + 36: AnalogPeerIOHealth_67..70 peer inputs/outputs, CondHotWellLvl set C10MAG11 -> _2; H11 + H12)", nx == 287, str(nx))
+    ph = {r[0]: r[1:] for r in conn.execute("""SELECT p.name, p.direction, p.connection FROM pin p JOIN block b ON b.id=p.block_id
+                         WHERE b.ctrl='H11' AND b.path='ControlPeerToPeer_HRSG_H_BOP_Interface_1/Software_Peer_Inputs_BOP/AnalogPeerIOHealth_68'""")}
+    check("H11 AnalogPeerIOHealth_68 (opaque): PEER_INPUT <- WSC1.C10MAG10BL901_XQ01BOut, OUT -> CondHotWellLvlB_C10MAG10, UNHEALTHY -> ..._BQ (4 xref pins)",
+          len(ph) == 4 and ph.get("PEER_INPUT") == ("I", "WSC1.C10MAG10BL901_XQ01BOut") and ph.get("OUT") == ("O", "CondHotWellLvlB_C10MAG10")
+          and ph.get("UNHEALTHY") == ("O", "CondHotWellLvlB_C10MAG10_BQ"), str(sorted(ph.items())))
     n40 = one(conn, """SELECT count(*) FROM (SELECT b.id FROM pin p JOIN block b ON b.id=p.block_id JOIN variable v ON v.id=p.var_id
                         WHERE b.path LIKE 'HardwireInputs_1/HW_ISC_HEATEX/AI_INT_%' AND v.name LIKE '%HpOTHeatExOut%SideTemp%'
                         GROUP BY b.id HAVING sum(p.origin='xref')=3 AND count(*)=3)""")

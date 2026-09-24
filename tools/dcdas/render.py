@@ -239,10 +239,10 @@ def _block(o, r):
         _kv(o, "help", r["library_help"]["mht_path"])
     rc = r.get("recovered") or {}
     if r["is_opaque"]:
-        if rc.get("decl") or rc.get("link") or rc.get("pair"):
+        if rc.get("decl") or rc.get("link") or rc.get("pair") or rc.get("xref"):
             o.line(f"OPAQUE MACRO: internals encrypted; interface recovered from evidence: {rc.get('decl', 0)} declared variables + "
-                   f"{rc.get('link', 0)} L: links + {rc.get('pair', 0)} same-number pairing (list may be incomplete; "
-                   f"directions R = recovered, L = from link; pairing is inferred)")
+                   f"{rc.get('link', 0)} L: links + {rc.get('pair', 0)} same-number pairing + {rc.get('xref', 0)} verified cross-reference rows "
+                   f"(list may be incomplete; directions R = recovered, L = from link, T = hand-verified; pairing is inferred)")
         elif r.get("catalogue"):
             o.line("OPAQUE MACRO: interface encrypted; no wiring visible. Library catalogue for this type (names + usage only):")
             o.rows(r["catalogue"], lambda c: f"{c['pin']:<24s} {c['usage']}")

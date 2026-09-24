@@ -408,31 +408,31 @@
     const inferred = src === 'L' || src === 'H' || src === 'R';
     return D.h('span', { class: 'bd src src-' + (src === '-' ? 'none' : src) + (inferred ? ' inferred' : ''), text: src, title: '來源：' + legend + (inferred ? '（推斷）' : '') });
   };
-  /* ---- 不透明巨集（介面在加密區）：回推腳位 org（tuple 第 12 欄 'd' 宣告／'l' 連線／'p' 同編號配對／null 明文）、鎖頭圖示、介面說明行、程式庫目錄 */
-  D.ORG_LABEL = { d: '宣告', l: '連線', p: '配對' };
-  D.ORG_TITLE = { d: '由宣告變數回推', l: '由 L: 連線回推', p: '由同層同編號的 AI／FF_AI 方塊配對推斷（IN 讀其輸出；OUT／DEVICE_STATUS 依 ai_<名>／<名>_DS 命名與 ReferencedIn 推斷）' };
+  /* ---- 不透明巨集（介面在加密區）：回推腳位 org（tuple 第 12 欄 'd' 宣告／'l' 連線／'p' 同編號配對／'x' 人工查證／null 明文）、鎖頭圖示、介面說明行、程式庫目錄 */
+  D.ORG_LABEL = { d: '宣告', l: '連線', p: '配對', x: '查證' };
+  D.ORG_TITLE = { d: '由宣告變數回推', l: '由 L: 連線回推', p: '由同層同編號的 AI／FF_AI 方塊配對推斷（IN 讀其輸出；OUT／DEVICE_STATUS 依 ai_<名>／<名>_DS 命名與 ReferencedIn 推斷）', x: '人工查證：組態工具交互參照（Where Used）確認的連線，登錄於 tools/xref_manual.csv' };
   D.orgOf = (p) => (p && p.length > 11 && p[11]) || null;
   D.orgLabel = (org) => (org ? D.ORG_LABEL[org] || org : '明文');
-  /** 回推腳位小徽章「推」（class org）；title 說明回推依據 */
-  D.orgBadge = (org) => D.h('span', { class: 'bd org', text: '推', title: D.ORG_TITLE[org] || '回推' });
+  /** 回推腳位小徽章「推」（人工查證為「證」；class org）；title 說明依據 */
+  D.orgBadge = (org) => D.h('span', { class: 'bd org', text: org === 'x' ? '證' : '推', title: D.ORG_TITLE[org] || '回推' });
   /** 鎖頭（10×11 viewBox；鎖環＋鎖身，只描邊） */
   D.LOCK_D = 'M3 5V3.5a2 2 0 0 1 4 0V5M1.5 5h7v5.5h-7z';
   D.lockIcon = (title) => D.svg('svg', { viewBox: '0 0 10 11', class: 'lock-ico', 'aria-hidden': title ? null : 'true', role: title ? 'img' : null }, title ? D.svg('title', { text: title }) : null, D.svg('path', { d: D.LOCK_D }));
   /** manifest.lib_iface[type]：不透明巨集型別的程式庫目錄 [[pin, dir]…]（只有名稱與方向，無接線）；無 → null */
   D.libIface = (type) => (D.man && D.man.lib_iface && type && D.man.lib_iface[type]) || null;
-  /** 不透明方塊的介面說明：rc=[nDecl,nLink] → 回推；否則目錄；否則無腳位。回傳 {kind:'rc'|'cat'|'none', n, text, cat} */
+  /** 不透明方塊的介面說明：rc=[nDecl,nLink,nPair,nXref] → 回推；否則目錄；否則無腳位。回傳 {kind:'rc'|'cat'|'none', n, text, cat} */
   D.opaqueInfo = function (rec) {
     const rc = rec && rec.rc;
     if (Array.isArray(rc)) {
-      const nd = Number(rc[0]) || 0, nl = Number(rc[1]) || 0, np = Number(rc[2]) || 0, n = nd + nl + np; // [宣告, 連線, 配對]
-      if (n > 0) return { kind: 'rc', n, nd, nl, np, text: '介面回推 ' + n + ' 腳（可能不完整）' };
+      const nd = Number(rc[0]) || 0, nl = Number(rc[1]) || 0, np = Number(rc[2]) || 0, nx = Number(rc[3]) || 0, n = nd + nl + np + nx; // [宣告, 連線, 配對, 查證]
+      if (n > 0) return { kind: 'rc', n, nd, nl, np, nx, text: '介面回推 ' + n + ' 腳（可能不完整）' };
     }
     const cat = D.libIface(rec && rec.type);
     if (cat && cat.length) return { kind: 'cat', n: cat.length, cat, text: '目錄介面 ' + cat.length + ' 腳（無接線）' };
     return { kind: 'none', n: 0, text: '介面加密，無可見腳位' };
   };
   /** 介面說明行（鎖頭 + 文字）：側欄／方塊頁共用 */
-  D.opaqueLine = (rec, cls) => { const oi = D.opaqueInfo(rec); return D.h('p', { class: 'opq-line muted small' + (cls ? ' ' + cls : ''), title: oi.kind === 'rc' ? '宣告 ' + oi.nd + '、連線 ' + oi.nl + '、配對 ' + oi.np : null }, D.lockIcon(), ' ', oi.text); };
+  D.opaqueLine = (rec, cls) => { const oi = D.opaqueInfo(rec); return D.h('p', { class: 'opq-line muted small' + (cls ? ' ' + cls : ''), title: oi.kind === 'rc' ? '宣告 ' + oi.nd + '、連線 ' + oi.nl + '、配對 ' + oi.np + '、查證 ' + oi.nx : null }, D.lockIcon(), ' ', oi.text); };
   /** 程式庫目錄表（腳位／方向）＋說明 caption */
   D.catalogueTable = (cat) => D.frag(
     D.h('p', { class: 'cat-cap muted small', text: '程式庫目錄（只有名稱與方向，接線在加密區）' }),

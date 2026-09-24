@@ -29,7 +29,10 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
   `origin='pair'` (opaque `AI_INT_<k>` next to `AI_<k>` / `FF_AI_<k>` in the same parent: pin `IN` reads that block's
   device-named output variable; for `AI_<k>` pairs also `OUT`→`ai_<stem>` and `DEVICE_STATUS`→`<stem>_DS` when the
   variable's `ReferencedIn` lists the block's program and nothing visible there references it; naming-pair inference,
-  `dir_source='R'`, ~2,000 rows). `resolve.run`
+  `dir_source='R'`, ~2,000 rows). `resolve.load_xref` then adds `origin='xref'` rows from `tools/xref_manual.csv`
+  (connections the user verified in the configuration tool's Where-Used but the XML cannot show, e.g. pins of a fully
+  encrypted voter instance; `dir_source='T'`; opaque blocks only; verified beats inferred). `dcdas.py xref-paste <txt>
+  --ctrl X` turns a pasted Where-Used tree into such rows. `resolve.run`
   purges recovered rows for the controllers being built first (post-only builds). `lib_pin_usage` gives a catalogue
   (names + usage, no wiring) for 12 more types; ~1,216 instances have no visible interface at all.
 * `Pin` attrs: `Name`, `Connection`, `Address`, `Value`, `Description`, `Access`, `Alias`, `AliasOverride`, `LibName`,

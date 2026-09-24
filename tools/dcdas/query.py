@@ -51,7 +51,8 @@ _PIN_SQL = """SELECT p.id, p.name AS pin, p.direction, p.dir_source, p.conn_kind
 
 ORIGIN_NOTE = {"decl": "(recovered: variable declared at this pin of an opaque macro)",
                "link": "(recovered: sibling L: link into this opaque macro)",
-               "pair": "(recovered: paired with the sibling AI_k/FF_AI_k of the same number; outputs by ai_<stem>/<stem>_DS naming + ReferencedIn; inferred)"}
+               "pair": "(recovered: paired with the sibling AI_k/FF_AI_k of the same number; outputs by ai_<stem>/<stem>_DS naming + ReferencedIn; inferred)",
+               "xref": "(verified in the configuration tool's cross-reference; hand-entered in tools/xref_manual.csv)"}
 
 
 def _pin_ref(p):
@@ -470,7 +471,8 @@ def show(conn, signal, all_rows=False):
     elif not writers and mirror and mirror["kind"] == "O":
         source = f"logic (output pin value): {mirror['pin']['ref']} [{mirror['pin']['block_type']}]"
     elif writers:
-        source = (("logic (opaque macro output, recovered interface): " if writers[0]["origin"] else "logic: ") + w_entries[0]["ref"]
+        source = (("logic (opaque macro output, verified cross-reference): " if writers[0]["origin"] == "xref"
+                   else "logic (opaque macro output, recovered interface): " if writers[0]["origin"] else "logic: ") + w_entries[0]["ref"]
                   + (f" (+{len(writers)-1} more writers)" if len(writers) > 1 else ""))
     elif iface and (iface["usage"] or "").lower() == "output":
         source = f"interface Output pin {iface['ref']} (no inner writer found" + ("; opaque macro" if iface["opaque"] else "") + ")"
@@ -813,7 +815,7 @@ def block(conn, ctrl, path):
                      "alias": p["alias"], "at": _fl(p["file_path"], p["line_no"]), "origin": p["origin"],
                      "desc": (p["description"] or "").split("\n")[0].strip() if p["origin"] else None})
     recovered = {"decl": sum(1 for p in pins if p["origin"] == "decl"), "link": sum(1 for p in pins if p["origin"] == "link"),
-                 "pair": sum(1 for p in pins if p["origin"] == "pair")}
+                 "pair": sum(1 for p in pins if p["origin"] == "pair"), "xref": sum(1 for p in pins if p["origin"] == "xref")}
     catalogue = []
     if b["is_opaque"] and not pins:
         catalogue = [{"pin": r[0], "usage": r[1]} for r in conn.execute(

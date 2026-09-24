@@ -12,7 +12,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "7"
 
 
 def local_dir() -> Path:
@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS pin(
   conn_kind TEXT CHECK(conn_kind IN ('V','L','P','D','N','E','A','-')), connection TEXT,
   var_id INTEGER, tgt_block_id INTEGER, tgt_pin TEXT, address TEXT, value TEXT, alias TEXT,
   alias_override INTEGER, usage_declared TEXT, description TEXT, line_no INTEGER,
-  origin TEXT CHECK(origin IN ('decl','link','pair')), lib_name TEXT, UNIQUE(block_id, name));
+  origin TEXT CHECK(origin IN ('decl','link','pair','xref')), lib_name TEXT, UNIQUE(block_id, name));
 CREATE INDEX IF NOT EXISTS ix_pin_origin ON pin(origin);
 CREATE INDEX IF NOT EXISTS ix_pin_var ON pin(var_id, direction);
 CREATE INDEX IF NOT EXISTS ix_pin_block ON pin(block_id);

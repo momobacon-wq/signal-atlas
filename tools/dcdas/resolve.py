@@ -6,6 +6,7 @@ Stage modules resolve their own var_id where they can; this is the safety net th
   * io_point / egd_produced / egd_consumed / hmi_point / watch .var_id where still NULL
   * variable_fts rebuild (full_name, description, alias, device_tag, alarm_text)
 """
+import re
 import time
 
 
@@ -250,6 +251,145 @@ def recover_opaque_pins(conn, ctrl_names, log=print):
     log(f"  opaque interface recovered: decl={tot['decl']} link={tot['link']} pair={tot['pair']}(+{tot['pair_out']} outputs, {tot['pair_skip']} skipped) blocks={tot['blocks']}/{n_opaque} "
         f"I={tot['I']} O={tot['O']} ?={tot['?']} mirrors={tot['mirror']} conflicts={tot['conflict']}  {time.time()-t0:.1f}s")
     return tot
+
+
+XREF_CSV = "xref_manual.csv"
+XREF_HEADER = ["ctrl", "variable", "block_path", "pin", "direction", "note"]
+
+
+def _pm():
+    try:
+        from . import parse_manual as pm
+    except ImportError:
+        from dcdas import parse_manual as pm
+    return pm
+
+
+def load_xref(conn, repo_dir, ctrl_names, log=print):
+    """tools/xref_manual.csv: connections the user verified in the configuration tool's cross-reference (Where Used) that the
+    XML cannot show (pins of a fully encrypted UserBlock instance, e.g. a 4oo20 voter reading a temperature). Each valid row
+    becomes a pin row with origin='xref', dir_source='T' (hand-verified), conn_kind 'V' to the named variable, description =
+    note. Rules: the block must exist and be opaque (plaintext blocks take their pins from the XML); a plaintext pin of the
+    same name wins; a recovered decl/link/pair row of the same name is replaced (verified beats inferred). Reloaded on every
+    build (purge_recovered drops every origin row first); rows of controllers outside this build are left alone."""
+    from pathlib import Path
+    pm = _pm()
+    path = pm._tools_dir(Path(repo_dir)) / XREF_CSV
+    rows = pm.read_csv(path, XREF_HEADER)
+    tot = {"rows": 0, "loaded": 0, "skipped": 0, "replaced": 0}
+    next_id = (conn.execute("SELECT coalesce(max(id),0) FROM pin").fetchone()[0] or 0) + 1
+    for r in rows:
+        ctrl, var, bpath, pin, d, note = (r[h] for h in XREF_HEADER)
+        if ctrl not in ctrl_names:
+            continue
+        tot["rows"] += 1
+        why = None
+        b = conn.execute("SELECT id, is_opaque, line_no FROM block WHERE ctrl=? AND path=?", (ctrl, bpath)).fetchone()
+        v = conn.execute("SELECT id FROM variable WHERE ctrl=? AND name=?", (ctrl, var)).fetchone()
+        if d not in ("I", "O"):
+            why = f"direction must be I or O, got {d!r}"
+        elif not b:
+            why = "block not found"
+        elif not b[1]:
+            why = "block is plaintext; its pins come from the XML"
+        elif not v:
+            why = "variable not found"
+        elif not pin:
+            why = "empty pin name"
+        if why:
+            tot["skipped"] += 1
+            log(f"  xref skipped {ctrl} {bpath}.{pin}: {why}")
+            continue
+        ex = conn.execute("SELECT id, origin FROM pin WHERE block_id=? AND name=?", (b[0], pin)).fetchone()
+        if ex:
+            if ex[1] is None:
+                tot["skipped"] += 1
+                log(f"  xref skipped {ctrl} {bpath}.{pin}: plaintext pin already indexed")
+                continue
+            conn.execute("DELETE FROM pin WHERE id=?", (ex[0],))
+            conn.execute("DELETE FROM pin_mirror WHERE pin_id=?", (ex[0],))
+            tot["replaced"] += 1
+        conn.execute("""INSERT INTO pin(id, block_id, name, direction, dir_source, conn_kind, connection, var_id, description, line_no, origin)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (next_id, b[0], pin, d, "T", "V", var, v[0], note or None, b[2], "xref"))
+        next_id += 1
+        tot["loaded"] += 1
+    conn.commit()
+    log(f"  xref loaded: {tot['loaded']} of {tot['rows']} rows (skipped {tot['skipped']}, replaced {tot['replaced']}) from {path.name}")
+    return tot
+
+
+_WU_RE = re.compile(r"^\s*(?P<path>[A-Za-z0-9_.]+)\s*(?:\(.*\))?\s*$")
+
+
+def xref_paste(conn, repo_dir, text_path, ctrl, date=None, dry_run=False, log=print):
+    """Turn a pasted Where-Used tree from the configuration tool into xref_manual.csv rows. Input: first non-empty line =
+    the variable ('Program.Task.Var (…)' or 'Var (…)'), every later line 'Program.Task[.Block…].PIN (…)'. A line whose block
+    is not in the index is matched on shorter prefixes (the tail is then the path inside the encrypted block, kept in the
+    note). Only lines on an opaque block whose pin is not indexed yet are appended (direction assumed I, said so in the
+    note); everything else is reported. Returns the list of appended rows."""
+    from pathlib import Path
+    pm = _pm()
+    path = pm._tools_dir(Path(repo_dir)) / XREF_CSV
+    lines = [l.rstrip("\n") for l in open(text_path, encoding="utf-8-sig") if l.strip()]
+    if not lines:
+        raise SystemExit("empty file")
+    m = _WU_RE.match(lines[0])
+    var = (m.group("path") if m else lines[0].strip()).rsplit(".", 1)[-1]
+    if not conn.execute("SELECT 1 FROM variable WHERE ctrl=? AND name=?", (ctrl, var)).fetchone():
+        raise SystemExit(f"variable {ctrl}.{var} not in the index (first line must name the variable)")
+    have = {(r["ctrl"], r["block_path"], r["pin"]) for r in pm.read_csv(path, XREF_HEADER)}
+    added = []
+    for raw in lines[1:]:
+        m = _WU_RE.match(raw)
+        if not m:
+            log(f"  ? unparsed: {raw.strip()}")
+            continue
+        toks = m.group("path").split(".")
+        if toks[0] == "EGD" or len(toks) < 3:
+            log(f"  - {m.group('path')}: not a block pin")
+            continue
+        b, cut = None, 0
+        for cut in range(len(toks) - 1, 1, -1):
+            b = conn.execute("SELECT id, is_opaque, path FROM block WHERE ctrl=? AND path=?", (ctrl, "/".join(toks[:cut]))).fetchone()
+            if b:
+                break
+        if not b:
+            log(f"  ? {m.group('path')}: block not found")
+            continue
+        pin, inner = toks[-1], ".".join(toks[cut:-1])
+        if inner:   # a child line of the tree: the path inside the encrypted block under the previous interface pin
+            if added and added[-1][2] == b[2]:
+                added[-1][5] += f"; inside -> {inner}.{pin}"
+                log(f"    inside {b[2]}: {inner}.{pin} (noted on {added[-1][3]})")
+            else:
+                log(f"  - {m.group('path')}: path inside the encrypted block, nothing to add")
+            continue
+        ex = conn.execute("SELECT origin FROM pin WHERE block_id=? AND name=?", (b[0], pin)).fetchone()
+        if ex:
+            log(f"  = {b[2]}.{pin}: already indexed ({ex[0] or 'plaintext'})")
+            continue
+        if not b[1]:
+            log(f"  ! {b[2]}.{pin}: plaintext block but pin not indexed (XML gap, not an xref case)")
+            continue
+        key = (ctrl, b[2], pin)
+        if key in have:
+            log(f"  = {b[2]}.{pin}: already in {path.name}")
+            continue
+        added.append([ctrl, var, b[2], pin, "I", f"tool cross-reference {date or ''}".strip() + "; direction assumed I"])
+        have.add(key)
+        log(f"  + {b[2]}.{pin} <- {var} (I assumed)")
+    if added and not dry_run:
+        import csv
+        new = not path.exists()
+        with open(path, "a", encoding="utf-8", newline="") as f:
+            w = csv.writer(f, lineterminator="\n")
+            if new:
+                w.writerow(XREF_HEADER)
+            w.writerows(added)
+        log(f"  appended {len(added)} row(s) to {path} - rebuild the index to load them")
+    elif added:
+        log(f"  dry run: {len(added)} row(s) not written")
+    return added
 
 
 def refresh_mirror_kinds(conn, log=print):

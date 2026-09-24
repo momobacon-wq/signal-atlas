@@ -151,6 +151,18 @@ def main():
     nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='pair' AND NOT (b.is_opaque=1 AND b.block_type='AI_INT' AND p.name IN ('IN','OUT','DEVICE_STATUS'))")
     check("pair rows only on opaque AI_INT IN/OUT/DEVICE_STATUS", nbad == 0, str(nbad))
 
+    # ---- hand-verified cross-reference rows (tools/xref_manual.csv): encrypted voter instances reading the temperature
+    xr = conn.execute("""SELECT b.name,p.direction,p.dir_source,p.conn_kind,p.origin,v.full_name FROM pin p JOIN block b ON b.id=p.block_id
+                         LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path LIKE 'HRSG_Protection_1/FNCTN_HpOTHeatExOutTemp/NooM_Basic_%'
+                         AND p.name='INL' ORDER BY b.name""").fetchall()
+    check("H11 NooM_Basic_1/2.INL read H11.HpOTHeatExOutNearSideTemp6 (I/T/V, origin xref)",
+          [tuple(r) for r in xr] == [("NooM_Basic_1", "I", "T", "V", "xref", "H11.HpOTHeatExOutNearSideTemp6"),
+                                     ("NooM_Basic_2", "I", "T", "V", "xref", "H11.HpOTHeatExOutNearSideTemp6")], str([tuple(r) for r in xr]))
+    nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='xref' AND (b.is_opaque=0 OR p.dir_source<>'T' OR p.var_id IS NULL)")
+    check("xref rows only on opaque blocks, T, with a variable", nbad == 0, str(nbad))
+    nr = one(conn, """SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.HpOTHeatExOutNearSideTemp6' AND p.direction<>'O'""")
+    check("H11.HpOTHeatExOutNearSideTemp6 has 9 reader pins (7 plaintext + 2 xref)", nr == 9, str(nr))
+
     # ---- pin mirrors (published value of an already-wired pin)
     nm = one(conn, "SELECT count(*) FROM pin_mirror")
     check("pin_mirror rows >= 25000", (nm or 0) >= 25000, str(nm))

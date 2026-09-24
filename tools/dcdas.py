@@ -9,7 +9,7 @@
   py tools/dcdas.py block <CTRL> <path>      | task <CTRL> <program> <task>
   py tools/dcdas.py io <tag|var|module>      | egd <var|ctrl> | screen <cim|var> | alarm <pattern>
   py tools/dcdas.py where <CTRL.NAME | CTRL block-path>
-  py tools/dcdas.py lint | coverage | audit-type <BLOCK_TYPE> | pindir-import | export-web <docs_dir>
+  py tools/dcdas.py lint | coverage | audit-type <BLOCK_TYPE> | pindir-import | xref-paste <txt> --ctrl X | export-web <docs_dir>
 All commands accept --json. Output is deliberately compact (one fact per line) for Claude.
 """
 import argparse
@@ -126,6 +126,7 @@ def cmd_build(a):
         direction.run(conn, HERE, log)
         log("[opaque]")
         resolve.recover_opaque_pins(conn, [c.name for c in ctrls], log)
+        resolve.load_xref(conn, HERE, [c.name for c in ctrls], log)
         resolve.refresh_mirror_kinds(conn, log)
         log("[fts]")
         resolve.rebuild_fts(conn, log)
@@ -253,6 +254,12 @@ def cmd_pindir_import(a):
     parse_manual.run(HERE, a.pdf, log)
 
 
+def cmd_xref_paste(a):
+    from dcdas import resolve
+    conn = dbm.open_ro()
+    resolve.xref_paste(conn, HERE, a.txt, a.ctrl, date=a.date, dry_run=a.dry_run, log=log)
+
+
 def cmd_export_web(a):
     from dcdas import export_web
     conn = dbm.open_ro()
@@ -294,6 +301,8 @@ def main(argv=None):
     p = add("coverage", cmd_coverage); p.add_argument("--limit", type=int, default=40)
     p = add("audit-type", cmd_audit_type, help="per-pin audit of one block type"); p.add_argument("block_type"); p.add_argument("--ctrl"); p.add_argument("--limit", type=int, default=200)
     p = add("pindir-import", cmd_pindir_import); p.add_argument("--pdf", nargs="*", help="manual PDFs (default: known set)")
+    p = add("xref-paste", cmd_xref_paste, help="pasted Where-Used tree -> tools/xref_manual.csv rows (encrypted blocks only)")
+    p.add_argument("txt"); p.add_argument("--ctrl", required=True); p.add_argument("--date"); p.add_argument("--dry-run", action="store_true")
     p = add("export-web", cmd_export_web); p.add_argument("docs", nargs="?", default=str(HERE.parent / "docs"))
     p.add_argument("--key-file", help="file holding the site passphrase (default: web_key_file in the local config)")
     p.add_argument("--no-encrypt", action="store_true", help="plain JSON export (local testing only; never publish)")

@@ -260,9 +260,9 @@ def main(docs):
         key = f"{b[0]}|{b[1]}"
         ent = task_entry(tkey_of(b[0], b[1]))
         blkj = ent["b"].get(key) if ent else None
-        want = [conn.execute("SELECT count(*) FROM pin WHERE block_id=? AND origin=?", (bid, o)).fetchone()[0] for o in ("decl", "link")]
+        want = [conn.execute("SELECT count(*) FROM pin WHERE block_id=? AND origin=?", (bid, o)).fetchone()[0] for o in ("decl", "link", "pair", "xref")]
         got_org = sorted(p[11] for p in (blkj or {}).get("pins", []) if p[11])
-        want_org = sorted({"decl": "d", "link": "l"}[r[0]] for r in conn.execute("SELECT origin FROM pin WHERE block_id=? AND origin IS NOT NULL", (bid,)))
+        want_org = sorted({"decl": "d", "link": "l", "pair": "p", "xref": "x"}[r[0]] for r in conn.execute("SELECT origin FROM pin WHERE block_id=? AND origin IS NOT NULL", (bid,)))
         if blkj is None or not blkj.get("opaque") or blkj.get("rc") != want or got_org != want_org:
             obad += 1
             if obad <= 5:

@@ -564,7 +564,7 @@
         lines.forEach((t, i) => {
           const last = i === lines.length - 1;
           const parts = [{ text: t }];
-          if (last && p.org) parts.push({ text: ORG_TXT, cls: 'org' });
+          if (last && p.org) parts.push({ text: p.org === 'x' ? ' 證' : ORG_TXT, cls: 'org' }); // 人工查證腳為「證」（同寬）
           if (last && d) { if (right) parts.unshift({ text: d + NB2, cls: 'pdesc' }); else parts.push({ text: NB2 + d, cls: 'pdesc' }); }
           parts.forEach((s, j) => { const a = { text: s.text, class: s.cls || null }; if (i && j === 0) { a.x = x; a.dy = PIN_LH; } out.push(D.svg('tspan', a)); });
         });

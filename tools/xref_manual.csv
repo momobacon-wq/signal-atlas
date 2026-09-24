@@ -1,0 +1,8 @@
+ctrl,variable,block_path,pin,direction,note
+# connections verified by hand in the configuration tool's cross-reference (Where Used) that the XML cannot show:
+# pins of a fully encrypted UserBlock instance. Loaded on every build as pin rows with origin='xref' (dir_source 'T').
+# block_path = Program/Task/.../Block exactly as the index prints it; the block must be opaque. direction I = the pin
+# reads the variable, O = writes it. Lines starting with # are ignored. `py tools/dcdas.py xref-paste <txt> --ctrl X`
+# appends rows from a pasted Where-Used tree. No site, unit or vendor names in notes.
+H11,HpOTHeatExOutNearSideTemp6,HRSG_Protection_1/FNCTN_HpOTHeatExOutTemp/NooM_Basic_1,INL,I,tool cross-reference 2026-09-24; inside -> HI_LO_MON_12.IN
+H11,HpOTHeatExOutNearSideTemp6,HRSG_Protection_1/FNCTN_HpOTHeatExOutTemp/NooM_Basic_2,INL,I,tool cross-reference 2026-09-24; inside -> HI_LO_MON_12.IN

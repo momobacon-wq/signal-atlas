@@ -178,7 +178,7 @@ def main():
     nw = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.PRO_HpOTHeatExOutTemp2Hi' AND p.direction='O'")
     check("H11.PRO_HpOTHeatExOutTemp2Hi has exactly 1 writer (the voter OUT)", nw == 1, str(nw))
     nx = one(conn, "SELECT count(*) FROM pin WHERE origin='xref'")
-    check("xref rows = 541 (287 + 254: peer-input task sheets AnalogPeerIOHealth_44..78 + DigitalPeerIOHealth_221/226/227/229..237, hotwell voters _4/_5, condenser pressure voter; H11 + H12)", nx == 541, str(nx))
+    check("xref rows = 567 (541 + 26: sheet P23 AnalogPeerIOHealth_17/18/19 + DigitalPeerIOHealth_106; H11 + H12)", nx == 567, str(nx))
     cp = {r[0]: r[1] for r in conn.execute("""SELECT p.name, p.origin FROM pin p JOIN block b ON b.id=p.block_id
                          WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_Condpress/2oo3_Basic_2'""")}
     check("H11 Condpress 2oo3_Basic_2: IN/BQ verified by the sheet labels (xref), HYST/HI_LIMIT/OUT still vote",

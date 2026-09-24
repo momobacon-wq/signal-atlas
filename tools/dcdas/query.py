@@ -52,6 +52,7 @@ _PIN_SQL = """SELECT p.id, p.name AS pin, p.direction, p.dir_source, p.conn_kind
 ORIGIN_NOTE = {"decl": "(recovered: variable declared at this pin of an opaque macro)",
                "link": "(recovered: sibling L: link into this opaque macro)",
                "pair": "(recovered: paired with the sibling AI_k/FF_AI_k of the same number; outputs by ai_<stem>/<stem>_DS naming + ReferencedIn; inferred)",
+               "vote": "(recovered: 2oo3 voter interface inferred from the FNCTN_<stem> task name and the program's encrypted-only references; one instance confirmed in the tool; inferred)",
                "xref": "(verified in the configuration tool's cross-reference; hand-entered in tools/xref_manual.csv)"}
 
 
@@ -823,7 +824,8 @@ def block(conn, ctrl, path):
                      "alias": p["alias"], "at": _fl(p["file_path"], p["line_no"]), "origin": p["origin"],
                      "desc": (p["description"] or "").split("\n")[0].strip() if p["origin"] else None})
     recovered = {"decl": sum(1 for p in pins if p["origin"] == "decl"), "link": sum(1 for p in pins if p["origin"] == "link"),
-                 "pair": sum(1 for p in pins if p["origin"] == "pair"), "xref": sum(1 for p in pins if p["origin"] == "xref")}
+                 "pair": sum(1 for p in pins if p["origin"] == "pair"), "xref": sum(1 for p in pins if p["origin"] == "xref"),
+                 "vote": sum(1 for p in pins if p["origin"] == "vote")}
     catalogue = []
     if b["is_opaque"] and not pins:
         catalogue = [{"pin": r[0], "usage": r[1]} for r in conn.execute(

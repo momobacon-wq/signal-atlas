@@ -174,13 +174,36 @@ def main():
     nw = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.PRO_HpOTHeatExOutTemp2Hi' AND p.direction='O'")
     check("H11.PRO_HpOTHeatExOutTemp2Hi has exactly 1 writer (the voter OUT)", nw == 1, str(nw))
     nx = one(conn, "SELECT count(*) FROM pin WHERE origin='xref'")
-    check("xref rows = 204 (H11 + H12: 2 voters x 21 + 20 outlet-temp AI_INT x 3 pins)", nx == 204, str(nx))
+    check("xref rows = 221 (204 + 15 H11 2oo3_Basic voter pins + 2 mirrored H12)", nx == 221, str(nx))
     n40 = one(conn, """SELECT count(*) FROM (SELECT b.id FROM pin p JOIN block b ON b.id=p.block_id JOIN variable v ON v.id=p.var_id
                         WHERE b.path LIKE 'HardwireInputs_1/HW_ISC_HEATEX/AI_INT_%' AND v.name LIKE '%HpOTHeatExOut%SideTemp%'
                         GROUP BY b.id HAVING sum(p.origin='xref')=3 AND count(*)=3)""")
     check("40 outlet-temp AI_INT instances (H11 + H12) have exactly 3 pins, all xref", n40 == 40, str(n40))
-    nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='xref' AND (b.is_opaque=0 OR p.dir_source<>'T' OR p.var_id IS NULL)")
-    check("xref rows only on opaque blocks, T, with a variable", nbad == 0, str(nbad))
+    nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='xref' AND (b.is_opaque=0 OR p.dir_source<>'T' OR (p.var_id IS NULL AND p.conn_kind<>'D'))")
+    check("xref rows only on opaque blocks, T, with a variable (or a .FIELD row, conn_kind D)", nbad == 0, str(nbad))
+
+    # ---- 2oo3 voter inference (origin vote) + the one instance confirmed on the tool sheet
+    nv = one(conn, "SELECT count(*) FROM pin WHERE origin='vote'")
+    check("vote rows >= 700 (786 inferred for 109 of 129 opaque 2oo3_Basic voters)", (nv or 0) >= 700, str(nv))
+    nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='vote' AND NOT (b.is_opaque=1 AND b.block_type='2oo3_Basic' AND p.dir_source='R')")
+    check("vote rows only on opaque 2oo3_Basic, dir_source R", nbad == 0, str(nbad))
+    v3 = {r[0]: r[1:] for r in conn.execute("""SELECT p.name, p.direction, p.conn_kind, p.connection, p.origin FROM pin p JOIN block b ON b.id=p.block_id
+                         WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_HpStmTermAttOutPress/2oo3_Basic_3'""")}
+    check("H11 HpStmTermAttOutPress 2oo3_Basic_3: 9 pins all xref, BQB is a .BQ field row (D), OUT -> PRO_HpStmTermAttOutPress2Hi (O)",
+          len(v3) == 9 and all(v[3] == "xref" for v in v3.values()) and v3.get("BQB") == ("I", "D", "ai_HpStmTermAttOutPressB.BQ", "xref")
+          and v3.get("OUT") == ("O", "V", "PRO_HpStmTermAttOutPress2Hi", "xref") and v3.get("HI_LIMIT", ("",))[2:3] == ("k_PRO_HpStmTermAttOutPress_HH_SP",), str(sorted(v3.items()))[:400])
+    v1 = {r[0]: r[1:] for r in conn.execute("""SELECT p.name, p.connection, p.origin FROM pin p JOIN block b ON b.id=p.block_id
+                         WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_HpStmTermAttOutPress/2oo3_Basic_1'""")}
+    check("H11 HpStmTermAttOutPress 2oo3_Basic_1: 7 pins (INB/BQB/HYST xref, INA/INC/BQA/BQC vote), no HI_LIMIT/OUT (3 voters: assignment unknown)",
+          len(v1) == 7 and v1.get("INB") == ("ai_HpStmTermAttOutPressB", "xref") and v1.get("INA") == ("ai_HpStmTermAttOutPressA", "vote")
+          and v1.get("BQC") == ("ai_HpStmTermAttOutPressC.BQ", "vote") and "OUT" not in v1 and "HI_LIMIT" not in v1, str(sorted(v1.items()))[:400])
+    vs = {r[0]: r[1:] for r in conn.execute("""SELECT p.name, p.direction, p.connection, p.origin FROM pin p JOIN block b ON b.id=p.block_id
+                         WHERE b.ctrl='H12' AND b.path='HRSG_Protection_1/FNCTN_HrhBypOutTemp/2oo3_Basic_1'""")}
+    check("H12 HrhBypOutTemp 2oo3_Basic_1 (single voter): 9 vote pins incl. HI_LIMIT <- k_PRO_HrhBypOutTemp_HH_SP, OUT -> PRO_HrhBypOutTemp2Hi",
+          len(vs) == 9 and all(v[2] == "vote" for v in vs.values()) and vs.get("HI_LIMIT") == ("I", "k_PRO_HrhBypOutTemp_HH_SP", "vote")
+          and vs.get("OUT") == ("O", "PRO_HrhBypOutTemp2Hi", "vote") and vs.get("INC") == ("I", "ai_HrhBypOutTempC", "vote"), str(sorted(vs.items()))[:400])
+    nw = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.PRO_HpStmTermAttOutPress2Hi' AND p.direction='O'")
+    check("H11.PRO_HpStmTermAttOutPress2Hi has exactly 1 writer (2oo3_Basic_3.OUT)", nw == 1, str(nw))
     nr = one(conn, """SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.HpOTHeatExOutNearSideTemp6' AND p.direction<>'O'""")
     check("H11.HpOTHeatExOutNearSideTemp6 has 9 reader pins (7 plaintext + 2 xref)", nr == 9, str(nr))
 

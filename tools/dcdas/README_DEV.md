@@ -29,7 +29,12 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
   `origin='pair'` (opaque `AI_INT_<k>` next to `AI_<k>` / `FF_AI_<k>` in the same parent: pin `IN` reads that block's
   device-named output variable; for `AI_<k>` pairs also `OUT`→`ai_<stem>` and `DEVICE_STATUS`→`<stem>_DS` when the
   variable's `ReferencedIn` lists the block's program and nothing visible there references it; naming-pair inference,
-  `dir_source='R'`, ~2,000 rows). `resolve.load_xref` then adds `origin='xref'` rows from `tools/xref_manual.csv`
+  `dir_source='R'`, ~2,000 rows). `resolve.recover_vote_pins` then adds `origin='vote'` rows for opaque `2oo3_Basic`
+  voters in `FNCTN_<stem>` tasks: `INA/B/C` from the program's encrypted-only ('hidden') references named
+  `(ai_)<stem>[_Alt]{A,B,C}[Crctd]`, `BQA/B/C` from `<input>_BQ` or the `.BQ` field (`conn_kind 'D'`), the task's single
+  `HYST` constant, and for single-voter tasks the single `_SP` constant (`HI_LIMIT`) and the single writer-less
+  `PRO_<stem>*Hi|Lo` (`OUT`); one instance was confirmed in the tool, the rest is inference (`dir_source='R'`).
+  `resolve.load_xref` then adds `origin='xref'` rows from `tools/xref_manual.csv`
   (connections the user verified in the configuration tool's Where-Used but the XML cannot show, e.g. pins of a fully
   encrypted voter instance; `dir_source='T'`; opaque blocks only; verified beats inferred). `dcdas.py xref-paste <txt>
   --ctrl X` turns a pasted Where-Used tree into such rows: new pins of opaque blocks, and recovered (decl/link/pair) pins

@@ -253,6 +253,116 @@ def recover_opaque_pins(conn, ctrl_names, log=print):
     return tot
 
 
+_VOTE_TYPES = ("2oo3_Basic",)
+
+
+def _vnorm(s):
+    return s.lower().replace("level", "lvl")
+
+
+def recover_vote_pins(conn, ctrl_names, log=print):
+    """Opaque 2oo3 analog voters ('2oo3_Basic', task 'FNCTN_<stem>'): their interface is fixed (INA/BQA, INB/BQB, INC/BQC,
+    HI_LIMIT, HYST -> OUT; inside INx -> HI_LO_MON_n.IN, BQx -> OR_n.IN3, OR_n -> VOTE_1.INn, M=2) and one instance was
+    confirmed in the configuration tool, so the wiring of every instance is inferred from the task name and the variables
+    the program references only inside encrypted blocks ('hidden': ReferencedIn lists the program, no plaintext pin there):
+      INA/INB/INC  the one hidden variable '(ai_)<stem>(_Alt)<L>(Crctd)(_suffix)' per letter (shared by every voter of the
+                   task, as the tool's Where-Used showed); skipped when a letter has 0 or >1 candidates (e.g. four
+                   transmitter sets in one task).
+      BQA/BQB/BQC  the hidden variable '<input>_BQ' when it exists, else the field '<input>.BQ' (conn_kind 'D', no variable:
+                   the macro always wires the bad-quality field of an ai_ input).
+      HYST         the one hidden 'k_…<stem>…_HYST*' constant (shared by the task's voters).
+      HI_LIMIT     only when the task has ONE voter and ONE hidden 'k_…<stem>…_SP' constant (several voters = several
+                   set-points whose assignment the tool alone can show).
+      OUT          only when the task has ONE voter and ONE variable 'PRO_<stem>[n](Hi|Lo)' with no writer anywhere.
+    Rows get origin='vote', dir_source='R', direction I (OUT: O). Runs after recover_opaque_pins, before load_xref, whose
+    verified rows replace these."""
+    t0 = time.time()
+    tot = {"blocks": 0, "rows": 0, "in": 0, "bq": 0, "bqf": 0, "hyst": 0, "hi": 0, "out": 0, "skip_in": 0, "skip_hi": 0, "skip_out": 0, "notask": 0}
+    next_id = (conn.execute("SELECT coalesce(max(id),0) FROM pin").fetchone()[0] or 0) + 1
+    for ctrl in ctrl_names:
+        blocks = conn.execute(f"""SELECT id, path, line_no, program_id FROM block WHERE ctrl=? AND is_opaque=1
+                                  AND block_type IN ({','.join('?' * len(_VOTE_TYPES))}) ORDER BY path""", (ctrl, *_VOTE_TYPES)).fetchall()
+        if not blocks:
+            continue
+        prog_id = {r[1]: r[0] for r in conn.execute("SELECT id, name FROM program WHERE ctrl=?", (ctrl,))}
+        # hidden variables per program: ReferencedIn lists it, no plaintext pin of the variable in it
+        seen = set(conn.execute("""SELECT DISTINCT p.var_id, b.program_id FROM pin p JOIN block b ON b.id=p.block_id
+                                   WHERE b.ctrl=? AND p.var_id IS NOT NULL AND p.origin IS NULL""", (ctrl,)))
+        writers = {r[0] for r in conn.execute("SELECT DISTINCT var_id FROM pin WHERE direction='O' AND var_id IS NOT NULL AND block_id IN (SELECT id FROM block WHERE ctrl=?)", (ctrl,))}
+        allv = conn.execute("SELECT id, name, referenced_in FROM variable WHERE ctrl=?", (ctrl,)).fetchall()
+        byname = {v[1]: v[0] for v in allv}
+        hidden = {}   # program_id -> [(vid, name, norm)]
+        refs = {}     # program_id -> [(vid, name, norm)] (all variables referenced in the program)
+        for vid, name, refd in allv:
+            for p in (refd or "").split(","):
+                pid = prog_id.get(p)
+                if pid is None:
+                    continue
+                refs.setdefault(pid, []).append((vid, name, _vnorm(name)))
+                if (vid, pid) not in seen:
+                    hidden.setdefault(pid, []).append((vid, name, _vnorm(name)))
+        tasks = {}
+        for bid, path, line_no, pid in blocks:
+            parts = path.split("/")
+            if len(parts) < 3 or not parts[-2].startswith("FNCTN_"):
+                tot["notask"] += 1
+                continue
+            tasks.setdefault((pid, parts[-2]), []).append((bid, path, line_no))
+        ins = []
+        for (pid, task), insts in tasks.items():
+            stem = task[len("FNCTN_"):]
+            nb = _vnorm(stem)
+            hid = [h for h in hidden.get(pid, []) if nb in h[2]]
+            inputs = {}
+            for L in "ABC":
+                cand = [h for h in hid if re.fullmatch(rf"(ai_)?{re.escape(nb)}(_alt)?{L.lower()}(crctd)?(_[a-z0-9]+)?", h[2]) and not h[2].endswith("_bq")]
+                if len(cand) == 1:
+                    inputs[L] = cand[0]
+                else:
+                    tot["skip_in"] += 1
+            hyst = [h for h in hid if re.search(r"_hyst\d*$", h[2])]
+            sps = [h for h in hid if h[2].endswith("_sp")]
+            outs = [r for r in refs.get(pid, []) if re.fullmatch(rf"pro_{re.escape(nb)}\d*(hi|lo)", r[2]) and r[0] not in writers]
+            single = len(insts) == 1
+            if not single or len(sps) != 1:
+                tot["skip_hi"] += 1
+            if not single or len(outs) != 1:
+                tot["skip_out"] += 1
+            for bid, path, line_no in insts:
+                rows = []
+                for L, (vid, name, _) in inputs.items():
+                    rows.append(("IN" + L, "I", "V", name, vid)); tot["in"] += 1
+                    bq = byname.get(name + "_BQ")
+                    if bq is not None and any(h[0] == bq for h in hid):
+                        rows.append(("BQ" + L, "I", "V", name + "_BQ", bq)); tot["bq"] += 1
+                    else:
+                        rows.append(("BQ" + L, "I", "D", name + ".BQ", None)); tot["bqf"] += 1
+                if len(hyst) == 1:
+                    rows.append(("HYST", "I", "V", hyst[0][1], hyst[0][0])); tot["hyst"] += 1
+                if single and len(sps) == 1:
+                    rows.append(("HI_LIMIT", "I", "V", sps[0][1], sps[0][0])); tot["hi"] += 1
+                if single and len(outs) == 1:
+                    rows.append(("OUT", "O", "V", outs[0][1], outs[0][0])); tot["out"] += 1
+                if not rows:
+                    continue
+                have = {r[0] for r in conn.execute("SELECT name FROM pin WHERE block_id=?", (bid,))}
+                for pname, d, ck, connection, vid in rows:
+                    if pname in have:
+                        continue
+                    ins.append((next_id, bid, pname, d, "R", ck, connection, vid, line_no, "vote"))
+                    next_id += 1
+                tot["blocks"] += 1
+        if ins:
+            conn.executemany("""INSERT OR IGNORE INTO pin(id, block_id, name, direction, dir_source, conn_kind, connection, var_id, line_no, origin)
+                                VALUES(?,?,?,?,?,?,?,?,?,?)""", ins)
+            conn.commit()
+            tot["rows"] += len(ins)
+    log(f"  2oo3 voter interface inferred: rows={tot['rows']} blocks={tot['blocks']} (in={tot['in']} bq={tot['bq']}+{tot['bqf']} field hyst={tot['hyst']} "
+        f"hi_limit={tot['hi']} out={tot['out']}; skipped letters={tot['skip_in']} hi_limit={tot['skip_hi']} out={tot['skip_out']} tasks, "
+        f"not in a FNCTN_ task={tot['notask']})  {time.time()-t0:.1f}s")
+    return tot
+
+
 XREF_CSV = "xref_manual.csv"
 XREF_HEADER = ["ctrl", "variable", "block_path", "pin", "direction", "note"]
 
@@ -270,7 +380,9 @@ def load_xref(conn, repo_dir, ctrl_names, log=print):
     XML cannot show (pins of a fully encrypted UserBlock instance, e.g. a 4oo20 voter reading a temperature). Each valid row
     becomes a pin row with origin='xref', dir_source='T' (hand-verified), conn_kind 'V' to the named variable, description =
     note. Rules: the block must exist and be opaque (plaintext blocks take their pins from the XML); a plaintext pin of the
-    same name wins; a recovered decl/link/pair row of the same name is replaced (verified beats inferred). Reloaded on every
+    same name wins; a recovered decl/link/pair/vote row of the same name is replaced (verified beats inferred). A variable
+    written '<var>.<FIELD>' (e.g. 'ai_X.BQ', the bad-quality field the plaintext XML also wires as a field) needs only the
+    base variable to exist and becomes a conn_kind 'D' row without var_id. Reloaded on every
     build (purge_recovered drops every origin row first); rows of controllers outside this build are left alone."""
     from pathlib import Path
     pm = _pm()
@@ -286,13 +398,16 @@ def load_xref(conn, repo_dir, ctrl_names, log=print):
         why = None
         b = conn.execute("SELECT id, is_opaque, line_no FROM block WHERE ctrl=? AND path=?", (ctrl, bpath)).fetchone()
         v = conn.execute("SELECT id FROM variable WHERE ctrl=? AND name=?", (ctrl, var)).fetchone()
+        field = False
+        if not v and "." in var:   # '<var>.<FIELD>' -> field reference (conn_kind 'D'), the base variable must exist
+            field = conn.execute("SELECT 1 FROM variable WHERE ctrl=? AND name=?", (ctrl, var.rsplit(".", 1)[0])).fetchone() is not None
         if d not in ("I", "O"):
             why = f"direction must be I or O, got {d!r}"
         elif not b:
             why = "block not found"
         elif not b[1]:
             why = "block is plaintext; its pins come from the XML"
-        elif not v:
+        elif not v and not field:
             why = "variable not found"
         elif not pin:
             why = "empty pin name"
@@ -310,7 +425,7 @@ def load_xref(conn, repo_dir, ctrl_names, log=print):
             conn.execute("DELETE FROM pin_mirror WHERE pin_id=?", (ex[0],))
             tot["replaced"] += 1
         conn.execute("""INSERT INTO pin(id, block_id, name, direction, dir_source, conn_kind, connection, var_id, description, line_no, origin)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (next_id, b[0], pin, d, "T", "V", var, v[0], note or None, b[2], "xref"))
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (next_id, b[0], pin, d, "T", "D" if field else "V", var, v[0] if v else None, note or None, b[2], "xref"))
         next_id += 1
         tot["loaded"] += 1
     conn.commit()
@@ -326,7 +441,7 @@ def xref_paste(conn, repo_dir, text_path, ctrl, date=None, dry_run=False, log=pr
     the variable ('Program.Task.Var (…)' or 'Var (…)'), every later line 'Program.Task[.Block…].PIN (…)'. A line whose block
     is not in the index is matched on shorter prefixes (the tail is then the path inside the encrypted block, kept in the
     note). Appended: lines on an opaque block whose pin is not indexed yet (direction assumed I, said so in the note) and
-    lines on a recovered pin (origin decl/link/pair): the tool confirms the inference, so a verified row replaces it on
+    lines on a recovered pin (origin decl/link/pair/vote): the tool confirms the inference, so a verified row replaces it on
     the next build (direction kept from the recovered pin). Plaintext and xref pins are reported only. Returns the
     appended rows."""
     from pathlib import Path

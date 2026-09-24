@@ -126,6 +126,7 @@ def cmd_build(a):
         direction.run(conn, HERE, log)
         log("[opaque]")
         resolve.recover_opaque_pins(conn, [c.name for c in ctrls], log)
+        resolve.recover_vote_pins(conn, [c.name for c in ctrls], log)
         resolve.load_xref(conn, HERE, [c.name for c in ctrls], log)
         resolve.refresh_mirror_kinds(conn, log)
         log("[fts]")

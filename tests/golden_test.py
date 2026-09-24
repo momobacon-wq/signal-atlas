@@ -151,13 +151,22 @@ def main():
     nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='pair' AND NOT (b.is_opaque=1 AND b.block_type='AI_INT' AND p.name IN ('IN','OUT','DEVICE_STATUS'))")
     check("pair rows only on opaque AI_INT IN/OUT/DEVICE_STATUS", nbad == 0, str(nbad))
 
-    # ---- hand-verified cross-reference rows (tools/xref_manual.csv): encrypted voter instances reading the temperature
+    # ---- hand-verified cross-reference rows (tools/xref_manual.csv): encrypted 4oo20 voters, 20 inputs + OUT each
     xr = conn.execute("""SELECT b.name,p.direction,p.dir_source,p.conn_kind,p.origin,v.full_name FROM pin p JOIN block b ON b.id=p.block_id
                          LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path LIKE 'HRSG_Protection_1/FNCTN_HpOTHeatExOutTemp/NooM_Basic_%'
                          AND p.name='INL' ORDER BY b.name""").fetchall()
     check("H11 NooM_Basic_1/2.INL read H11.HpOTHeatExOutNearSideTemp6 (I/T/V, origin xref)",
           [tuple(r) for r in xr] == [("NooM_Basic_1", "I", "T", "V", "xref", "H11.HpOTHeatExOutNearSideTemp6"),
                                      ("NooM_Basic_2", "I", "T", "V", "xref", "H11.HpOTHeatExOutNearSideTemp6")], str([tuple(r) for r in xr]))
+    vp = {r[0]: (r[1], r[2]) for r in conn.execute("""SELECT p.name, p.direction, v.name FROM pin p JOIN block b ON b.id=p.block_id
+                         LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_HpOTHeatExOutTemp/NooM_Basic_1' AND p.origin='xref'""")}
+    check("H11 NooM_Basic_1: 21 xref pins, INA=FarSideTemp1, INL=NearSideTemp6, INT=NearSideTemp10, OUT -> PRO_HpOTHeatExOutTemp2Hi (O)",
+          len(vp) == 21 and vp.get("INA") == ("I", "HpOTHeatExOutFarSideTemp1") and vp.get("INL") == ("I", "HpOTHeatExOutNearSideTemp6")
+          and vp.get("INT") == ("I", "HpOTHeatExOutNearSideTemp10") and vp.get("OUT") == ("O", "PRO_HpOTHeatExOutTemp2Hi"), str(sorted(vp.items()))[:300])
+    nw = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.PRO_HpOTHeatExOutTemp2Hi' AND p.direction='O'")
+    check("H11.PRO_HpOTHeatExOutTemp2Hi has exactly 1 writer (the voter OUT)", nw == 1, str(nw))
+    nx = one(conn, "SELECT count(*) FROM pin WHERE origin='xref'")
+    check("xref rows = 84 (H11 + H12, 2 voters x 21)", nx == 84, str(nx))
     nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='xref' AND (b.is_opaque=0 OR p.dir_source<>'T' OR p.var_id IS NULL)")
     check("xref rows only on opaque blocks, T, with a variable", nbad == 0, str(nbad))
     nr = one(conn, """SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.HpOTHeatExOutNearSideTemp6' AND p.direction<>'O'""")

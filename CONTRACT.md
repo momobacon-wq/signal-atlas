@@ -69,6 +69,7 @@ docs/data/                     export-web 的輸出（下）
   "io":[{"ctrl","module","cabinet","board","hw","pos","point","tag","dir","type","lo","hi","kind","screws":[[name,no,cable,wire]]}],
   "egd":{"p":[{"page","ex","voffs"}],"c":[{"ctrl","local","ex","voffs","match","page"}],"src":{"ctrl","var","ex","voffs","match"}},
   "hmi":[[screen, menu_path, source]],"watch":[[ctrl, file]],"drg":[[logic_drg, p_id]],"enc":["Program"],
+  "hid":["Program"],                                                // ReferencedIn 有列、索引在該程式內卻無此訊號任何腳位（含回推腳）→ 引用在加密方塊內；空則省略
   "alm":{"id","cls","def","area","causes","action","conseq","urg"}
 }}}
 ```
@@ -78,7 +79,7 @@ docs/data/                     export-web 的輸出（下）
 `block_path` = `Program/Task/UserBlock/.../Block`（第一段 Program、第二段 Task）；原始檔 = `<ctrl>/_<program>.xml`。
 邏輯圖號（`drg`）取自 block 本身或其所屬 task 的 `LogicDrg`/`P_ID`。HMI 畫面名不分大小寫合併（以選單的拼法為準）。
 前端「來源」判定：`w` 非空 → 邏輯寫入者；否則 `io` 有 `dir:"I"` → 「現場 I/O」；否則 `egd.src` → 「EGD 來自 …」；
-否則 `enc` 非空 → 「可能在加密程式內（不可追蹤）」。`egd.p` 非空而 `egd.c` 空 → 「consumer outside checkout」。
+否則 `enc` 非空 → 「可能在加密程式內（不可追蹤）」；否則 `hid` 非空 → 「可能在加密方塊內」（區段「加密引用」列出程式）。`egd.p` 非空而 `egd.c` 空 → 「consumer outside checkout」。
 
 ## `task/<hhh>.json` — 一個 Task 的全部方塊（key = `CTRL|Program/Task`，shard = sha1(key) 前 3 hex；取代舊的 `block/` 分片）
 

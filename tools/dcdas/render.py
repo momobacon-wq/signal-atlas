@@ -197,6 +197,10 @@ def _show(o, r):
     if r["encrypted"]:
         o.line("ENCRYPTED")
         o.rows(r["encrypted"], lambda p: f"{p}: encrypted program, not traceable")
+    if r.get("hidden_ref"):
+        o.line("HIDDEN-REF")
+        o.rows(r["hidden_ref"], lambda p: f"{p}: ReferencedIn lists this program but no pin of this variable is indexed there "
+                                          f"-> the reference sits inside an encrypted block (once seen in the tool, add it to tools/xref_manual.csv)")
 
 
 def _io_line(p):

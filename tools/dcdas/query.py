@@ -452,10 +452,16 @@ def show(conn, signal, all_rows=False):
             """SELECT DISTINCT t.logic_drg FROM pin p JOIN block b ON b.id=p.block_id JOIN task t ON t.id=b.task_id
                WHERE p.var_id=? AND t.logic_drg IS NOT NULL AND t.logic_drg<>''""", (vid,))})
     refd = [x for x in (v["referenced_in"] or "").split(",") if x]
-    enc = []
+    enc, hidden = [], []
     if refd:
         encset = {r[0] for r in conn.execute("SELECT name FROM program WHERE ctrl=? AND encrypted=1", (v["ctrl"],))}
         enc = [p for p in refd if p in encset]
+        # ReferencedIn lists a (non-encrypted) program but no pin of this variable is indexed there -> the reference can
+        # only sit inside an encrypted block of that program (a candidate for tools/xref_manual.csv)
+        progs = {r[0] for r in conn.execute("SELECT name FROM program WHERE ctrl=?", (v["ctrl"],))}
+        seen = {r[0] for r in conn.execute("""SELECT DISTINCT pr.name FROM pin p JOIN block b ON b.id=p.block_id
+                                              JOIN program pr ON pr.id=b.program_id WHERE p.var_id=?""", (vid,))}
+        hidden = [p for p in refd if p != "EGD" and p in progs and p not in encset and p not in seen]
     # a published pin value: input pin -> source is the pin's wiring; output pin -> the block writes it
     if not writers and mirror and mirror["kind"] == "I" and mirror["src"]:
         w_entries.insert(0, {"ref": mirror["pin"]["ref"], "block_type": mirror["pin"]["block_type"], "dir": mirror["pin"]["dir"],
@@ -484,6 +490,8 @@ def show(conn, signal, all_rows=False):
         source = f"field I/O ({r['ctrl']} {r['module']} {r['board'] or ''} {r['point']} tag {r['device_tag'] or '-'})"
     elif enc:
         source = f"not traceable: referenced only in encrypted program(s) {', '.join(enc)}"
+    elif hidden and not w_entries:
+        source = f"no visible writer; referenced inside encrypted block(s) of program(s) {', '.join(hidden)} (see HIDDEN-REF)"
     elif unknown:
         source = f"unknown: {len(unknown)} pin(s) with direction '?' (see UNKNOWN-DIR)"
     elif v["control_constant"]:
@@ -497,7 +505,7 @@ def show(conn, signal, all_rows=False):
             "readers": r_entries, "readers_total": len(readers),
             "unknown": u_entries, "unknown_total": len(unknown),
             "io": io_rows, "egd": egd, "hmi": hmi, "alarm": alarm, "watch": watch,
-            "drg": [{"logic_drg": a, "p_id": b} for a, b in drg], "encrypted": enc}
+            "drg": [{"logic_drg": a, "p_id": b} for a, b in drg], "encrypted": enc, "hidden_ref": hidden}
 
 
 # -------------------------------------------------------------------------------------------------- trace

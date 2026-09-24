@@ -119,6 +119,9 @@
       } else if (rec.enc && rec.enc.length) {
         note = '可能在加密程式內';
         body.push(D.h('p', { class: 'warn-text' }, '找不到寫入者；此訊號出現在加密程式 ', rec.enc.map((p, i) => D.frag(i ? '、' : null, D.mono(p))), ' 內 — 可能在加密程式內（不可追蹤）。'));
+      } else if (rec.hid && rec.hid.length) {
+        note = '可能在加密方塊內';
+        body.push(D.h('p', { class: 'warn-text' }, '找不到可見的寫入者；此訊號的 ReferencedIn 列了程式 ', rec.hid.map((p, i) => D.frag(i ? '、' : null, D.mono(p))), '，索引在該程式內卻找不到任何腳位 — 引用在加密方塊內（見「加密引用」）。'));
       } else {
         note = '無';
         body.push(D.h('p', { class: 'muted' }, rec.d && rec.d.const ? '常數（沒有寫入者）。' : '找不到寫入者：可能為 HMI/外部寫入、常數，或腳位方向未推斷出來（見「方向未知的腳」）。'));
@@ -223,6 +226,10 @@
       rec.enc && rec.enc.length ? D.section('加密程式', D.frag(
         D.h('p', { class: 'warn-text b', text: '加密 — 無法追蹤：此訊號出現在下列加密程式內，內部邏輯無法索引。' }),
         D.h('div', { class: 'chips wrap' }, rec.enc.map((p) => D.h('a', { href: D.hrefP(ctrl, p), class: 'chip-btn enc', text: p })))), { count: rec.enc.length, cls: 'enc' }) : null,
+      rec.hid && rec.hid.length ? D.section('加密引用', D.frag(
+        D.h('p', { class: 'warn-text b', text: '組態檔的 ReferencedIn 列了下列程式，但索引在程式內找不到這個訊號的任何腳位：引用在加密方塊（不透明巨集）內，看不到是哪個方塊、哪支腳。' }),
+        D.h('p', { class: 'muted small', text: '在組態工具的交互參照（Where Used）看到實際連線後，可登錄於 tools/xref_manual.csv，重建索引即顯示為「查證」腳。' }),
+        D.h('div', { class: 'chips wrap' }, rec.hid.map((p) => D.h('a', { href: D.hrefP(ctrl, p), class: 'chip-btn enc', text: p })))), { count: rec.hid.length, cls: 'enc' }) : null,
     ];
     D.set(view, head, D.h('div', { class: 'secs' }, secs));
   });

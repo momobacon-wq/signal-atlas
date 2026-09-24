@@ -147,6 +147,10 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     cnames = [c["name"] for c in ctrls]
     enc_programs = [(r[0], r[1]) for r in conn.execute("SELECT ctrl,name FROM program WHERE encrypted=1 ORDER BY 1,2")]
     enc_set = set(enc_programs)
+    prog_id = {(r[1], r[2]): r[0] for r in conn.execute("SELECT id, ctrl, name FROM program")}
+    # (var_id, program_id) pairs that have at least one pin (plaintext or recovered): a ReferencedIn program missing here
+    # can only reference the variable inside an encrypted block -> card "hid"
+    var_prog_seen = set(conn.execute("SELECT DISTINCT p.var_id, b.program_id FROM pin p JOIN block b ON b.id=p.block_id WHERE p.var_id IS NOT NULL"))
 
     # ---------------------------------------------------------------- lookups
     prog_by_id = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT id,ctrl,name FROM program")}
@@ -269,6 +273,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
             hi = hi if hi is not None else fhi
         refd = [x for x in (v["referenced_in"] or "").split(",") if x]
         enc = [p for p in refd if (v["ctrl"], p) in enc_set]
+        hid = [p for p in refd if p != "EGD" and (v["ctrl"], p) in prog_id and (v["ctrl"], p) not in enc_set
+               and (vid, prog_id[(v["ctrl"], p)]) not in var_prog_seen]
         flags = 0
         if writers.get(vid): flags |= 1
         if io.get(vid): flags |= 2
@@ -292,6 +298,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
             "hmi": hmi.get(vid, []), "watch": watch.get(vid, []),
             "drg": sorted(drg.get(vid, ())), "enc": enc,
         }
+        if hid:
+            card["hid"] = hid
         if vid in mirror:
             card["d"]["m"] = mirror[vid]
         if wmore.get(vid): card["w_more"] = wmore[vid]

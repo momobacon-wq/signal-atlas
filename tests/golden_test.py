@@ -168,17 +168,17 @@ def main():
                                      ("NooM_Basic_2", "I", "T", "V", "xref", "H11.HpOTHeatExOutNearSideTemp6")], str([tuple(r) for r in xr]))
     vp = {r[0]: (r[1], r[2]) for r in conn.execute("""SELECT p.name, p.direction, v.name FROM pin p JOIN block b ON b.id=p.block_id
                          LEFT JOIN variable v ON v.id=p.var_id WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_HpOTHeatExOutTemp/NooM_Basic_1' AND p.origin='xref'""")}
-    check("H11 NooM_Basic_1: 22 xref pins, INA=FarSideTemp1, INL=NearSideTemp6, INT=NearSideTemp10, HI_LIMIT <- k_PRO_HpOTHeatExOutTemp_HH_SP, OUT -> PRO_HpOTHeatExOutTemp2Hi (O)",
-          len(vp) == 22 and vp.get("INA") == ("I", "HpOTHeatExOutFarSideTemp1") and vp.get("INL") == ("I", "HpOTHeatExOutNearSideTemp6")
+    check("H11 NooM_Basic_1: 23 xref pins (incl. HYST <- k_HpOTHeatExOutTemp_HYST1), INA=FarSideTemp1, INL=NearSideTemp6, INT=NearSideTemp10, HI_LIMIT <- k_PRO_HpOTHeatExOutTemp_HH_SP, OUT -> PRO_HpOTHeatExOutTemp2Hi (O)",
+          len(vp) == 23 and vp.get("INA") == ("I", "HpOTHeatExOutFarSideTemp1") and vp.get("INL") == ("I", "HpOTHeatExOutNearSideTemp6")
           and vp.get("INT") == ("I", "HpOTHeatExOutNearSideTemp10") and vp.get("OUT") == ("O", "PRO_HpOTHeatExOutTemp2Hi")
-          and vp.get("HI_LIMIT") == ("I", "k_PRO_HpOTHeatExOutTemp_HH_SP"), str(sorted(vp.items()))[:300])
+          and vp.get("HI_LIMIT") == ("I", "k_PRO_HpOTHeatExOutTemp_HH_SP") and vp.get("HYST") == ("I", "k_HpOTHeatExOutTemp_HYST1"), str(sorted(vp.items()))[:300])
     hl = one(conn, """SELECT v.name FROM pin p JOIN block b ON b.id=p.block_id JOIN variable v ON v.id=p.var_id
                       WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_HpOTHeatExOutTemp/NooM_Basic_2' AND p.name='HI_LIMIT' AND p.origin='xref'""")
     check("H11 NooM_Basic_2.HI_LIMIT <- k_PRO_HpOTHeatExOutTemp_H_SP (xref)", hl == "k_PRO_HpOTHeatExOutTemp_H_SP", str(hl))
     nw = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.PRO_HpOTHeatExOutTemp2Hi' AND p.direction='O'")
     check("H11.PRO_HpOTHeatExOutTemp2Hi has exactly 1 writer (the voter OUT)", nw == 1, str(nw))
     nx = one(conn, "SELECT count(*) FROM pin WHERE origin='xref'")
-    check("xref rows = 225 (204 + 15 H11 2oo3_Basic voter pins + 2 mirrored H12 + 4 NooM_Basic HI_LIMIT)", nx == 225, str(nx))
+    check("xref rows = 251 (225 + 26: NooM HYST1, HpStmTermAttOutPress HHH/4H HI_LIMIT+OUT, CondHotWellLvl set C10MAG10 -> _3, AnalogPeerIOHealth_67.OUT; H11 + H12)", nx == 251, str(nx))
     n40 = one(conn, """SELECT count(*) FROM (SELECT b.id FROM pin p JOIN block b ON b.id=p.block_id JOIN variable v ON v.id=p.var_id
                         WHERE b.path LIKE 'HardwireInputs_1/HW_ISC_HEATEX/AI_INT_%' AND v.name LIKE '%HpOTHeatExOut%SideTemp%'
                         GROUP BY b.id HAVING sum(p.origin='xref')=3 AND count(*)=3)""")
@@ -198,9 +198,20 @@ def main():
           and v3.get("OUT") == ("O", "V", "PRO_HpStmTermAttOutPress2Hi", "xref") and v3.get("HI_LIMIT", ("",))[2:3] == ("k_PRO_HpStmTermAttOutPress_HH_SP",), str(sorted(v3.items()))[:400])
     v1 = {r[0]: r[1:] for r in conn.execute("""SELECT p.name, p.connection, p.origin FROM pin p JOIN block b ON b.id=p.block_id
                          WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_HpStmTermAttOutPress/2oo3_Basic_1'""")}
-    check("H11 HpStmTermAttOutPress 2oo3_Basic_1: 7 pins (INB/BQB/HYST xref, INA/INC/BQA/BQC vote), no HI_LIMIT/OUT (3 voters: assignment unknown)",
-          len(v1) == 7 and v1.get("INB") == ("ai_HpStmTermAttOutPressB", "xref") and v1.get("INA") == ("ai_HpStmTermAttOutPressA", "vote")
-          and v1.get("BQC") == ("ai_HpStmTermAttOutPressC.BQ", "vote") and "OUT" not in v1 and "HI_LIMIT" not in v1, str(sorted(v1.items()))[:400])
+    check("H11 HpStmTermAttOutPress 2oo3_Basic_1: 9 pins (INB/BQB/HYST xref, INA/INC/BQA/BQC vote, HI_LIMIT <- 4H_SP and OUT -> 4Hi by elimination, xref)",
+          len(v1) == 9 and v1.get("INB") == ("ai_HpStmTermAttOutPressB", "xref") and v1.get("INA") == ("ai_HpStmTermAttOutPressA", "vote")
+          and v1.get("BQC") == ("ai_HpStmTermAttOutPressC.BQ", "vote") and v1.get("OUT") == ("PRO_HpStmTermAttOutPress4Hi", "xref")
+          and v1.get("HI_LIMIT") == ("k_PRO_HpStmTermAttOutPress_4H_SP", "xref"), str(sorted(v1.items()))[:400])
+    v2 = {r[0]: r[1] for r in conn.execute("""SELECT p.name, p.connection FROM pin p JOIN block b ON b.id=p.block_id
+                         WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_HpStmTermAttOutPress/2oo3_Basic_2' AND p.origin='xref' AND p.name IN ('HI_LIMIT','OUT')""")}
+    check("H11 HpStmTermAttOutPress 2oo3_Basic_2: HI_LIMIT <- k_PRO_HpStmTermAttOutPress_HHH_SP (tool), OUT -> PRO_HpStmTermAttOutPress3Hi",
+          v2 == {"HI_LIMIT": "k_PRO_HpStmTermAttOutPress_HHH_SP", "OUT": "PRO_HpStmTermAttOutPress3Hi"}, str(v2))
+    cw = {r[0]: r[1:] for r in conn.execute("""SELECT p.name, p.direction, p.connection FROM pin p JOIN block b ON b.id=p.block_id
+                         WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_CondHotWellLvl/2oo3_Basic_3'""")}
+    check("H11 CondHotWellLvl 2oo3_Basic_3: 6 xref pins, set C10MAG10 (INA confirmed in the tool, INB/INC/BQ inferred)",
+          len(cw) == 6 and cw.get("INA") == ("I", "CondHotWellLvlA_C10MAG10") and cw.get("BQC") == ("I", "CondHotWellLvlC_C10MAG10_BQ"), str(sorted(cw.items()))[:300])
+    nw = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.CondHotWellLvlA_C10MAG10' AND p.direction='O' AND p.origin='xref'")
+    check("H11.CondHotWellLvlA_C10MAG10 written by the opaque AnalogPeerIOHealth_67.OUT (xref; plus its task's Output interface pin)", nw == 1, str(nw))
     vs = {r[0]: r[1:] for r in conn.execute("""SELECT p.name, p.direction, p.connection, p.origin FROM pin p JOIN block b ON b.id=p.block_id
                          WHERE b.ctrl='H12' AND b.path='HRSG_Protection_1/FNCTN_HrhBypOutTemp/2oo3_Basic_1'""")}
     check("H12 HrhBypOutTemp 2oo3_Basic_1 (single voter): 9 vote pins incl. HI_LIMIT <- k_PRO_HrhBypOutTemp_HH_SP, OUT -> PRO_HrhBypOutTemp2Hi",

@@ -1242,6 +1242,60 @@ def where(conn, key):
 
 
 # ------------------------------------------------------------------------------------------- lint/coverage
+def _norm_value(v):
+    """Compare configuration values by meaning: 1 == 1.0, TRUE == True, arrays element-wise."""
+    if v is None:
+        return None
+    parts = [x.strip() for x in str(v).split(",")]
+    out = []
+    for x in parts:
+        if x.lower() in ("true", "false"):
+            out.append(x.lower()); continue
+        try:
+            out.append(repr(float(x)))
+        except ValueError:
+            out.append(x)
+    return ",".join(out)
+
+
+def diff_units(conn, a, b, what="all", limit=200):
+    """What differs between two controllers of the same kind: control constants of the same name (by value) and alarm
+    set-points / delays / hysteresis (the constant wired to the alarm sub-pin, by name and value). Only names present in
+    both are compared; names present in one only are counted."""
+    limit = int(limit or 200)
+    out = {"kind": "diff_units", "a": a, "b": b, "what": what, "constants": [], "alarms": [],
+           "n_constants": 0, "n_constants_compared": 0, "only_a": 0, "only_b": 0, "n_alarms": 0, "n_alarms_compared": 0}
+    for c in (a, b):
+        if not conn.execute("SELECT 1 FROM controller WHERE name=?", (c,)).fetchone():
+            return {"kind": "error", "message": f"unknown controller {c}"}
+    if what in ("constants", "all"):
+        ca = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT name, value, description FROM variable WHERE ctrl=? AND control_constant=1 AND is_program_local=0", (a,))}
+        cb = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT name, value, description FROM variable WHERE ctrl=? AND control_constant=1 AND is_program_local=0", (b,))}
+        out["only_a"], out["only_b"] = len(set(ca) - set(cb)), len(set(cb) - set(ca))
+        diffs = []
+        for n in sorted(set(ca) & set(cb)):
+            out["n_constants_compared"] += 1
+            if _norm_value(ca[n][0]) != _norm_value(cb[n][0]):
+                diffs.append({"name": n, "a": ca[n][0], "b": cb[n][0], "description": ca[n][1] or cb[n][1] or ""})
+        out["n_constants"] = len(diffs)
+        out["constants"] = diffs[:limit]
+    if what in ("alarms", "all"):
+        def subs(ctrl):
+            return {r[0]: (r[1], r[2]) for r in conn.execute("""
+                SELECT v.name, cv.name, cv.value FROM variable v JOIN block b ON b.ctrl=v.ctrl JOIN pin p ON p.block_id=b.id AND p.name=v.name
+                LEFT JOIN variable cv ON cv.id=p.var_id
+                WHERE v.ctrl=? AND v.sub_of IS NOT NULL AND p.lib_name LIKE '{Alarm}.%' AND p.conn_kind='V'""", (ctrl,))}
+        sa, sb = subs(a), subs(b)
+        diffs = []
+        for n in sorted(set(sa) & set(sb)):
+            out["n_alarms_compared"] += 1
+            if sa[n][0] != sb[n][0] or _norm_value(sa[n][1]) != _norm_value(sb[n][1]):
+                diffs.append({"name": n, "a": f"{sa[n][0]} = {sa[n][1]}", "b": f"{sb[n][0]} = {sb[n][1]}"})
+        out["n_alarms"] = len(diffs)
+        out["alarms"] = diffs[:limit]
+    return out
+
+
 MULTI_WRITER_SQL = """SELECT v.id, v.full_name, count(DISTINCT b.id) AS nb, count(DISTINCT b.program_id) AS np,
        count(DISTINCT CASE WHEN b.path LIKE '%SFC_%' OR b.path LIKE '%Perform_Step_Actions%' OR b.path LIKE '%Evaluate_Transitions%' THEN b.id END) AS nsfc
 FROM pin p JOIN variable v ON v.id=p.var_id JOIN block b ON b.id=p.block_id

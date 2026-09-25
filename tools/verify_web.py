@@ -145,6 +145,13 @@ def main(docs):
         except FileNotFoundError:
             n_web = -1
         (ok if n_db == n_web else err)(f"names {c}: db {n_db} web {n_web}")
+        n_sub = conn.execute("SELECT count(*) FROM variable WHERE ctrl=? AND sub_of IS NOT NULL", (c,)).fetchone()[0]
+        try:
+            n_sub_web = sum(1 for r in load(p)["rows"] if r[2] & 256)
+        except FileNotFoundError:
+            n_sub_web = -1
+        if n_sub != n_sub_web:
+            err(f"names {c}: alarm sub-variable flag (256) db {n_sub} web {n_sub_web}")
         mc = next((x for x in man["controllers"] if x["name"] == c), None)
         if not mc or mc["n_vars"] != n_db:
             err(f"manifest n_vars {c} != {n_db}")

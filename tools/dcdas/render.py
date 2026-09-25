@@ -418,6 +418,16 @@ def _lint(o, r):
     o.rows(r["egd_mismatch"], lambda m: f"{m['consumer_ctrl']} {m['local_name']} exch {m['exchange_id']} voffs {m['voffs']} match {m['match_method']}")
 
 
+def _diff_units(o, r):
+    o.head(f"DIFF {r['a']} vs {r['b']}  ({r['what']})")
+    if r["what"] in ("constants", "all"):
+        o.line(f"CONTROL CONSTANTS differing: {r['n_constants']} of {r['n_constants_compared']} compared  (only in {r['a']}: {r['only_a']}, only in {r['b']}: {r['only_b']})")
+        o.rows(r["constants"], lambda d: f"{d['name']:<40s} {r['a']}={_s(d['a']):<14s} {r['b']}={_s(d['b']):<14s} {_cut(d['description'], 60)}")
+    if r["what"] in ("alarms", "all"):
+        o.line(f"ALARM SET-POINTS / DELAYS / HYSTERESIS differing: {r['n_alarms']} of {r['n_alarms_compared']} compared")
+        o.rows(r["alarms"], lambda d: f"{d['name']:<40s} {r['a']}: {d['a']}   {r['b']}: {d['b']}")
+
+
 def _coverage(o, r):
     o.head("COVERAGE")
     o.line("CONTROLLERS (connected = conn_kind V/L/P/D; unknown = direction '?')")
@@ -452,7 +462,7 @@ def _audit(o, r):
 
 _DISPATCH = {
     "show": _show, "trace": _trace, "block": _block, "task": _task, "find": _find, "io": _io,
-    "egd_ctrl": _egd_ctrl, "egd_var": _egd_var, "screen": _screen, "screen_var": _screen_var, "alarm": _alarm,
+    "egd_ctrl": _egd_ctrl, "egd_var": _egd_var, "screen": _screen, "screen_var": _screen_var, "alarm": _alarm, "diff_units": _diff_units,
     "where": _where, "lint": _lint, "coverage": _coverage, "ambiguous": _ambiguous, "notfound": _notfound, "audit": _audit,
 }
 

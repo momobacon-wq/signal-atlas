@@ -44,7 +44,7 @@ docs/data/                     export-web 的輸出（下）
  "shards":{"var":4096,"task":4096,"screen":256},
  "dir_legend":{"U":"介面腳 Usage","T":"手冊表/人工覆寫/工具查證","M":"人工登錄：鏡射或推論（未在工具確認）","C":"常數規則","L":"連線投票","H":"命名慣例","R":"回推（不透明巨集）","?":"未知"},
  "opaque":{"n":5082,"recovered":792}, "lib_iface":{"AI_INT":[["Enable","I"],["IN","I"],["DEVICE_STATUS","O"],["OUT","O"]], …},
- "flags":{"1":"has_writer","2":"has_io","4":"has_egd","8":"has_hmi","16":"has_alarm","32":"const","64":"egd_copy","128":"in_encrypted"},
+ "flags":{"1":"has_writer","2":"has_io","4":"has_egd","8":"has_hmi","16":"has_alarm","32":"const","64":"egd_copy","128":"in_encrypted","256":"alarm_sub"},
  "encrypted_programs":[["S1","TurbineATSMod"]],
  "block_types":[["MOVE",9802]],
  "related":[{"label":"…","href":"…"}],

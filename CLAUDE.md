@@ -15,7 +15,8 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 
 ## 回答「訊號 X 接到哪 / X 的邏輯 / X 的來源與去向 / X 接在哪個端子」時的規則
 
-1. 先跑 `py tools\dcdas.py status`。若印出 STALE，告訴使用者索引過期並問要不要重建（`build` 約 1 分鐘），不要自己重建。
+1. 先跑 `py tools\dcdas.py status`。若印出 STALE，告訴使用者索引過期並問要不要重建（`build` 約 1 分鐘），不要自己重建；
+   若只是 `xref_manual.csv` 變了，`status` 會改建議 `xref-reload`（幾秒，只重載人工登錄列與回推規則）。
 2. 用 `show <CTRL.NAME>`（裸名撞多控制器時 CLI 會列出候選，再用 `CTRL.NAME`）。找不到就 `find <片段>`（走 FTS，含別名、DeviceTag、警報文字）。
 3. 需要上下游多跳才用 `trace <CTRL.NAME> --up N --down N`（預設 `--max-lines 60`；大扇出訊號先看 show）。
 4. 端子 / EGD / 畫面 / 警報：`io <tag|var|module>`、`egd <var|ctrl> [--page X]`、`screen <cim|var>`、`alarm <pattern>`。
@@ -25,7 +26,7 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
    `https://momobacon-wq.github.io/signal-atlas/#/v/<CTRL.NAME>`；要看圖時附 Task 圖 `#/d/<CTRL>/<Program>/<Task>?sel=<CTRL.NAME>`
    或訊號圖 `#/g/<CTRL.NAME>?up=2&down=2`（`show` 的 WRITERS 行 `CTRL/Program/Task/…` 的前三段就是 Task 圖路徑）。
 7. 誠實標示不確定：
-   - 方向是推斷值。CLI 印 `O/T` 這種「方向/來源」字母：U=介面腳 Usage、T=手冊表或人工覆寫、C=常數規則、L=連線投票、H=命名慣例、`?`=未知。來源是 L/H 時在回答裡寫「推斷」。
+   - 方向是推斷值。CLI 印 `O/T` 這種「方向/來源」字母：U=介面腳 Usage、T=手冊表、人工覆寫或工具查證、M=人工登錄但只是鏡射／推論、C=常數規則、L=連線投票、H=命名慣例、R=回推（不透明巨集）、`?`=未知。來源是 L/H/R/M 時在回答裡寫「推斷」。
    - **加密 ≠ 未使用**。來源 XML 內加密的程式與巨集無法追蹤；CLI 印 `encrypted: not traceable`，照實轉述，不要編邏輯。
    - CLI 印 `consumer outside checkout` 時照實說去向在 checkout 外。
    - 索引是 checkout 快照（`status` 顯示各控制器 MinorRev），不是現場控制器的即時狀態。

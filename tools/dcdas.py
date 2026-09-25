@@ -135,6 +135,9 @@ def cmd_build(a):
 
     dbm.set_meta(conn, "source_root", str(root))
     dbm.set_meta(conn, "built_at", now_iso())
+    if not a.no_post:
+        from dcdas import resolve as _res
+        dbm.set_meta(conn, "csv_sha1", json.dumps(_res.csv_fingerprints(HERE), sort_keys=True))
     dbm.set_meta(conn, "schema_version", dbm.SCHEMA_VERSION)
     tcws = sorted(root.glob("*.tcw"))
     if tcws:
@@ -156,11 +159,47 @@ def cmd_build(a):
 
 
 # ---------------------------------------------------------------------------------------------------- status
+def cmd_xref_reload(a):
+    """Reload the hand-maintained rows without reparsing the checkout: drop every recovered/xref pin, run the recovery
+    rules, load xref_manual.csv, refresh mirror kinds and the I/O vote. Directions of plaintext pins, FTS and the file
+    ledger are untouched (a changed pin_dir_*.csv still needs a full build)."""
+    from dcdas import resolve
+    root = dbm.src_root()
+    names = [c.name for c in inv.controllers(root)]
+    if a.dry_run:
+        conn = dbm.open_ro()
+        bad = resolve.xref_validate(conn, HERE, names, log)
+        if a.json:
+            print(json.dumps({"invalid": bad}, ensure_ascii=False, indent=1))
+        return
+    conn = dbm.open_build(dbm.db_path())
+    t0 = time.time()
+    log("[xref-reload]")
+    resolve.purge_recovered(conn, names, log)
+    resolve.recover_opaque_pins(conn, names, log)
+    resolve.recover_vote_pins(conn, names, log)
+    resolve.load_xref(conn, HERE, names, log)
+    resolve.refresh_mirror_kinds(conn, log)
+    resolve.vote_io_directions(conn, names, log)
+    dbm.set_meta(conn, "csv_sha1", json.dumps(resolve.csv_fingerprints(HERE), sort_keys=True))
+    dbm.set_meta(conn, "xref_reloaded_at", now_iso())
+    conn.commit()
+    log(f"done in {time.time()-t0:.0f}s (index data unchanged otherwise; run export-web to publish)")
+
+
 def cmd_status(a):
     conn = dbm.open_ro()
     root = dbm.src_root()
     out = {"db": str(dbm.db_path()), "built_at": dbm.get_meta(conn, "built_at"),
            "toolbox_version": dbm.get_meta(conn, "toolbox_version"), "controllers": [], "stale": {}}
+    # hand-maintained CSVs: compare the fingerprints recorded at build / xref-reload with the files now
+    from dcdas import resolve as _res
+    try:
+        rec = json.loads(dbm.get_meta(conn, "csv_sha1") or "{}")
+    except ValueError:
+        rec = {}
+    now = _res.csv_fingerprints(HERE)
+    out["csv_stale"] = {k: (rec.get(k) != v) for k, v in now.items()}
     live = {c.name: c for c in inv.controllers(root)}
     for r in conn.execute("SELECT name,kind,minor_rev,indexed_at FROM controller ORDER BY name"):
         c = live.get(r["name"])
@@ -182,8 +221,14 @@ def cmd_status(a):
     for k in ("new", "changed", "missing"):
         for p in out["stale_examples"][k]:
             print(f"  {k}: {p}")
+    csv_stale = [k for k, v in out["csv_stale"].items() if v]
     if any(out["stale"].values()) or any(c["changed"] for c in out["controllers"]):
         print("STALE: run  py tools/dcdas.py build")
+    elif csv_stale:
+        if csv_stale == ["xref_manual.csv"]:
+            print("STALE (xref_manual.csv changed since the index was built): run  py tools/dcdas.py xref-reload")
+        else:
+            print(f"STALE ({', '.join(csv_stale)} changed since the index was built): run  py tools/dcdas.py build")
     else:
         print("fresh")
 
@@ -239,6 +284,10 @@ def cmd_where(a):
     _q(a, lambda q, c: q.where(c, a.key))
 
 
+def cmd_diff_units(a):
+    _q(a, lambda q, c: q.diff_units(c, a.a, a.b, what=a.what, limit=a.limit))
+
+
 def cmd_lint(a):
     _q(a, lambda q, c: q.lint(c, limit=a.limit))
 
@@ -288,7 +337,11 @@ def main(argv=None):
     p.add_argument("--no-post", action="store_true", help="skip resolve/direction/fts post-processing")
     p.add_argument("--vacuum", action="store_true")
 
-    add("status", cmd_status, help="is the index up to date with the checkout?")
+    add("status", cmd_status, help="is the index up to date with the checkout and the hand-maintained CSVs?")
+    p = add("xref-reload", cmd_xref_reload, help="reload tools/xref_manual.csv + recovery rules without reparsing (seconds, not a minute)")
+    p.add_argument("--dry-run", action="store_true", help="only validate the CSV rows against the index")
+    p = add("diff-units", cmd_diff_units, help="constants / alarm set-points that differ between two controllers of the same kind (e.g. G11 G12)")
+    p.add_argument("a"); p.add_argument("b"); p.add_argument("--what", choices=["constants", "alarms", "all"], default="all"); p.add_argument("--limit", type=int, default=200)
     p = add("find", cmd_find); p.add_argument("pattern"); p.add_argument("--ctrl"); p.add_argument("--kind", default="var"); p.add_argument("--limit", type=int, default=40)
     p = add("show", cmd_show); p.add_argument("signal"); p.add_argument("--all", action="store_true")
     p = add("trace", cmd_trace); p.add_argument("signal"); p.add_argument("--up", type=int, default=0); p.add_argument("--down", type=int, default=0); p.add_argument("--max-lines", type=int, default=60)

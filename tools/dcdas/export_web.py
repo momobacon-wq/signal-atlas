@@ -11,7 +11,7 @@ Layout (all JSON compact, UTF-8, no local absolute paths — the exporter aborts
   io/<CTRL>.json                {ctrl, modules:[{name, id, cabinet, red, boards:[{name, hw, pos, points:[[name, dir, conn, tag, addr, type, lo, hi, screws]]}]}]}
   screen/<hh>.json              {s:{screen: {menu:[...], points:[[full_name, source]]}}}  shard = sha1(screen)[:2]
   alarm/<CTRL>.json             {ctrl, rows:[[name, desc, cls, def, area, urgency]]}
-flags bits in names rows: 1=has_writer 2=has_io 4=has_egd 8=has_hmi 16=has_alarm 32=const 64=egd_copy 128=in_encrypted
+flags bits in names rows: 1=has_writer 2=has_io 4=has_egd 8=has_hmi 16=has_alarm 32=const 64=egd_copy 128=in_encrypted 256=alarm_sub
 has_alarm = alarm_id set, or an alarm sub-variable (sub_of) with an AlarmClass (the .H/.HH/.BQ... flags).
 """
 import base64
@@ -305,6 +305,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         if v["control_constant"]: flags |= 32
         if v["device_name"]: flags |= 64
         if enc: flags |= 128
+        if v["sub_of"]: flags |= 256        # alarm sub-variable: the search page folds it under its parent
         names[v["ctrl"]].append([v["name"], v["description"] or "", flags, v["alias"] or "", v["datatype"] or ""])
         card = {
             "d": {"desc": v["description"], "dt": v["datatype"], "addr": v["address"], "val": v["value"],
@@ -516,7 +517,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         "opaque": {"n": n_opaque, "recovered": n_opaque_rec},
         "lib_iface": dict(lib_iface),
         "flags": {"1": "has_writer", "2": "has_io", "4": "has_egd", "8": "has_hmi", "16": "has_alarm", "32": "const",
-                  "64": "egd_copy", "128": "in_encrypted"},
+                  "64": "egd_copy", "128": "in_encrypted", "256": "alarm_sub"},
         "encrypted_programs": enc_programs,
         "block_types": btypes,
         "related": [],

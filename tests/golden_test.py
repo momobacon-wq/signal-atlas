@@ -178,7 +178,15 @@ def main():
     nw = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.PRO_HpOTHeatExOutTemp2Hi' AND p.direction='O'")
     check("H11.PRO_HpOTHeatExOutTemp2Hi has exactly 1 writer (the voter OUT)", nw == 1, str(nw))
     nx = one(conn, "SELECT count(*) FROM pin WHERE origin='xref'")
-    check("xref rows = 633 (567 + 66: more peer-input sheets, AnalogPeerIOHealth_82/85..90 + 8 digital; H11 + H12 where names match)", nx == 633, str(nx))
+    from dcdas import resolve as _res
+    nexp = _res.xref_row_count(Path(__file__).resolve().parents[1] / "tools", {r[0] for r in conn.execute("SELECT name FROM controller")})
+    check(f"every xref_manual.csv row loaded (rows in CSV = {nexp}, pins with origin xref = {nx})", nx == nexp and nexp >= 633, f"csv {nexp} db {nx}")
+    import json as _json
+    rec = _json.loads(one(conn, "SELECT value FROM meta WHERE key='csv_sha1'") or "{}")
+    check("meta csv_sha1 records the current hand-maintained CSVs (status can detect drift)", rec == _res.csv_fingerprints(Path(__file__).resolve().parents[1] / "tools"), str(rec))
+    from dcdas import query as _qd
+    du = _qd.diff_units(conn, "G11", "G12", what="all", limit=5)
+    check("diff-units G11 G12 compares > 5000 constants and reports differences", du.get("n_constants_compared", 0) > 5000 and du.get("n_constants", 0) >= 1, f"{du.get('n_constants_compared')} compared, {du.get('n_constants')} differ")
     cp = {r[0]: r[1] for r in conn.execute("""SELECT p.name, p.origin FROM pin p JOIN block b ON b.id=p.block_id
                          WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_Condpress/2oo3_Basic_2'""")}
     check("H11 Condpress 2oo3_Basic_2: IN/BQ verified by the sheet labels (xref), HYST/HI_LIMIT/OUT still vote",

@@ -103,6 +103,12 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
 * Trace / signal diagram: a writer or reader that is a task/userblock interface pin is followed only through the inner
   `L:<pin>` pins (`_inner_pins`, web `D.innerPins`); when none is visible the branch ends with "inner driver not
   visible (encrypted block inside the task)" instead of walking every interface pin of the task.
+* CLI maintenance commands: `xref-reload [--dry-run]` re-runs purge_recovered → recover_* → load_xref → refresh_mirror_kinds
+  → vote_io_directions on the existing index (seconds) after editing `tools/xref_manual.csv`; `--dry-run` only validates the
+  rows (`resolve.xref_validate`). `build` and `xref-reload` store `resolve.csv_fingerprints` in meta `csv_sha1`; `status`
+  compares and prints STALE with the right command when a hand-maintained CSV changed. `diff-units A B [--what
+  constants|alarms|all]` lists control constants and alarm set-points/delays/hysteresis that differ between two
+  controllers of the same kind (`query.diff_units`, values compared by meaning).
 * `Variables.xml` `Connection` = declaration site, never the writer. `<AlarmGlobalSubVariable>` rows are parsed like
   `<Variable>` plus `sub_of` (their `Connection` = the sub-pin `Program.Task.<var>.<SUFFIX>`).
 * `DistributedIO.Xml`: `DistributedIO` → `HardwareGroups/...` → `LanModules/LanModule`(Name, ModuleId, GroupName=cabinet,

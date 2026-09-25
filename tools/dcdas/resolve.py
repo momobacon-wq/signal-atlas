@@ -471,6 +471,68 @@ def load_xref(conn, repo_dir, ctrl_names, log=print):
     return tot
 
 
+def csv_fingerprints(repo_dir):
+    """sha1 of the hand-maintained CSVs the index depends on (xref rows, direction overrides / table): stored in meta at
+    build / xref-reload time so `status` can tell when the index no longer reflects them."""
+    import hashlib
+    from pathlib import Path
+    pm = _pm()
+    tools = pm._tools_dir(Path(repo_dir))
+    out = {}
+    for name in (XREF_CSV, pm.OVERRIDE_CSV, pm.TABLE_CSV):
+        p = tools / name
+        out[name] = hashlib.sha1(p.read_bytes()).hexdigest()[:12] if p.exists() else None
+    return out
+
+
+def xref_row_count(repo_dir, ctrl_names):
+    """Data rows of xref_manual.csv for these controllers (the number load_xref is expected to load when every row is valid)."""
+    from pathlib import Path
+    pm = _pm()
+    rows = pm.read_csv(pm._tools_dir(Path(repo_dir)) / XREF_CSV, XREF_HEADER)
+    return sum(1 for r in rows if r["ctrl"] in ctrl_names)
+
+
+def xref_validate(conn, repo_dir, ctrl_names, log=print):
+    """Dry run of load_xref: report every row that would be skipped (block missing / plaintext, variable missing, bad
+    direction, plaintext pin) without touching the index. Returns the list of (ctrl, block_path, pin, why)."""
+    from pathlib import Path
+    pm = _pm()
+    rows = pm.read_csv(pm._tools_dir(Path(repo_dir)) / XREF_CSV, XREF_HEADER)
+    bad, seen, n = [], set(), 0
+    for r in rows:
+        ctrl, var, bpath, pin, d, note, grade = (r[h] for h in XREF_HEADER)
+        if ctrl not in ctrl_names:
+            continue
+        n += 1
+        b = conn.execute("SELECT id, is_opaque FROM block WHERE ctrl=? AND path=?", (ctrl, bpath)).fetchone()
+        v = conn.execute("SELECT 1 FROM variable WHERE ctrl=? AND name=?", (ctrl, var)).fetchone()
+        field = (not v and "." in var and conn.execute("SELECT 1 FROM variable WHERE ctrl=? AND name=?", (ctrl, var.rsplit(".", 1)[0])).fetchone() is not None)
+        why = None
+        if d not in ("I", "O"):
+            why = f"direction {d!r}"
+        elif not b:
+            why = "block not found"
+        elif not b[1]:
+            why = "block is plaintext"
+        elif not v and not field:
+            why = "variable not found"
+        elif not pin:
+            why = "empty pin"
+        elif (ctrl, bpath, pin) in seen:
+            why = "duplicate row"
+        elif conn.execute("SELECT 1 FROM pin WHERE block_id=? AND name=? AND origin IS NULL", (b[0], pin)).fetchone():
+            why = "plaintext pin already indexed"
+        elif grade and grade.strip().lower() not in XREF_GRADES:
+            why = f"unknown grade {grade!r}"
+        seen.add((ctrl, bpath, pin))
+        if why:
+            bad.append((ctrl, bpath, pin, why))
+            log(f"  xref INVALID {ctrl} {bpath}.{pin}: {why}")
+    log(f"  xref validate: {n} rows, {len(bad)} invalid")
+    return bad
+
+
 _WU_RE = re.compile(r"^\s*(?P<path>[A-Za-z0-9_.]+)\s*(?:\(.*\))?\s*$")
 
 

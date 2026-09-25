@@ -348,7 +348,7 @@ def _writer_entry(conn, p, names):
 
 
 def _io_rows(conn, var_id=None, where="", args=()):
-    sql = """SELECT p.id, p.ctrl, p.name AS point, p.direction, p.signal_type, p.connection, p.var_id, p.device_tag,
+    sql = """SELECT p.id, p.ctrl, p.name AS point, p.direction, p.dir_source, p.signal_type, p.connection, p.var_id, p.device_tag,
                     p.address, p.input_type, p.low_value, p.high_value, p.line_no,
                     m.name AS module, m.cabinet, m.module_id AS module_no, b.name AS board, b.hw_form, b.position_r
              FROM io_point p LEFT JOIN io_module m ON m.id=p.module_id LEFT JOIN io_board b ON b.id=p.board_id """
@@ -523,7 +523,8 @@ def show(conn, signal, all_rows=False):
         source = f"EGD from {s['producer_full_name']} (exchange {s['exchange_id']} voffs {s['voffs']} match {s['match_method']})"
     elif any(r["direction"] == "I" for r in io_rows):
         r = next(r for r in io_rows if r["direction"] == "I")
-        source = f"field I/O ({r['ctrl']} {r['module']} {r['board'] or ''} {r['point']} tag {r['device_tag'] or '-'})"
+        source = f"field I/O ({r['ctrl']} {r['module']} {r['board'] or ''} {r['point']} tag {r['device_tag'] or '-'})" + \
+                 (" [direction inferred from the logic: readers only]" if r.get("dir_source") == "V" else "")
     elif enc:
         source = f"not traceable: referenced only in encrypted program(s) {', '.join(enc)}"
     elif hidden and not w_entries:
@@ -590,8 +591,9 @@ class _Trace:
         tag = f"{v['full_name']} [{v['datatype'] or '?'}]"
         if head is not None:
             tag = f"{head} {tag}"
-        if len(writers) > 1:
-            tag += f" [multi-writer {len(writers)}]"
+        nblk = sum(1 for p in writers if p["kind"] == "block" or p.get("origin"))   # same rule as lint: ordinary blocks only
+        if nblk > 1:
+            tag += f" [multi-writer {nblk}]"
         if vid in self.seen_var:
             self.emit(d, tag + " (seen)")
             return
@@ -647,6 +649,11 @@ class _Trace:
                     continue
                 if p["is_opaque"] and not p["origin"]:
                     self.emit(d + 2, "[opaque macro: interface encrypted, no visible pins]")
+                    continue
+                if not p["origin"]:
+                    # a task/macro interface pin with no visible inner 'L:<pin>' driver: the writer sits inside an
+                    # encrypted block of that task; walking every input pin of the task would be a false fan-out
+                    self.emit(d + 2, "[interface pin: inner driver not visible (encrypted block inside the task); not expanded]")
                     continue
             self.up_block(p["block_id"], d + 2, level, up, skip_pin=p["id"])
 
@@ -720,7 +727,7 @@ class _Trace:
         if not v:
             return
         readers = _var_pins(conn, v, ("I", "S"))
-        writers_n = len(_var_pins(conn, v, ("O",)))
+        writers_n = sum(1 for p in _var_pins(conn, v, ("O",)) if p["kind"] == "block" or p.get("origin"))
         tag = f"{v['full_name']} [{v['datatype'] or '?'}]"
         if head is not None:
             tag = f"{head} {tag}"
@@ -750,6 +757,9 @@ class _Trace:
                     continue
                 if p["is_opaque"] and not p["origin"]:
                     self.emit(d + 2, "[opaque macro: interface encrypted, no visible pins]")
+                    continue
+                if not p["origin"]:
+                    self.emit(d + 2, "[interface pin: inner reader not visible (encrypted block inside the task); not expanded]")
                     continue
             self.down_block(p["block_id"], d + 2, level, down, skip_pin=p["id"])
         for c in _rows(conn, "SELECT consumer_ctrl,producer_ctrl,var_name,exchange_id,voffs,match_method,local_var_id FROM egd_consumed WHERE producer_var_id=?", (vid,)):

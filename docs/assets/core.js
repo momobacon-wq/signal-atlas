@@ -295,6 +295,20 @@
     const t = await D.task(D.taskKeyOf(key), signal);
     return (t && t.b && t.b[key]) || null;
   };
+  /** task／巨集介面腳 (key, pin) 的內部驅動者：同 task 分片內 ck 'P' 且指向該介面腳的腳位；up 取內部輸出腳（寫入者），down 取內部輸入腳（讀取者）。
+   *  空陣列 = 內部驅動者在加密方塊裡；呼叫端應畫成葉節點，不可改走 task 的全部介面腳（那是假的扇出）。 */
+  D.innerPins = async function (key, pin, up, signal) {
+    const t = await D.task(D.taskKeyOf(key), signal);
+    const out = [];
+    if (!t || !t.b) return out;
+    for (const k in t.b) {
+      const b = t.b[k];
+      for (const p of b.pins || []) {
+        if (p[3] === 'P' && p[6] === key && p[7] === pin && (up ? p[1] === 'O' : (p[1] === 'I' || p[1] === 'S'))) out.push({ key: k, blk: b, pin: p[0] });
+      }
+    }
+    return out;
+  };
   /** 延遲載入 assets/<name>（?v= 用 atlas-build 的 data-app）；同名只載一次 */
   const scriptCache = new Map();
   D.loadScript = function (name) {
@@ -414,7 +428,7 @@
   D.orgOf = (p) => (p && p.length > 11 && p[11]) || null;
   D.orgLabel = (org) => (org ? D.ORG_LABEL[org] || org : '明文');
   /** 回推腳位小徽章「推」（人工查證為「證」；class org）；title 說明依據 */
-  D.orgBadge = (org) => D.h('span', { class: 'bd org', text: org === 'x' ? '證' : '推', title: D.ORG_TITLE[org] || '回推' });
+  D.orgBadge = (org) => D.h('span', { class: 'bd org', text: org === 'x' ? '錄' : '推', title: D.ORG_TITLE[org] || '回推' });
   /** 鎖頭（10×11 viewBox；鎖環＋鎖身，只描邊） */
   D.LOCK_D = 'M3 5V3.5a2 2 0 0 1 4 0V5M1.5 5h7v5.5h-7z';
   D.lockIcon = (title) => D.svg('svg', { viewBox: '0 0 10 11', class: 'lock-ico', 'aria-hidden': title ? null : 'true', role: title ? 'img' : null }, title ? D.svg('title', { text: title }) : null, D.svg('path', { d: D.LOCK_D }));

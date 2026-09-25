@@ -567,6 +567,52 @@ def refresh_mirror_kinds(conn, log=print):
     log(f"  pin mirror kinds: I={k.get('I',0)} O={k.get('O',0)} ?={k.get('?',0)}")
 
 
+def vote_io_directions(conn, ctrl_names, log=print):
+    """I/O points still '?' after the name/parameter rules: decide from the logic that uses the linked variable.
+    Only readers (direction I/S pins) and no ordinary-block writer -> the point feeds the logic -> 'I'; only ordinary-block
+    writers and no reader -> the logic drives the point -> 'O'. Both or neither -> stays '?'. Source 'V' (vote) so the
+    `io` listing and the signal card can tell an inferred direction from a named one. Runs after direction.run."""
+    t0 = time.time()
+    tot = {"I": 0, "O": 0}
+    for ctrl in ctrl_names:
+        upd = []
+        for pid, nw, nr in conn.execute("""
+                SELECT i.id,
+                       (SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.var_id=i.var_id AND p.direction='O'
+                          AND (b.kind='block' OR p.origin IS NOT NULL)),
+                       (SELECT count(*) FROM pin p WHERE p.var_id=i.var_id AND p.direction IN ('I','S'))
+                FROM io_point i WHERE i.ctrl=? AND i.direction='?' AND i.var_id IS NOT NULL""", (ctrl,)):
+            if nr and not nw:
+                upd.append(("I", pid)); tot["I"] += 1
+            elif nw and not nr:
+                upd.append(("O", pid)); tot["O"] += 1
+        conn.executemany("UPDATE io_point SET direction=?, dir_source='V' WHERE id=?", upd)
+        conn.commit()
+    log(f"  io direction by logic vote: I={tot['I']} O={tot['O']}  {time.time()-t0:.1f}s")
+    return tot
+
+
+def build_external_nodes(conn, log=print):
+    """Nodes named by the checkout but absent from it: EGD producers the consumers bind to, and the first segment of HMI
+    navigation points that is no indexed controller (a data concentrator, a gateway, a controller not checked out).
+    hmi_point.resolved_via='external' marks their points so 'unresolved' counts only real gaps."""
+    conn.execute("DELETE FROM external_node")
+    conn.execute("""INSERT INTO external_node(name, kind, n)
+                    SELECT producer_ctrl, 'egd_producer', count(*) FROM egd_consumed
+                    WHERE producer_ctrl NOT IN (SELECT name FROM controller) GROUP BY producer_ctrl""")
+    conn.execute("""INSERT OR REPLACE INTO external_node(name, kind, n)
+                    SELECT substr(full_point, 1, instr(full_point, '.')-1), 'hmi_prefix', count(*) FROM hmi_point
+                    WHERE var_id IS NULL AND source='navcsv' AND instr(full_point, '.')>1
+                      AND substr(full_point, 1, instr(full_point, '.')-1) NOT IN (SELECT name FROM controller)
+                    GROUP BY 1 HAVING count(*) >= 5""")
+    cur = conn.execute("""UPDATE hmi_point SET resolved_via='external' WHERE var_id IS NULL AND source='navcsv' AND instr(full_point, '.')>1
+                          AND substr(full_point, 1, instr(full_point, '.')-1) IN (SELECT name FROM external_node WHERE kind='hmi_prefix')""")
+    conn.commit()
+    n = conn.execute("SELECT count(*) FROM external_node").fetchone()[0]
+    log(f"  external nodes: {n} (hmi points marked external: {cur.rowcount})")
+    return n
+
+
 def run(conn, root, ctrls, log=print):
     ctrl_names = [c.name for c in ctrls]
     purge_recovered(conn, ctrl_names, log)
@@ -594,8 +640,9 @@ def run(conn, root, ctrls, log=print):
                AND (v.name=egd_consumed.producer_ctrl||'.'||egd_consumed.var_name
                     OR (v.address=egd_consumed.local_address AND v.device_name=egd_consumed.producer_ctrl)))
           WHERE local_var_id IS NULL AND consumer_ctrl IN ({inlist})""", log, "egd_consumed.local_var_id")
-    _upd(conn, """UPDATE hmi_point SET var_id=(SELECT v.id FROM variable v WHERE v.full_name=hmi_point.full_point)
-          WHERE var_id IS NULL""", log, "hmi_point.var_id")
+    _upd(conn, """UPDATE hmi_point SET var_id=(SELECT v.id FROM variable v WHERE v.full_name=hmi_point.full_point), resolved_via='full'
+          WHERE var_id IS NULL AND EXISTS(SELECT 1 FROM variable v WHERE v.full_name=hmi_point.full_point)""", log, "hmi_point.var_id")
+    build_external_nodes(conn, log)
     _upd(conn, """UPDATE watch SET var_id=(SELECT v.id FROM variable v WHERE v.ctrl=watch.ctrl AND v.name=watch.var_name)
           WHERE var_id IS NULL""", log, "watch.var_id")
 

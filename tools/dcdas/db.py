@@ -12,7 +12,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = "10"
+SCHEMA_VERSION = "11"
 
 
 def local_dir() -> Path:
@@ -136,7 +136,8 @@ CREATE TABLE IF NOT EXISTS io_board(
 CREATE TABLE IF NOT EXISTS io_point(
   id INTEGER PRIMARY KEY, ctrl TEXT, module_id INTEGER, board_id INTEGER, name TEXT,
   direction TEXT CHECK(direction IN ('I','O','?')), signal_type TEXT, connection TEXT, var_id INTEGER,
-  device_tag TEXT, address TEXT, input_type TEXT, low_value REAL, high_value REAL, params_json TEXT, line_no INTEGER);
+  device_tag TEXT, address TEXT, input_type TEXT, low_value REAL, high_value REAL, params_json TEXT, line_no INTEGER,
+  dir_source TEXT CHECK(dir_source IN ('N','P','X','V','-')));
 CREATE INDEX IF NOT EXISTS ix_iop_var ON io_point(var_id);
 CREATE INDEX IF NOT EXISTS ix_iop_tag ON io_point(device_tag);
 CREATE INDEX IF NOT EXISTS ix_iop_mod ON io_point(ctrl, module_id);
@@ -163,7 +164,9 @@ CREATE INDEX IF NOT EXISTS ix_egdc_lvar ON egd_consumed(local_var_id);
 
 CREATE TABLE IF NOT EXISTS hmi_point(
   full_point TEXT, unit_prefix TEXT, screen TEXT, source TEXT CHECK(source IN ('navcsv','display_screen','block_attr')),
-  var_id INTEGER, PRIMARY KEY(full_point, screen, source));
+  var_id INTEGER, resolved_via TEXT, PRIMARY KEY(full_point, screen, source));
+CREATE TABLE IF NOT EXISTS external_node(
+  name TEXT, kind TEXT CHECK(kind IN ('egd_producer','hmi_prefix')), n INTEGER, PRIMARY KEY(name, kind));
 CREATE INDEX IF NOT EXISTS ix_hmi_var ON hmi_point(var_id);
 CREATE INDEX IF NOT EXISTS ix_hmi_screen ON hmi_point(screen);
 CREATE TABLE IF NOT EXISTS hmi_menu(block TEXT, menu TEXT, submenu TEXT, item TEXT, screen TEXT, unit TEXT);

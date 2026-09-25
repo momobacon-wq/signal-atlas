@@ -90,6 +90,19 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
 * Pin direction is NOT in the XML (except `Usage` on interface pins). `direction.py` infers it post-hoc
   (U > T manual table/overrides > C constants > L link votes > H name heuristics > `?`).
 * `block.path` = `Program/Task/UserBlock/…/Block` (task names repeat across programs, so the program is part of the key).
+* I/O point direction (`parse_io.direction_and_source`): terminal-board family rules and generic name prefixes
+  (source `N`, incl. pack/module status words such as `Can<n>_Health`, `PS28vStat`, `IOPackTmpr`, `LINK_OK_`), channel
+  parameters (`P`), a Modbus point's own Direction (`X`); points still `?` are decided after `direction.run` by
+  `resolve.vote_io_directions` from the logic (only readers -> I, only ordinary-block writers -> O, source `V`; both or
+  neither stays `?`). `io` / `show` print `[direction by logic vote]` for `V`.
+* HMI navigation points (`parse_hmi.nav_full_point`): exact full name (`resolved_via` full), unit prefix + name
+  (prefix), `CTRL.<alias>` when the KKS alias is unique in that controller (alias, ~2.2k points); points whose first
+  segment is no indexed controller are marked `external` and the node is listed in `external_node` (also EGD producers
+  the consumers bind to that are not in the checkout). SFC `*_Array` pins of TRANSITION_CONTROL /
+  SFC_CONTROL_INTERFACE / TRANSITION_ACTIVATION_CONTROL are shared state (`S`) via `tools/pin_dir_overrides.csv`.
+* Trace / signal diagram: a writer or reader that is a task/userblock interface pin is followed only through the inner
+  `L:<pin>` pins (`_inner_pins`, web `D.innerPins`); when none is visible the branch ends with "inner driver not
+  visible (encrypted block inside the task)" instead of walking every interface pin of the task.
 * `Variables.xml` `Connection` = declaration site, never the writer. `<AlarmGlobalSubVariable>` rows are parsed like
   `<Variable>` plus `sub_of` (their `Connection` = the sub-pin `Program.Task.<var>.<SUFFIX>`).
 * `DistributedIO.Xml`: `DistributedIO` → `HardwareGroups/...` → `LanModules/LanModule`(Name, ModuleId, GroupName=cabinet,

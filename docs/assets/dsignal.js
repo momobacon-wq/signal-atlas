@@ -231,6 +231,18 @@
       const key = ctrl + '|' + path;
       const blk = await D.block(key, S.signal);
       if (!blk) { leaf(S, up ? inP : outP, dir, '方塊分片缺失 ' + path + '.' + pin, 'warn', D.hrefB(ctrl, path)); continue; }
+      if (ref[7] === 't' && !blk.opaque) { // task／巨集介面腳：只走內部 'L:<pin>' 驅動者，不走 task 的全部腳位
+        const inner = await D.innerPins(key, pin, up, S.signal);
+        if (!inner.length) { leaf(S, up ? inP : outP, dir, '介面腳 ' + (blk.name || '') + '.' + pin + ' — 內部' + (up ? '寫入者' : '讀取者') + '在加密方塊，無法追蹤', 'enc', D.hrefB(ctrl, path)); continue; }
+        for (const x of inner) {
+          const bn2 = blockNode(S, x.key, x.blk);
+          if (!bn2) continue; // 上限
+          const port2 = blockPort(S, bn2, x.pin, up ? 'R' : 'L');
+          if (up) addEdge(S, port2.id, inP, 'V', { varFull: node.varFull, multi, label: '介面腳 ' + pin }); else addEdge(S, outP, port2.id, 'V', { varFull: node.varFull, label: '介面腳 ' + pin });
+          await pinsOf(S, bn2, x.blk, dir, new Set([x.key]), out, null, node.varFull);
+        }
+        continue;
+      }
       const bn = blockNode(S, key, blk);
       if (!bn) continue; // 上限
       const port = blockPort(S, bn, pin, up ? 'R' : 'L');

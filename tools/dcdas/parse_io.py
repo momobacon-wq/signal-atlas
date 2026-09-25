@@ -34,7 +34,7 @@ MODULE_SQL = """INSERT INTO io_module(id,ctrl,name,module_id,cabinet,io_redundan
   library_version,line_no) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"""
 BOARD_SQL = "INSERT INTO io_board(id,module_id,name,hw_form,position_r,barcode,line_no) VALUES(?,?,?,?,?,?,?)"
 POINT_SQL = """INSERT INTO io_point(id,ctrl,module_id,board_id,name,direction,signal_type,connection,var_id,
-  device_tag,address,input_type,low_value,high_value,params_json,line_no) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+  device_tag,address,input_type,low_value,high_value,params_json,line_no,dir_source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
 SCREW_SQL = """INSERT INTO io_screw(point_id,name,number,cable_number,wire_number,interposing_tb,jumpers,note)
   VALUES(?,?,?,?,?,?,?,?)"""
 
@@ -44,6 +44,10 @@ _GENERIC = [
     (re.compile(r"^NotUsed"), "?"),
     (re.compile(r"^(Relay|AnalogOutput|Servo|Output|Solenoid)"), "O"),
     (re.compile(r"^(AnalogInput|Contact|Input|RTD|TC|ThermoCouple|Thermocouple|Pulse|Speed|Vib|VIB|Prox)"), "I"),
+    # pack / module status and health words the controller only ever READS (CAN channel health, power-supply and
+    # dry-contact feedback, capture-buffer and scan status, pack temperature, link/attention bits, mux health)
+    (re.compile(r"^(Can\d+_Health|FreqB|CapBuffer|Scan|DiagTestComplete|PS28vStat|AC_Fdbk|DC_|DryCntStat|IOPackTmpr|"
+                r"LINK_OK_|ATTN_|MuxHealth|SysLimit|L3DIAG|DriverHeatSink)"), "I"),
 ]
 # Terminal-board family rules for names that are ambiguous or board-specific (checked first, only for TB points).
 _FAMILY = {
@@ -66,19 +70,26 @@ _PREFIX_RE = re.compile(r"^[A-Za-z]+")
 
 
 def direction_of(name: str, board: str = None, params: dict = None) -> str:
+    return direction_and_source(name, board, params)[0]
+
+
+def direction_and_source(name: str, board: str = None, params: dict = None):
+    """-> (direction, source): 'N' name/family rule, 'P' channel parameters, '-' undecided ('?'). A later post-step
+    (resolve.vote_io_directions) fills '?' points from the logic: only readers -> I, only ordinary-block writers -> O,
+    source 'V', so an inferred direction is always recognisable."""
     if board and board in _FAMILY:
         for rx, d in _FAMILY[board]:
             if rx.match(name):
-                return d
+                return d, "N"
     for rx, d in _GENERIC:
         if rx.match(name):
-            return d
+            return d, ("N" if d != "?" else "-")
     if params and board:
         if any(k in params for k in _PARAM_O):
-            return "O"
+            return "O", "P"
         if any(k in params for k in _PARAM_I):
-            return "I"
-    return "?"
+            return "I", "P"
+    return "?", "-"
 
 
 def _f(v):
@@ -153,11 +164,12 @@ def _point_row(ctrl, el, kind, mod_id, board_id, board_name, var_idx, pid):
     if kind == "tb":
         m = _PREFIX_RE.match(name)
         signal_type = m.group(0) if m else name
-        direction = direction_of(name, board_name, params)
+        direction, dir_src = direction_and_source(name, board_name, params)
     elif kind == "modbus":
         signal_type = "modbus"
         d = el.get("Direction", "")
         direction = "I" if d == "Read" else "O" if d == "Write" else "?"
+        dir_src = "X" if direction != "?" else "-"        # X = the point's own Direction attribute
         for k in ("Direction", "PointAddress", "RemDataType", "MasterPointDataType", "UpdateRate", "EngMin",
                   "EngMax", "RawMin", "RawMax", "BitNumber"):
             if el.get(k) not in (None, ""):
@@ -165,14 +177,14 @@ def _point_row(ctrl, el, kind, mod_id, board_id, board_name, var_idx, pid):
         low, high = _f(el.get("EngMin")), _f(el.get("EngMax"))
     else:
         signal_type = "internal"
-        direction = direction_of(name)
+        direction, dir_src = direction_and_source(name)
     for k in ("Description", "C2CConnectedVariableDescription"):
         if el.get(k):
             params[k] = el.get(k)
     row = (pid, ctrl, mod_id, board_id, name, direction, signal_type, connection,
            var_idx.get(connection) if connection else None, _nz(el.get("DeviceTag")), _nz(el.get("Address")),
            input_type, low, high, json.dumps(params, ensure_ascii=False, separators=(",", ":")) if params else None,
-           el.sourceline)
+           el.sourceline, dir_src)
     return row, screws
 
 

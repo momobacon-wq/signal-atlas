@@ -129,6 +129,7 @@ def cmd_build(a):
         resolve.recover_vote_pins(conn, [c.name for c in ctrls], log)
         resolve.load_xref(conn, HERE, [c.name for c in ctrls], log)
         resolve.refresh_mirror_kinds(conn, log)
+        resolve.vote_io_directions(conn, [c.name for c in ctrls], log)
         log("[fts]")
         resolve.rebuild_fts(conn, log)
 

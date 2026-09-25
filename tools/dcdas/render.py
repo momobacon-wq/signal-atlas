@@ -218,6 +218,8 @@ def _show(o, r):
 
 def _io_line(p):
     scr = ", ".join(p["screws"]) if p.get("screws") else ""
+    if p.get("dir_source") == "V":
+        scr = (scr + "  " if scr else "") + "[direction by logic vote]"
     rng = ""
     if p.get("low_value") is not None or p.get("high_value") is not None:
         rng = f" range {_s(p.get('low_value'))}..{_s(p.get('high_value'))}"

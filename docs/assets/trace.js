@@ -113,6 +113,18 @@
         const edgeBase = { blockKey: key, block: path.split('/').pop(), btype, from: node.full, refPin: pin, program, path, mirror: mirrorOut ? 'O' : null };
         const blk = await D.block(key, signal);
         if (!blk) { kids.push(Object.assign(leaf('方塊分片缺失 ' + path + '.' + pin, 'warn', D.hrefB(ctrl, path)), { edge: edgeBase })); continue; }
+        if (ref[7] === 't' && !blk.opaque) { // task／巨集介面腳：只走內部 'L:<pin>' 驅動者；沒有就是加密方塊，畫葉節點而不是整個 task 的扇出
+          const inner = await D.innerPins(key, pin, up, signal);
+          if (!inner.length) { kids.push(Object.assign(leaf('介面腳 ' + (blk.name || '') + '.' + pin + ' — 內部' + (up ? '寫入者' : '讀取者') + '在加密方塊，無法追蹤', 'enc', D.hrefB(ctrl, path)), { edge: edgeBase })); continue; }
+          for (const x of inner) {
+            const ipath = x.key.split('|')[1] || '';
+            const eb = Object.assign({}, edgeBase, { blockKey: x.key, block: ipath.split('/').pop(), btype: x.blk.type, path: ipath, refPin: x.pin, via: pin });
+            const sub = await pinsOf(x.blk, new Set([x.key]), eb);
+            if (!sub.length) kids.push(Object.assign(leaf((x.blk.name || '') + ' 沒有連到變數的' + (up ? '輸入' : '輸出') + '腳', 'muted', D.hrefBKey(x.key)), { edge: eb }));
+            kids.push(...sub);
+          }
+          continue;
+        }
         // 不透明方塊：無腳位 → 葉「無法追蹤內部」；有回推腳 → 照常走 pinsOf（邊標鎖頭與介面說明）
         if (blk.opaque) { edgeBase.opaque = D.opaqueInfo(blk).text; if (!(blk.pins || []).length) { kids.push(Object.assign(leaf('不透明 userblock ' + blk.name + ' — 無法追蹤內部', 'enc', D.hrefB(ctrl, path)), { edge: edgeBase })); continue; } }
         const sub = await pinsOf(blk, new Set([key]), edgeBase);

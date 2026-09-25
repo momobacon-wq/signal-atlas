@@ -274,6 +274,26 @@ def main():
     ne = one(conn, "SELECT count(*) FROM egd_produced WHERE var_id IS NULL")
     check("every EGD produced point resolves to a variable (5,308 HMI-page '.H/.BQ' points were unresolved before)", ne == 0, str(ne))
 
+    # ---- batch 2: SFC array pins, I/O direction vote, HMI alias resolution + external nodes, tracer without task fan-out
+    nsfc = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.direction='?' AND b.block_type IN ('TRANSITION_CONTROL','SFC_CONTROL_INTERFACE','TRANSITION_ACTIVATION_CONTROL') AND substr(p.name, -6)='_Array'")
+    check("SFC control blocks: no *_Array pin left with direction '?' (overrides -> S, shared state)", nsfc == 0, str(nsfc))
+    g11u = one(conn, "SELECT 100.0*sum(p.direction='?')/count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.ctrl='G11' AND p.conn_kind IN ('V','L','P','D')")
+    check("G11 connected pins with unknown direction <= 2.5% (3.63% before the SFC overrides)", (g11u or 0) <= 2.5, f"{g11u:.2f}%")
+    iov = {r[0]: r[1] for r in conn.execute("SELECT direction, count(*) FROM io_point WHERE dir_source='V' GROUP BY 1")}
+    check("I/O points decided by the logic vote: I >= 4000, O >= 700 (4666 / 801), source 'V'", iov.get("I", 0) >= 4000 and iov.get("O", 0) >= 700, str(iov))
+    bad = one(conn, "SELECT count(*) FROM io_point WHERE (direction='?' AND dir_source<>'-') OR (direction<>'?' AND dir_source NOT IN ('N','P','X','V'))")
+    check("io_point.dir_source consistent with direction", bad == 0, str(bad))
+    via = {r[0]: r[1] for r in conn.execute("SELECT coalesce(resolved_via,'-'), count(*) FROM hmi_point WHERE source='navcsv' GROUP BY 1")}
+    check("HMI nav points: >= 2000 resolved through a unique KKS alias, >= 500 marked external, <= 1800 unresolved (4376 unresolved before)",
+          via.get("alias", 0) >= 2000 and via.get("external", 0) >= 500 and via.get("-", 0) <= 1800, str(via))
+    ext = {r[0] for r in conn.execute("SELECT name FROM external_node")}
+    check("external nodes include the HMI concentrator and the gateway/AGC producers", {"EMAP1SVR", "GTWY1SVR", "AGC1"} <= ext, str(sorted(ext)))
+    from dcdas import query as _q2
+    tr = _q2.trace(conn, "H11.CondHotWellLvlA_C10MAG10", up=2)
+    txt = chr(10).join(l if isinstance(l, str) else str(l) for l in tr.get("up_lines", []))
+    check("trace up through a task interface pin stops with 'not expanded' instead of fanning out over the whole task",
+          "not expanded" in txt and "AnalogPeerIOHealth_67" in txt and txt.count(chr(10)) < 40, f"{txt.count(chr(10))} lines")
+
     # ---- pin mirrors (published value of an already-wired pin)
     nm = one(conn, "SELECT count(*) FROM pin_mirror")
     check("pin_mirror rows >= 25000", (nm or 0) >= 25000, str(nm))

@@ -22,3 +22,18 @@ LOGIC_BUILDER,{Device}{Type},O,named permissive/force bit (alias of OUT_VAL); EG
 LOGIC_BUILDER_SC,{Device}{Type},O,named permissive/force bit (alias of OUT_VAL); EGD-produced, no other writer
 FF_AO,{Device}{BlockSuffix},O,status bit published to EGD; no other writer
 FF_DO,{Device}{BlockSuffix},O,status bit published to EGD; no other writer
+# --- SFC control blocks: *_Array pins are shared state (direction S), 2026-09-26
+TRANSITION_CONTROL,Steps_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+TRANSITION_CONTROL,Transitions_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+TRANSITION_CONTROL,Transitions_Progression_Status_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+TRANSITION_ACTIVATION_CONTROL,Steps_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+TRANSITION_ACTIVATION_CONTROL,Transitions_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+SFC_CONTROL_INTERFACE,Step_Actions_Of_Interest_Status_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+SFC_CONTROL_INTERFACE,Step_Times_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+SFC_CONTROL_INTERFACE,Steps_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+SFC_CONTROL_INTERFACE,Transition_Forces_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+SFC_CONTROL_INTERFACE,Transition_Holds_Acknowledge_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+SFC_CONTROL_INTERFACE,Transition_Holds_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+SFC_CONTROL_INTERFACE,Transition_Previous_Free_Running_Holds_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+SFC_CONTROL_INTERFACE,Transition_Progression_Status_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+SFC_CONTROL_INTERFACE,Transitions_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo

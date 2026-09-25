@@ -60,13 +60,26 @@ def _clear(el):
 
 
 class FullNameIndex:
-    """variable.full_name -> id, exact first then case-insensitive (~319k entries)."""
+    """variable.full_name -> id, exact first then case-insensitive (~319k entries); plus (ctrl, alias) -> id for aliases
+    (KKS tags) that are unique within their controller (HMI points are often named CTRL.<KKS>)."""
 
     def __init__(self, conn):
         self.exact = {r[0]: r[1] for r in conn.execute("SELECT full_name,id FROM variable")}
         self.lower: Dict[str, int] = {}
         for k, v in self.exact.items():
             self.lower.setdefault(k.lower(), v)
+        seen: Dict[tuple, int] = {}
+        dup = set()
+        for ctrl, alias, vid in conn.execute("SELECT ctrl, alias, id FROM variable WHERE alias IS NOT NULL AND alias<>''"):
+            k = (ctrl, alias.lower())
+            if k in seen:
+                dup.add(k)
+            else:
+                seen[k] = vid
+        self.alias = {k: v for k, v in seen.items() if k not in dup}
+
+    def by_alias(self, ctrl: str, alias: str):
+        return self.alias.get((ctrl, alias.lower()))
 
     def get(self, name: str):
         v = self.exact.get(name)
@@ -77,31 +90,37 @@ class FullNameIndex:
 
 # ------------------------------------------------------------------------------------------- hmi_point (navcsv)
 def nav_full_point(fp: str, up: str, full: FullNameIndex, ctrl_names) -> tuple:
-    """-> (full_point, var_id|None). See module docstring for the prefix rule."""
+    """-> (full_point, var_id|None, resolved_via|None). Steps: exact full name ('full'); unit prefix + name ('prefix');
+    CTRL.<alias> where the alias is unique in that controller ('alias'); else unresolved (resolve.build_external_nodes
+    later marks points of nodes outside the checkout 'external')."""
     vid = full.get(fp)
     if vid is not None:
-        return fp, vid
+        return fp, vid, "full"
     pre = up + fp
     if up:
         vid = full.get(pre)
         if vid is not None:
-            return pre, vid
-    first = fp.split(".", 1)[0]
+            return pre, vid, "prefix"
+    first, _, rest = fp.partition(".")
+    if first in ctrl_names and rest:
+        vid = full.by_alias(first, rest)
+        if vid is not None:
+            return fp, vid, "alias"
     if first in ctrl_names or (up and first == up.split(".", 1)[0]):
-        return fp, None
-    return (pre if up else fp), None
+        return fp, None, None
+    return (pre if up else fp), None, None
 
 
 def parse_nav_csv(conn, root: Path, full: FullNameIndex, ctrl_names, log=print) -> dict:
     p = root / NAV_CSV
-    st = {"csv_rows": 0, "inserted": 0, "resolved": 0, "prefixed": 0, "dup": 0, "bad": 0}
+    st = {"csv_rows": 0, "inserted": 0, "resolved": 0, "prefixed": 0, "dup": 0, "bad": 0, "alias": 0}
     conn.execute("DELETE FROM hmi_point WHERE source='navcsv'")
     if not p.exists():
         log(f"  WARN missing {rel_to_root(p, root)}")
         conn.commit()
         return st
-    b = Batch(conn, "INSERT OR IGNORE INTO hmi_point(full_point,unit_prefix,screen,source,var_id) "
-                    "VALUES(?,?,?,'navcsv',?)")
+    b = Batch(conn, "INSERT OR IGNORE INTO hmi_point(full_point,unit_prefix,screen,source,var_id,resolved_via) "
+                    "VALUES(?,?,?,'navcsv',?,?)")
     seen = set()
     with open(p, encoding="utf-8-sig", newline="") as f:
         for row in csv.reader(f):
@@ -110,17 +129,19 @@ def parse_nav_csv(conn, root: Path, full: FullNameIndex, ctrl_names, log=print) 
                 st["bad"] += 1
                 continue
             fp, up, screen = row[0].strip(), row[1].strip(), row[2].strip()
-            full_point, var_id = nav_full_point(fp, up, full, ctrl_names)
+            full_point, var_id, via = nav_full_point(fp, up, full, ctrl_names)
             if full_point != fp:
                 st["prefixed"] += 1
             if var_id is not None:
                 st["resolved"] += 1
+            if via == "alias":
+                st["alias"] += 1
             key = (full_point, screen)
             if key in seen:
                 st["dup"] += 1
                 continue
             seen.add(key)
-            b.add((full_point, up, screen, var_id))
+            b.add((full_point, up, screen, var_id, via))
     b.flush()
     st["inserted"] = b.n
     conn.commit()
@@ -130,8 +151,8 @@ def parse_nav_csv(conn, root: Path, full: FullNameIndex, ctrl_names, log=print) 
 # ------------------------------------------------------------------------------------ hmi_point (display_screen)
 def display_screen_points(conn) -> int:
     conn.execute("DELETE FROM hmi_point WHERE source='display_screen'")
-    cur = conn.execute("""INSERT OR IGNORE INTO hmi_point(full_point,unit_prefix,screen,source,var_id)
-        SELECT full_name, ctrl||'.', trim(display_screen), 'display_screen', id
+    cur = conn.execute("""INSERT OR IGNORE INTO hmi_point(full_point,unit_prefix,screen,source,var_id,resolved_via)
+        SELECT full_name, ctrl||'.', trim(display_screen), 'display_screen', id, 'full'
           FROM variable WHERE display_screen IS NOT NULL AND trim(display_screen)<>''""")
     conn.commit()
     return cur.rowcount
@@ -336,7 +357,7 @@ def run(conn, root: Path, log=print) -> dict:
     del full
     stats["hmi_point_navcsv"] = st
     log(f"  hmi_point navcsv   {st['inserted']:7d}  (csv {st['csv_rows']}, dup {st['dup']}, bad {st['bad']}, "
-        f"prefixed {st['prefixed']}, var_id {st['resolved']})  {time.time()-t0:5.1f}s")
+        f"prefixed {st['prefixed']}, var_id {st['resolved']} of which by alias {st['alias']})  {time.time()-t0:5.1f}s")
 
     t0 = time.time()
     n = display_screen_points(conn)

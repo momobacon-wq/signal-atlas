@@ -198,7 +198,10 @@ def main(docs):
             err(f"card alarm presence mismatch {full}")
         # writer refs point at real blocks with that pin
         for ref in cw[:3]:
-            ctrl, prog, path, btype, pin, src, line = ref
+            ctrl, prog, path, btype, pin, src, line = ref[:7]
+            if len(ref) > 7 and ref[7] not in ("b", "t"):
+                nbad += 1
+                err(f"card ref kind {full}: {ref[7]!r}")
             n = conn.execute("""SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.ctrl=? AND b.path=? AND p.name=?""",
                              (ctrl, path, pin)).fetchone()[0]
             if n != 1:

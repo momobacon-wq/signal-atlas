@@ -99,7 +99,9 @@
     if (w.length) {
       note = '邏輯寫入者';
       body.push(w.map((r) => D.refRow(r, 'O', { tail: D.h('a', { href: D.hrefD(r[0], r[1], D.taskOf(r[2]), { sel: full }), class: 'lk small', text: '圖', title: '在邏輯方塊圖中高亮此訊號' }) })));
-      if (w.length > 1) body.push(D.h('p', { class: 'warn-text', text: '多個寫入者（' + w.length + '）— 可能是不同 task 交替寫入，或方向推斷有誤。' }));
+      const nb = w.filter((r) => (r[7] || 'b') === 'b').length; // 只算一般方塊（介面腳與內部寫入者是同一條路徑）
+      if (nb > 1) body.push(D.h('p', { class: 'warn-text', text: '多個寫入者（' + nb + ' 個方塊）— 可能是不同 task 交替寫入，或方向推斷有誤。' }));
+      else if (w.length > 1) body.push(D.h('p', { class: 'muted small', text: '其餘為 task／巨集介面腳：與內部寫入者同一條路徑，不算多寫入。' }));
       if (rec.w_more) body.push(D.h('p', { class: 'muted small', text: '另有 ' + D.int(rec.w_more) + ' 筆寫入者未列出（超過 400 筆）。' }));
     } else if (ms) { // 腳位值鏡像：緊接在真正的寫入者之後、I/O／EGD／加密之前
       note = ms.note;

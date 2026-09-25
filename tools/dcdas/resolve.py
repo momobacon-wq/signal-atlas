@@ -272,13 +272,18 @@ def recover_vote_pins(conn, ctrl_names, log=print):
                    references only inside encrypted blocks), else the '<input>.BQ' sub-variable when it exists, else the
                    field '<input>.BQ' as conn_kind 'D' without a variable (the macro always wires the bad-quality flag).
       HYST         the one hidden 'k_…<stem>…_HYST*' constant (shared by the task's voters).
-      HI_LIMIT     only when the task has ONE voter and ONE hidden 'k_…<stem>…_SP' constant (several voters = several
-                   set-points whose assignment the tool alone can show).
-      OUT          only when the task has ONE voter and ONE variable 'PRO_<stem>[n](Hi|Lo)' with no writer anywhere.
+      HI_LIMIT     only when the task has ONE voter and ONE hidden HIGH-side 'k_…<stem>…_(H|HH|HHH|3H|4H)_SP' constant
+                   (several voters = several set-points whose assignment the tool alone can show). A task whose only
+                   set-points are low-side ('_L_SP', '_LL_SP'…) gets neither HI_LIMIT nor OUT: the 2oo3_Basic macro
+                   has no LO_LIMIT pin, and a low set-point on HI_LIMIT was the one wrong wire this rule produced.
+      OUT          only when the task has ONE voter and ONE variable 'PRO_<stem>[n]Hi' with no writer anywhere; when
+                   HI_LIMIT is inferred too, the set-point level (H→Hi, HH→2Hi, HHH/3H→3Hi, 4H→4Hi) must equal the
+                   output's level, otherwise neither pin is inferred.
     Rows get origin='vote', dir_source='R', direction I (OUT: O). Runs after recover_opaque_pins, before load_xref, whose
     verified rows replace these."""
     t0 = time.time()
-    tot = {"blocks": 0, "rows": 0, "in": 0, "bq": 0, "bqf": 0, "hyst": 0, "hi": 0, "out": 0, "skip_in": 0, "skip_hi": 0, "skip_out": 0, "notask": 0}
+    tot = {"blocks": 0, "rows": 0, "in": 0, "bq": 0, "bqf": 0, "hyst": 0, "hi": 0, "out": 0, "skip_in": 0, "skip_hi": 0, "skip_out": 0,
+           "notask": 0, "low_side": 0, "level_mismatch": 0}
     next_id = (conn.execute("SELECT coalesce(max(id),0) FROM pin").fetchone()[0] or 0) + 1
     for ctrl in ctrl_names:
         blocks = conn.execute(f"""SELECT id, path, line_no, program_id FROM block WHERE ctrl=? AND is_opaque=1
@@ -322,13 +327,23 @@ def recover_vote_pins(conn, ctrl_names, log=print):
                 else:
                     tot["skip_in"] += 1
             hyst = [h for h in hid if re.search(r"_hyst\d*$", h[2]) and "." not in h[1]]   # not the '<var>.HYST' sub-variables
-            sps = [h for h in hid if h[2].endswith("_sp") and "." not in h[1]]
-            outs = [r for r in refs.get(pid, []) if re.fullmatch(rf"pro_{re.escape(nb)}\d*(hi|lo)", r[2]) and r[0] not in writers]
+            all_sps = [h for h in hid if h[2].endswith("_sp") and "." not in h[1]]
+            sps = [h for h in all_sps if re.search(r"_(h|hh|hhh|3h|4h)_sp$", h[2])]          # high-side only
+            outs = [r for r in refs.get(pid, []) if re.fullmatch(rf"pro_{re.escape(nb)}\d*hi", r[2]) and r[0] not in writers]
             single = len(insts) == 1
+            low_side = bool(all_sps) and not sps
+            if low_side:
+                tot["low_side"] += 1
+                outs = []
             if not single or len(sps) != 1:
                 tot["skip_hi"] += 1
             if not single or len(outs) != 1:
                 tot["skip_out"] += 1
+            if single and len(sps) == 1 and len(outs) == 1:
+                lvl = {"h": "", "hh": "2", "hhh": "3", "3h": "3", "4h": "4"}[re.search(r"_(h|hh|hhh|3h|4h)_sp$", sps[0][2]).group(1)]
+                if not outs[0][2].endswith(f"{lvl}hi") or (lvl == "" and re.search(r"\dhi$", outs[0][2])):
+                    tot["level_mismatch"] += 1
+                    sps, outs = [], []
             for bid, path, line_no in insts:
                 rows = []
                 for L, (vid, name, _) in inputs.items():
@@ -363,12 +378,27 @@ def recover_vote_pins(conn, ctrl_names, log=print):
             tot["rows"] += len(ins)
     log(f"  2oo3 voter interface inferred: rows={tot['rows']} blocks={tot['blocks']} (in={tot['in']} bq={tot['bq']}+{tot['bqf']} field hyst={tot['hyst']} "
         f"hi_limit={tot['hi']} out={tot['out']}; skipped letters={tot['skip_in']} hi_limit={tot['skip_hi']} out={tot['skip_out']} tasks, "
-        f"not in a FNCTN_ task={tot['notask']})  {time.time()-t0:.1f}s")
+        f"low-side tasks={tot['low_side']}, level mismatch={tot['level_mismatch']}, not in a FNCTN_ task={tot['notask']})  {time.time()-t0:.1f}s")
     return tot
 
 
 XREF_CSV = "xref_manual.csv"
-XREF_HEADER = ["ctrl", "variable", "block_path", "pin", "direction", "note"]
+XREF_HEADER = ["ctrl", "variable", "block_path", "pin", "direction", "note", "grade"]
+XREF_GRADES = ("tool", "mirror", "infer")
+
+
+def xref_grade(note, grade=""):
+    """Evidence grade of a row: the explicit `grade` column, else derived from the note prefix (tool cross-reference /
+    tool logic sheet -> 'tool'; 'mirrored from' -> 'mirror'; 'inferred' -> 'infer'; anything else -> 'infer')."""
+    g = (grade or "").strip().lower()
+    if g in XREF_GRADES:
+        return g
+    n = (note or "").strip().lower()
+    if n.startswith("tool "):
+        return "tool"
+    if n.startswith("mirrored"):
+        return "mirror"
+    return "infer"
 
 
 def _pm():
@@ -382,8 +412,9 @@ def _pm():
 def load_xref(conn, repo_dir, ctrl_names, log=print):
     """tools/xref_manual.csv: connections the user verified in the configuration tool's cross-reference (Where Used) that the
     XML cannot show (pins of a fully encrypted UserBlock instance, e.g. a 4oo20 voter reading a temperature). Each valid row
-    becomes a pin row with origin='xref', dir_source='T' (hand-verified), conn_kind 'V' to the named variable, description =
-    note. Rules: the block must exist and be opaque (plaintext blocks take their pins from the XML); a plaintext pin of the
+    becomes a pin row with origin='xref', conn_kind 'V' to the named variable, description = note, and dir_source by
+    evidence grade (xref_grade): 'T' when the tool itself showed the connection ('tool'), 'M' when the row is mirrored from
+    another controller or inferred from a sibling/pattern ('mirror'/'infer'). Rules: the block must exist and be opaque (plaintext blocks take their pins from the XML); a plaintext pin of the
     same name wins; a recovered decl/link/pair/vote row of the same name is replaced (verified beats inferred). A variable
     written '<var>.<FIELD>' (e.g. 'ai_X.BQ', the bad-quality field the plaintext XML also wires as a field) needs only the
     base variable to exist and becomes a conn_kind 'D' row without var_id. Reloaded on every
@@ -395,10 +426,11 @@ def load_xref(conn, repo_dir, ctrl_names, log=print):
     tot = {"rows": 0, "loaded": 0, "skipped": 0, "replaced": 0}
     next_id = (conn.execute("SELECT coalesce(max(id),0) FROM pin").fetchone()[0] or 0) + 1
     for r in rows:
-        ctrl, var, bpath, pin, d, note = (r[h] for h in XREF_HEADER)
+        ctrl, var, bpath, pin, d, note, grade = (r[h] for h in XREF_HEADER)
         if ctrl not in ctrl_names:
             continue
         tot["rows"] += 1
+        src = "T" if xref_grade(note, grade) == "tool" else "M"
         why = None
         b = conn.execute("SELECT id, is_opaque, line_no FROM block WHERE ctrl=? AND path=?", (ctrl, bpath)).fetchone()
         v = conn.execute("SELECT id FROM variable WHERE ctrl=? AND name=?", (ctrl, var)).fetchone()
@@ -429,11 +461,13 @@ def load_xref(conn, repo_dir, ctrl_names, log=print):
             conn.execute("DELETE FROM pin_mirror WHERE pin_id=?", (ex[0],))
             tot["replaced"] += 1
         conn.execute("""INSERT INTO pin(id, block_id, name, direction, dir_source, conn_kind, connection, var_id, description, line_no, origin)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (next_id, b[0], pin, d, "T", "D" if field else "V", var, v[0] if v else None, note or None, b[2], "xref"))
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (next_id, b[0], pin, d, src, "D" if field else "V", var, v[0] if v else None, note or None, b[2], "xref"))
+        tot[src] = tot.get(src, 0) + 1
         next_id += 1
         tot["loaded"] += 1
     conn.commit()
-    log(f"  xref loaded: {tot['loaded']} of {tot['rows']} rows (skipped {tot['skipped']}, replaced {tot['replaced']}) from {path.name}")
+    log(f"  xref loaded: {tot['loaded']} of {tot['rows']} rows (skipped {tot['skipped']}, replaced {tot['replaced']}; "
+        f"tool-verified T={tot.get('T', 0)}, mirrored/inferred M={tot.get('M', 0)}) from {path.name}")
     return tot
 
 
@@ -504,10 +538,10 @@ def xref_paste(conn, repo_dir, text_path, ctrl, date=None, dry_run=False, log=pr
             if ex[2] and ex[2] != var:
                 note += f"; NOTE recovered row had {ex[2]}"
                 log(f"  ! {b[2]}.{pin}: recovered row reads {ex[2]}, tool says {var} (verified wins)")
-            added.append([ctrl, var, b[2], pin, d, note])
+            added.append([ctrl, var, b[2], pin, d, note, "tool"])
             log(f"  ^ {b[2]}.{pin} <- {var} ({d}, upgrades {ex[0]} -> xref)")
         else:
-            added.append([ctrl, var, b[2], pin, "I", stamp + "; direction assumed I"])
+            added.append([ctrl, var, b[2], pin, "I", stamp + "; direction assumed I", "tool"])
             log(f"  + {b[2]}.{pin} <- {var} (I assumed)")
         have.add(key)
     if added and not dry_run:

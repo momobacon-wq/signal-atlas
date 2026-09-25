@@ -397,7 +397,7 @@
 
   /* ------------------------------------------------------------------ 徽章：方向 / 來源 / 旗標 */
   D.DIR_LABEL = { I: '輸入', O: '輸出', S: '狀態/常數', C: '常數', '?': '方向未知' };
-  D.SRC_LABEL = { U: '介面腳 Usage', T: '手冊表/人工覆寫', C: '常數規則', L: '連線投票', H: '命名慣例', R: '回推', '-': '無' };
+  D.SRC_LABEL = { U: '介面腳 Usage', T: '手冊表/人工覆寫/工具查證', M: '人工登錄：鏡射或推論', C: '常數規則', L: '連線投票', H: '命名慣例', R: '回推', '-': '無' };
   D.dirBadge = function (dir) {
     dir = dir || '?';
     return D.h('span', { class: 'bd dir dir-' + (dir === '?' ? 'q' : dir), text: dir, title: '方向：' + (D.DIR_LABEL[dir] || dir) });
@@ -405,12 +405,12 @@
   D.srcBadge = function (src) {
     src = src || '-';
     const legend = (D.man && D.man.dir_legend && D.man.dir_legend[src]) || D.SRC_LABEL[src] || src;
-    const inferred = src === 'L' || src === 'H' || src === 'R';
+    const inferred = src === 'L' || src === 'H' || src === 'R' || src === 'M';
     return D.h('span', { class: 'bd src src-' + (src === '-' ? 'none' : src) + (inferred ? ' inferred' : ''), text: src, title: '來源：' + legend + (inferred ? '（推斷）' : '') });
   };
   /* ---- 不透明巨集（介面在加密區）：回推腳位 org（tuple 第 12 欄 'd' 宣告／'l' 連線／'p' 同編號配對／'v' 三取二表決推斷／'x' 人工查證／null 明文）、鎖頭圖示、介面說明行、程式庫目錄 */
-  D.ORG_LABEL = { d: '宣告', l: '連線', p: '配對', v: '表決', x: '查證' };
-  D.ORG_TITLE = { d: '由宣告變數回推', l: '由 L: 連線回推', p: '由同層同編號的 AI／FF_AI 方塊配對推斷（IN 讀其輸出；OUT／DEVICE_STATUS 依 ai_<名>／<名>_DS 命名與 ReferencedIn 推斷）', v: '三取二表決巨集推斷：由 FNCTN_<名> task 名與程式內只在加密方塊引用的 (ai_)<名>A／B／C、_BQ／.BQ、k_<名>_HYST、k_PRO_<名>_*_SP、PRO_<名>*Hi 變數推斷（一顆實例經組態工具確認；多顆表決器的設定值／輸出不推斷）', x: '人工查證：組態工具交互參照（Where Used）確認的連線，登錄於 tools/xref_manual.csv' };
+  D.ORG_LABEL = { d: '宣告', l: '連線', p: '配對', v: '表決', x: '登錄' };
+  D.ORG_TITLE = { d: '由宣告變數回推', l: '由 L: 連線回推', p: '由同層同編號的 AI／FF_AI 方塊配對推斷（IN 讀其輸出；OUT／DEVICE_STATUS 依 ai_<名>／<名>_DS 命名與 ReferencedIn 推斷）', v: '三取二表決巨集推斷：由 FNCTN_<名> task 名與程式內只在加密方塊引用的 (ai_)<名>A／B／C、_BQ／.BQ、k_<名>_HYST、k_PRO_<名>_*_SP、PRO_<名>*Hi 變數推斷（一顆實例經組態工具確認；多顆表決器的設定值／輸出不推斷）', x: '人工登錄（tools/xref_manual.csv）：來源字母 T = 組態工具交互參照或邏輯圖確認；M = 從另一台控制器鏡射或依規律推論，未在工具確認' };
   D.orgOf = (p) => (p && p.length > 11 && p[11]) || null;
   D.orgLabel = (org) => (org ? D.ORG_LABEL[org] || org : '明文');
   /** 回推腳位小徽章「推」（人工查證為「證」；class org）；title 說明依據 */

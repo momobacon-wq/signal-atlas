@@ -397,10 +397,15 @@ def _where(o, r):
 
 def _lint(o, r):
     o.head("LINT")
-    o.line(f"MULTI-WRITER variables: {r['n_multi_writer']} (showing {len(r['multi_writer'])})")
-    o.line("  (interface = Usage=Output pins of macros/tasks, usually structural SFC arrays; block = ordinary blocks)")
-    o.rows(r["multi_writer"], lambda m: [f"{m['full_name']}  writers {m['n_writers']} (block {m['n_block_writers']}, interface {m['n_interface_writers']})"] + [f"    {w}" for w in m["writers"]]
+    pt = r.get("multi_writer_patterns", {})
+    o.line(f"MULTI-WRITER variables: {r['n_multi_writer']} (plain {pt.get('plain', 0)}, duplicate {pt.get('duplicate', 0)}, sfc {pt.get('sfc', 0)}; showing {len(r['multi_writer'])})")
+    o.line("  (>= 2 distinct ordinary blocks write it; interface pins and array elements do not count. plain = check these,")
+    o.line("   cross-program first; duplicate = same block type with identical inputs in two places; sfc = SFC scaffolding)")
+    o.rows(r["multi_writer"], lambda m: [f"{m['full_name']}  [{m['pattern']}] block writers {m['n_block_writers']} in {m['n_programs']} program(s), all writer pins {m['n_writers']}"] + [f"    {w}" for w in m["writers"]]
            + ([f"    ... +{m['writers_more']} more writers (show {m['full_name']} --all)"] if m["writers_more"] else []))
+    o.line(f"EGD CONSUMED SIGNATURE != PRODUCER (consumer bound against another exchange layout): {len(r.get('egd_signature', []))}")
+    o.rows(r.get("egd_signature", []), lambda x: [f"{x['consumer_ctrl']} <- {x['producer_ctrl']} exch {x['exchange_id']}  sig {_s(x['c_sig'])}/{_s(x['p_sig'])}  length {_s(x['c_len'])}/{_s(x['p_len'])}  vars off {x['n_off']}"]
+           + [f"    {v['var_name']} voffs {v['voffs']} match {v['match_method']}" for v in x["vars"]])
     o.line(f"LOGIC WRITER + FIELD INPUT on same variable: {r['n_writer_and_io_input']}")
     o.rows(r["writer_and_io_input"], lambda w: f"{w['full_name']}  io {w['ctrl']} {w['point']} tag {_s(w['device_tag'])}  logic writers {w['n_writers']}")
     o.line(f"MULTIPLE FIELD INPUT POINTS on one variable: {r['n_multi_io_input']}")

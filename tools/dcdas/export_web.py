@@ -117,8 +117,10 @@ def task_key(ctrl: str, path: str) -> str:
 
 
 def _ref(r):
-    # [ctrl, program, block_path, block_type, pin, dir_src, line]
-    return [r["ctrl"], r["program"], r["path"], r["block_type"], r["pin"], r["dir_source"] or "-", r["line_no"]]
+    # [ctrl, program, block_path, block_type, pin, dir_src, line, kind]  kind 'b' = ordinary block (or an opaque macro's
+    # recovered/xref pin), 't' = task/userblock interface pin (the same signal path as the inner writer)
+    return [r["ctrl"], r["program"], r["path"], r["block_type"], r["pin"], r["dir_source"] or "-", r["line_no"],
+            "b" if (r["kind"] == "block" or r.get("origin")) else "t"]
 
 
 def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
@@ -153,6 +155,9 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     # can only reference the variable inside an encrypted block -> card "hid"
     var_prog_seen = {(r[0], r[1]) for r in conn.execute(   # plain tuples: sqlite3.Row objects would never match a tuple lookup
         "SELECT DISTINCT p.var_id, b.program_id FROM pin p JOIN block b ON b.id=p.block_id WHERE p.var_id IS NOT NULL")}
+    # a pin publishing the variable (pin_mirror) is a visible use in that program as well
+    var_prog_seen |= {(r[0], r[1]) for r in conn.execute(
+        "SELECT DISTINCT m.var_id, b.program_id FROM pin_mirror m JOIN pin p ON p.id=m.pin_id JOIN block b ON b.id=p.block_id")}
 
     # ---------------------------------------------------------------- lookups
     prog_by_id = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT id,ctrl,name FROM program")}
@@ -188,12 +193,12 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     log("  aggregating pins per variable")
     writers, readers, unknown = defaultdict(list), defaultdict(list), defaultdict(list)
     wmore, rmore = defaultdict(int), defaultdict(int)
-    for r in conn.execute("SELECT var_id,block_id,name,direction,dir_source,line_no FROM pin WHERE var_id IS NOT NULL"):
-        vid, bid, pname, d, ds, ln = r
+    for r in conn.execute("SELECT var_id,block_id,name,direction,dir_source,line_no,origin FROM pin WHERE var_id IS NOT NULL"):
+        vid, bid, pname, d, ds, ln, org = r
         b = blk.get(bid)
         if not b:
             continue
-        ref = [b[0], b[1], b[2], b[3], pname, ds or "-", ln]
+        ref = [b[0], b[1], b[2], b[3], pname, ds or "-", ln, "b" if (b[4] == "block" or org) else "t"]
         if d == "O":
             if len(writers[vid]) < MAX_REFS:
                 writers[vid].append(ref)
@@ -507,7 +512,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         "controllers": [{"name": c["name"], "kind": c["kind"], "redundancy": c["redundancy"],
                          "product_version": c["product_version"], **counts[c["name"]]} for c in ctrls],
         "shards": {"var": 16 ** VAR_SHARDS, "task": 16 ** VAR_SHARDS, "screen": 16 ** SCREEN_SHARDS},
-        "dir_legend": {"U": "介面腳 Usage", "T": "手冊表/人工覆寫", "C": "常數規則", "L": "連線投票", "H": "命名慣例", "R": "回推（不透明巨集）", "?": "未知"},
+        "dir_legend": {"U": "介面腳 Usage", "T": "手冊表/人工覆寫/工具查證", "M": "人工登錄：鏡射或推論（未在工具確認）", "C": "常數規則", "L": "連線投票", "H": "命名慣例", "R": "回推（不透明巨集）", "?": "未知"},
         "opaque": {"n": n_opaque, "recovered": n_opaque_rec},
         "lib_iface": dict(lib_iface),
         "flags": {"1": "has_writer", "2": "has_io", "4": "has_egd", "8": "has_hmi", "16": "has_alarm", "32": "const",

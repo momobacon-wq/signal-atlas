@@ -198,8 +198,14 @@ def main():
                         WHERE b.path LIKE 'HardwireInputs_1/HW_ISC_HEATEX/AI_INT_%' AND v.name LIKE '%HpOTHeatExOut%SideTemp%'
                         GROUP BY b.id HAVING sum(p.origin='xref')=3 AND count(*)=3)""")
     check("40 outlet-temp AI_INT instances (H11 + H12) have exactly 3 pins, all xref", n40 == 40, str(n40))
-    nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='xref' AND (b.is_opaque=0 OR p.dir_source<>'T' OR (p.var_id IS NULL AND p.conn_kind<>'D'))")
-    check("xref rows only on opaque blocks, T, with a variable (or a .FIELD row, conn_kind D)", nbad == 0, str(nbad))
+    nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='xref' AND (b.is_opaque=0 OR p.dir_source NOT IN ('T','M') OR (p.var_id IS NULL AND p.conn_kind<>'D'))")
+    check("xref rows only on opaque blocks, dir_source T (tool) or M (mirror/infer), with a variable (or a .FIELD row, conn_kind D)", nbad == 0, str(nbad))
+    gr = {r[0]: r[1] for r in conn.execute("SELECT dir_source, count(*) FROM pin WHERE origin='xref' GROUP BY 1")}
+    check("xref evidence grades: T (tool-verified) 266, M (mirrored/inferred) 367 - the grade column, never all 'verified'", gr == {"T": 266, "M": 367}, str(gr))
+    hl = one(conn, """SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.path LIKE '%FNCTN_HpOTFdwtrFlw/2oo3_Basic_%' AND p.name IN ('HI_LIMIT','OUT')""")
+    check("low-side voter task HpOTFdwtrFlw (only k_PRO_..._L_SP) gets no HI_LIMIT/OUT (was wrongly bound to the low set-point)", hl == 0, str(hl))
+    nl = sum(1 for r in conn.execute("SELECT connection FROM pin WHERE origin='vote' AND name='HI_LIMIT'") if __import__("re").search(r"_L{1,3}_SP$", r[0] or ""))
+    check("no vote HI_LIMIT bound to a low-side set-point", nl == 0, str(nl))
 
     # ---- 2oo3 voter inference (origin vote) + the one instance confirmed on the tool sheet
     nv = one(conn, "SELECT count(*) FROM pin WHERE origin='vote'")
@@ -302,9 +308,20 @@ def main():
     bad = one(conn, "SELECT count(*) FROM pin WHERE origin IS NOT NULL AND conn_kind IN ('V','L','P','D') AND direction='?'")
     check("recovered pins never '?' inside the connected set", bad == 0, str(bad))
     # same rule as query.lint: a recovered pin of an opaque macro counts as a block writer (interface pin + block = one path)
-    n_multi = one(conn, """SELECT count(*) FROM (SELECT p.var_id, count(*) AS n, sum(b.kind='block' OR p.origin IS NOT NULL) AS nb FROM pin p JOIN block b ON b.id=p.block_id
-                           WHERE p.direction='O' AND p.var_id IS NOT NULL GROUP BY p.var_id HAVING (nb>1 OR (nb=0 AND n>1)))""")
-    check("multi-writer variables <= 2510 (2485 before recovery; 2503 with pairing)", (n_multi or 0) <= 2510, str(n_multi))
+    from dcdas import query as _q
+    n_multi = len(conn.execute(_q.MULTI_WRITER_SQL).fetchall())
+    check("multi-writer variables (>= 2 distinct ordinary blocks, array elements excluded) <= 600 (574: 150 plain, 16 duplicate, 408 sfc)", n_multi <= 600, str(n_multi))
+    lint = _q.lint(conn, limit=3)
+    check("lint lists the cross-program double write G11.HRB_NOx_Corrected first (pattern plain)",
+          lint["multi_writer"] and lint["multi_writer"][0]["full_name"] == "G11.HRB_NOx_Corrected" and lint["multi_writer"][0]["pattern"] == "plain", str([m["full_name"] for m in lint["multi_writer"]]))
+    sig = {(x["consumer_ctrl"], x["producer_ctrl"], x["exchange_id"]): (x["c_sig"], x["p_sig"], x["c_len"], x["p_len"]) for x in lint["egd_signature"]}
+    check("EGD consumed signature != producer: exactly G11<-E11 exch 3 (sig 5/6, len 12/44) and SAMP1<-H11 exch 23 (len 587/592)",
+          sig == {("G11", "E11", 3): (5, 6, 12, 44), ("SAMP1", "H11", 23): (81, 81, 587, 592)}, str(sig))
+    ns = one(conn, "SELECT count(*) FROM egd_consumed WHERE sig_major IS NULL")
+    check("every egd_consumed row carries the consumer's exchange signature", ns == 0, str(ns))
+    hid = _q.show(conn, "BOPE1.C10BBA30QA310RDY3.OUT_VAL")
+    check("hidden-ref: a program where the variable is only a pin mirror is not a hidden reference (BOPE1.C10BBA30QA310RDY3.OUT_VAL)",
+          hid.get("kind") == "show" and hid.get("hidden_ref") == [], str(hid.get("hidden_ref")))
 
     # ---- quality gates
     for c in ("G11", "H11", "WSC1"):

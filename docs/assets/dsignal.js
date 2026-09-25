@@ -188,7 +188,7 @@
     node.isConst = !!(rec.d && rec.d.const);
     node.flag = flagText(rec.d && rec.d.flags) || node.flag;
     let refs = (up ? rec.w : rec.r) || [];
-    const multi = up && refs.length > 1;
+    const multi = up && refs.filter((r) => (r[7] || 'b') === 'b').length > 1; // 只算一般方塊寫入者
     const seen = (vn) => { if (vn && vn.fresh) { vn.fresh = false; out.push(vn); } };
     // 腳位值鏡像（d.m；舊卡片無 → 略）：上游無寫入者時，kind O → 該方塊腳視同寫入者；kind I → 由腳位接線來源接一條「腳位值 <pin>」邊
     const m = up && !refs.length && rec.d && rec.d.m && Array.isArray(rec.d.m.pin) && rec.d.m.pin.length >= 5 ? rec.d.m : null;

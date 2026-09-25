@@ -494,6 +494,9 @@ def show(conn, signal, all_rows=False):
         progs = {r[0] for r in conn.execute("SELECT name FROM program WHERE ctrl=?", (v["ctrl"],))}
         seen = {r[0] for r in conn.execute("""SELECT DISTINCT pr.name FROM pin p JOIN block b ON b.id=p.block_id
                                               JOIN program pr ON pr.id=b.program_id WHERE p.var_id=?""", (vid,))}
+        # a pin that publishes this variable (pin_mirror) is a visible use in that program too, not a hidden one
+        seen |= {r[0] for r in conn.execute("""SELECT DISTINCT pr.name FROM pin_mirror m JOIN pin p ON p.id=m.pin_id
+                                               JOIN block b ON b.id=p.block_id JOIN program pr ON pr.id=b.program_id WHERE m.var_id=?""", (vid,))}
         hidden = [p for p in refd if p != "EGD" and p in progs and p not in encset and p not in seen]
     # a published pin value: input pin -> source is the pin's wiring; output pin -> the block writes it
     if not writers and mirror and mirror["kind"] == "I" and mirror["src"]:
@@ -1229,23 +1232,50 @@ def where(conn, key):
 
 
 # ------------------------------------------------------------------------------------------- lint/coverage
+MULTI_WRITER_SQL = """SELECT v.id, v.full_name, count(DISTINCT b.id) AS nb, count(DISTINCT b.program_id) AS np,
+       count(DISTINCT CASE WHEN b.path LIKE '%SFC_%' OR b.path LIKE '%Perform_Step_Actions%' OR b.path LIKE '%Evaluate_Transitions%' THEN b.id END) AS nsfc
+FROM pin p JOIN variable v ON v.id=p.var_id JOIN block b ON b.id=p.block_id
+WHERE p.direction='O' AND (b.kind='block' OR p.origin IS NOT NULL) AND (p.connection IS NULL OR p.connection NOT LIKE '%[%')
+GROUP BY v.id HAVING nb>1"""
+
+
 def lint(conn, limit=40):
     limit = int(limit or 40)
     multi = []
     # a task/userblock interface pin declared as the variable + the inner block writing it is ONE signal path,
     # so only count ordinary-block writers (or interface writers when there is no block writer); a recovered pin of an
     # opaque macro (origin set) is that macro's own write and counts as a block writer
-    for vid, full, n, nb in conn.execute("""SELECT v.id, v.full_name, count(*) AS n, sum(b.kind='block' OR p.origin IS NOT NULL) AS nb
-                                            FROM pin p JOIN variable v ON v.id=p.var_id JOIN block b ON b.id=p.block_id
-                                            WHERE p.direction='O' GROUP BY v.id HAVING (nb>1 OR (nb=0 AND n>1))
-                                            ORDER BY nb DESC, n DESC, v.full_name LIMIT ?""", (limit,)):
+    # rule (shared with tests/golden_test.py and the web card warning): a variable is multi-written when >= 2 DISTINCT
+    # ordinary blocks (kind 'block', or a recovered/xref pin of an opaque macro = that macro's own write) write it; task and
+    # userblock interface pins are the same signal path as the inner writer and never count; writes to different array
+    # elements ('X[0]', 'X[1]') are not the same variable. Patterns: 'sfc' = every writer sits in SFC scaffolding
+    # (structural, sorted last); 'duplicate' = same block type with identical input wiring in two places (benign copy);
+    # 'plain' = the ones worth checking, cross-program first.
+    cands = conn.execute(MULTI_WRITER_SQL).fetchall()
+    n_multi = len(cands)
+    rows = []
+    for vid, full, nb, np_, nsfc in cands:
+        pattern = "sfc" if nsfc == nb else "plain"
+        if pattern == "plain":
+            sigs = set()
+            for bid, bt in conn.execute("""SELECT DISTINCT b.id, coalesce(b.block_type, b.kind) FROM pin p JOIN block b ON b.id=p.block_id
+                                           WHERE p.var_id=? AND p.direction='O' AND (b.kind='block' OR p.origin IS NOT NULL)
+                                           AND (p.connection IS NULL OR p.connection NOT LIKE '%[%')""", (vid,)):
+                ins = tuple(sorted((r[0], r[1] or "") for r in conn.execute(
+                    "SELECT name, connection FROM pin WHERE block_id=? AND direction<>'O'", (bid,))))
+                sigs.add((bt, ins))
+            if len(sigs) == 1:
+                pattern = "duplicate"
+        rows.append((vid, full, nb, np_, pattern))
+    order = {"plain": 0, "duplicate": 1, "sfc": 2}
+    rows.sort(key=lambda r: (order[r[4]], -r[3], -r[2], r[1]))
+    n_pattern = {k: sum(1 for r in rows if r[4] == k) for k in order}
+    for vid, full, nb, np_, pattern in rows[:limit]:
         ws = _pins_of_var(conn, vid, ("O",))
-        multi.append({"full_name": full, "n_writers": n, "n_block_writers": nb, "n_interface_writers": n - nb,
+        multi.append({"full_name": full, "n_writers": len(ws), "n_block_writers": nb, "n_programs": np_, "pattern": pattern,
                       "writers": [f"{p['ctrl']}/{p['path']}.{p['pin']} [{p['block_type'] or p['kind']}] {_ds(p['direction'], p['dir_source'])} "
                                   f"{_fl(p['file_path'], p['line_no'])}" for p in ws[:3]],
                       "writers_more": max(0, len(ws) - 3)})
-    n_multi = conn.execute("""SELECT count(*) FROM (SELECT p.var_id, count(*) AS n, sum(b.kind='block' OR p.origin IS NOT NULL) AS nb FROM pin p JOIN block b ON b.id=p.block_id
-                              WHERE p.direction='O' AND p.var_id IS NOT NULL GROUP BY p.var_id HAVING (nb>1 OR (nb=0 AND n>1)))""").fetchone()[0]
     # logic writer AND field input on the same variable
     wio = _rows(conn, """SELECT v.full_name, i.ctrl, i.name AS point, i.device_tag,
                                 (SELECT count(*) FROM pin p WHERE p.var_id=v.id AND p.direction='O') AS n_writers
@@ -1269,8 +1299,22 @@ def lint(conn, limit=40):
     mism = _rows(conn, """SELECT consumer_ctrl, producer_ctrl||'.'||var_name AS local_name, exchange_id, voffs, match_method
                           FROM egd_consumed WHERE match_method IN ('name','voffs') ORDER BY consumer_ctrl, exchange_id LIMIT ?""", (limit,))
     n_mism = conn.execute("SELECT count(*) FROM egd_consumed WHERE match_method IN ('name','voffs')").fetchone()[0]
+    # consumed exchange signature (SigMajor / DataLength read from the consumer's ConsumedData) vs the producer's exchange:
+    # a mismatch means the consumer was bound against an older layout and its variable offsets may point at the wrong data
+    sig = _rows(conn, """SELECT c.consumer_ctrl, c.producer_ctrl, c.exchange_id, c.sig_major AS c_sig, x.sig_major AS p_sig,
+                                c.data_length AS c_len, x.data_length AS p_len,
+                                (SELECT count(*) FROM egd_consumed k WHERE k.consumer_ctrl=c.consumer_ctrl AND k.producer_ctrl=c.producer_ctrl
+                                    AND k.exchange_id=c.exchange_id AND k.match_method<>'both') AS n_off
+                         FROM (SELECT DISTINCT consumer_ctrl, producer_ctrl, exchange_id, sig_major, data_length FROM egd_consumed) c
+                         JOIN egd_exchange x ON x.producer_ctrl=c.producer_ctrl AND x.exchange_id=c.exchange_id
+                         WHERE coalesce(c.sig_major,-1)<>coalesce(x.sig_major,-1) OR coalesce(c.data_length,-1)<>coalesce(x.data_length,-1)
+                         ORDER BY c.consumer_ctrl, c.producer_ctrl, c.exchange_id LIMIT ?""", (limit,))
+    for r in sig:
+        r["vars"] = _rows(conn, """SELECT var_name, voffs, match_method FROM egd_consumed WHERE consumer_ctrl=? AND producer_ctrl=? AND exchange_id=?
+                                   AND match_method<>'both' ORDER BY voffs LIMIT 6""", (r["consumer_ctrl"], r["producer_ctrl"], r["exchange_id"]))
     return {"kind": "lint", "limit": limit,
-            "multi_writer": multi, "n_multi_writer": n_multi,
+            "multi_writer": multi, "n_multi_writer": n_multi, "multi_writer_patterns": n_pattern,
+            "egd_signature": sig,
             "writer_and_io_input": wio, "n_writer_and_io_input": n_wio,
             "multi_io_input": mio, "n_multi_io_input": n_mio,
             "multi_egd_produced": megd, "n_multi_egd_produced": n_megd,

@@ -36,7 +36,7 @@ VALUES(?,?,?,?,?,?)"""
 INSERT_PRODUCED = """INSERT OR IGNORE INTO egd_produced(exchange_pk,var_name,dtype,address,voffs,var_id)
 VALUES(?,?,?,?,?,?)"""
 INSERT_CONSUMED = """INSERT INTO egd_consumed(consumer_ctrl,producer_ctrl,exchange_id,page,var_name,voffs,local_address,
-  local_var_id,producer_var_id,match_method) VALUES(?,?,?,?,?,?,?,?,NULL,'none')"""
+  local_var_id,producer_var_id,match_method,sig_major,data_length) VALUES(?,?,?,?,?,?,?,?,NULL,'none',?,?)"""
 
 
 def _i(v):
@@ -132,6 +132,7 @@ def parse_consumed(conn, ctrl: str, path: Path, vidx: dict) -> dict:
     addr_idx = None          # lazy {(address, device_name): id} fallback
     b = Batch(conn, INSERT_CONSUMED, 5000)
     producer, exchange_id, page = None, None, None
+    sig_major = data_length = None      # the consumer's copy of the exchange signature (compared with the producer's in lint)
     for ev, el in etree.iterparse(str(path), events=("start", "end"),
                                   tag=(T_CONSUMER, T_REQPROD, T_CEXCH, T_BVAR), huge_tree=True):
         tag = el.tag
@@ -142,6 +143,7 @@ def parse_consumed(conn, ctrl: str, path: Path, vidx: dict) -> dict:
             elif tag == T_CEXCH:
                 exchange_id = _i(el.get("ExchangeId"))
                 page = el.get("Page")
+                sig_major, data_length = _i(el.get("SigMajor")), _i(el.get("DataLength"))
                 st["exchanges"] += 1
             elif tag == T_CONSUMER:
                 st["consumer_id"] = el.get("ProducerId")
@@ -160,7 +162,7 @@ def parse_consumed(conn, ctrl: str, path: Path, vidx: dict) -> dict:
                     lvid = addr_idx.get((address.split()[0], producer))
                 if lvid is None:
                     st["unresolved_local"] += 1
-                b.add((ctrl, producer, exchange_id, page, name, _i(a.get("VOffs")), address, lvid))
+                b.add((ctrl, producer, exchange_id, page, name, _i(a.get("VOffs")), address, lvid, sig_major, data_length))
                 st["vars"] += 1
                 st["producers"][producer] += 1
             _clear(el)

@@ -12,7 +12,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = "9"
+SCHEMA_VERSION = "10"
 
 
 def local_dir() -> Path:
@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS block_attr(block_id INTEGER, name TEXT, value TEXT, P
 
 CREATE TABLE IF NOT EXISTS pin(
   id INTEGER PRIMARY KEY, block_id INTEGER NOT NULL, name TEXT NOT NULL,
-  direction TEXT CHECK(direction IN ('I','O','S','?')), dir_source TEXT CHECK(dir_source IN ('U','T','C','L','H','R','-')),
+  direction TEXT CHECK(direction IN ('I','O','S','?')), dir_source TEXT CHECK(dir_source IN ('U','T','M','C','L','H','R','-')),
   conn_kind TEXT CHECK(conn_kind IN ('V','L','P','D','N','E','A','-')), connection TEXT,
   var_id INTEGER, tgt_block_id INTEGER, tgt_pin TEXT, address TEXT, value TEXT, alias TEXT,
   alias_override INTEGER, usage_declared TEXT, description TEXT, line_no INTEGER,
@@ -156,7 +156,7 @@ CREATE INDEX IF NOT EXISTS ix_egdp_var ON egd_produced(var_id);
 CREATE TABLE IF NOT EXISTS egd_consumed(
   id INTEGER PRIMARY KEY, consumer_ctrl TEXT, producer_ctrl TEXT, exchange_id INTEGER, page TEXT,
   var_name TEXT, voffs INTEGER, local_address TEXT, local_var_id INTEGER, producer_var_id INTEGER,
-  match_method TEXT CHECK(match_method IN ('name','voffs','both','none')));
+  match_method TEXT CHECK(match_method IN ('name','voffs','both','none')), sig_major INTEGER, data_length INTEGER);
 CREATE INDEX IF NOT EXISTS ix_egdc_prod ON egd_consumed(producer_ctrl, var_name);
 CREATE INDEX IF NOT EXISTS ix_egdc_pvar ON egd_consumed(producer_var_id);
 CREATE INDEX IF NOT EXISTS ix_egdc_lvar ON egd_consumed(local_var_id);

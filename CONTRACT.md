@@ -42,7 +42,7 @@ docs/data/                     export-web 的輸出（下）
  "source":{"toolbox_version":"V07.10.07C","indexed_at":"2026-09-19T15:00:00+08:00","controllers_minor_rev":{"G11":"2026-08-10T08:05:01"}},
  "controllers":[{"name":"G11","kind":"controller","redundancy":"Triple","product_version":"V07.03.02C","n_vars":53561,"n_blocks":31417,"n_pins":223570,"n_programs":132,"n_encrypted":20,"n_io":11900,"n_tasks":1018}],
  "shards":{"var":4096,"task":4096,"screen":256},
- "dir_legend":{"U":"介面腳 Usage","T":"手冊表/人工覆寫","C":"常數規則","L":"連線投票","H":"命名慣例","R":"回推（不透明巨集）","?":"未知"},
+ "dir_legend":{"U":"介面腳 Usage","T":"手冊表/人工覆寫/工具查證","M":"人工登錄：鏡射或推論（未在工具確認）","C":"常數規則","L":"連線投票","H":"命名慣例","R":"回推（不透明巨集）","?":"未知"},
  "opaque":{"n":5082,"recovered":792}, "lib_iface":{"AI_INT":[["Enable","I"],["IN","I"],["DEVICE_STATUS","O"],["OUT","O"]], …},
  "flags":{"1":"has_writer","2":"has_io","4":"has_egd","8":"has_hmi","16":"has_alarm","32":"const","64":"egd_copy","128":"in_encrypted"},
  "encrypted_programs":[["S1","TurbineATSMod"]],
@@ -62,14 +62,14 @@ docs/data/                     export-web 的輸出（下）
 {"v":{"G11.L27QE1_A":{
   "d":{"desc":"...","dt":"BOOL","addr":"01005DE1","val":"0","egd_page":"$Default","alias":"…","fs":"…","units":"…","lo":0,"hi":200,
        "const":1,"local":1,"decl":["LubeOil",null,"G11/Variables.xml",45234],"device_name":"G11","producer":"G11.X","ref":["EGD","LubeOil"],"screen":"…cim"},
-  "w":[[ctrl, program, block_path, block_type, pin, src, line]],      // 寫入者（direction O）
+  "w":[[ctrl, program, block_path, block_type, pin, src, line, kind]], // 寫入者（direction O）；kind 'b' = 一般方塊（含不透明巨集的回推／登錄腳），'t' = task／巨集介面腳（與內部寫入者同一條路徑，不算多寫入）
   "r":[[...]],                                                       // 讀取者（direction I/S）
   "u":[[...]],                                                       // 方向未知的腳
   "w_more":0,"r_more":0,                                             // 超過 400 筆時的剩餘數
   "io":[{"ctrl","module","cabinet","board","hw","pos","point","tag","dir","type","lo","hi","kind","screws":[[name,no,cable,wire]]}],
   "egd":{"p":[{"page","ex","voffs"}],"c":[{"ctrl","local","ex","voffs","match","page"}],"src":{"ctrl","var","ex","voffs","match"}},
   "hmi":[[screen, menu_path, source]],"watch":[[ctrl, file]],"drg":[[logic_drg, p_id]],"enc":["Program"],
-  "hid":["Program"],                                                // ReferencedIn 有列、索引在該程式內卻無此訊號任何腳位（含回推腳）→ 引用在加密方塊內；空則省略
+  "hid":["Program"],                                                // ReferencedIn 有列、索引在該程式內卻無此訊號任何腳位（含回推腳與腳位值鏡像）→ 引用在加密方塊內；空則省略
   "alm":{"id","cls","def","area","causes","action","conseq","urg"}
 }}}
 ```
@@ -101,7 +101,7 @@ task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 
 - `b` 的鍵順序 = 原始 XML 文件順序，第一筆是 task 根（`kind:"task"`，其 `pins` 為介面腳）；巢狀 UserBlock 內的方塊同在此 entry（同 task）。
 - 方塊記錄欄位同前（`ctrl program path name type kind ver opaque desc drg pid device hmi attrs pins line file`），新增可選 `lay`（`BlockLayoutData`，同層的 1-based 繪圖順序，含 UserBlock；缺值省略）。空欄位/空陣列/0 一律省略。
 - 腳位 tuple 第 11 欄 `desc` = 腳位自身的描述（`Pin@Description` 第一行；無則 `null`），例如產生器方塊 `L4TTRP_OVR.IN1` = "Generator LCI Trip"。
-- 腳位 tuple 第 12 欄 `org` = 腳位來源：`null` = XML 明文；`"d"` = **回推自宣告在該腳位的變數**；`"l"` = **回推自鄰近方塊的 `L:` 連線**；`"p"` = **同編號配對**（不透明 `AI_INT_k` 的 `IN` 接同層 `AI_k` 的 `{Device}` 輸出或 `FF_AI_k` 的 `OUT` 變數；`AI_k` 配對再依命名補 `OUT`→`ai_<stem>`、`DEVICE_STATUS`→`<stem>_DS`，且該變數的 `ReferencedIn` 須含此程式而程式內無可見引用；命名推斷、方向 I/O／`R`）；`"v"` = **三取二表決推斷**（不透明 `2oo3_Basic`，task `FNCTN_<stem>`：`INA/INB/INC` 接程式內只在加密方塊引用的 `(ai_)<stem>[_Alt]{A,B,C}[Crctd]` 變數、`BQA/BQB/BQC` 接 `<輸入>.BQ` 警報子變數或 `<輸入>_BQ` 變數（程式內加密引用者優先；皆無時才是無變數的 `conn_kind D` 欄位列）、`HYST` 接唯一的 `k_…<stem>…_HYST`；task 內只有一顆表決器時再補 `HI_LIMIT` ← 唯一的 `k_…_SP`、`OUT` → 唯一無寫入者的 `PRO_<stem>*Hi|Lo`；一顆實例經工具確認、其餘為推斷，方向來源 `R`）；`"x"` = **人工查證**（使用者在組態工具的交互參照看到、XML 沒有的連線，登錄於 `tools/xref_manual.csv`，方向來源 `T`、徽章「證」）。只出現在不透明巨集
+- 腳位 tuple 第 12 欄 `org` = 腳位來源：`null` = XML 明文；`"d"` = **回推自宣告在該腳位的變數**；`"l"` = **回推自鄰近方塊的 `L:` 連線**；`"p"` = **同編號配對**（不透明 `AI_INT_k` 的 `IN` 接同層 `AI_k` 的 `{Device}` 輸出或 `FF_AI_k` 的 `OUT` 變數；`AI_k` 配對再依命名補 `OUT`→`ai_<stem>`、`DEVICE_STATUS`→`<stem>_DS`，且該變數的 `ReferencedIn` 須含此程式而程式內無可見引用；命名推斷、方向 I/O／`R`）；`"v"` = **三取二表決推斷**（不透明 `2oo3_Basic`，task `FNCTN_<stem>`：`INA/INB/INC` 接程式內只在加密方塊引用的 `(ai_)<stem>[_Alt]{A,B,C}[Crctd]` 變數、`BQA/BQB/BQC` 接 `<輸入>.BQ` 警報子變數或 `<輸入>_BQ` 變數（程式內加密引用者優先；皆無時才是無變數的 `conn_kind D` 欄位列）、`HYST` 接唯一的 `k_…<stem>…_HYST`；task 內只有一顆表決器時再補 `HI_LIMIT` ← 唯一的 `k_…_SP`、`OUT` → 唯一無寫入者的 `PRO_<stem>*Hi|Lo`；一顆實例經工具確認、其餘為推斷，方向來源 `R`）；`"x"` = **人工登錄**（`tools/xref_manual.csv`；`grade` 欄 tool = 使用者在組態工具的交互參照或邏輯圖看到 → 方向來源 `T`；mirror／infer = 從另一台控制器鏡射或依規律推論 → 方向來源 `M`，徽章同樣「登錄」但來源字母不同）。只出現在不透明巨集
   （`opaque:1`，整個 UserBlock 含介面腳都加密）上：索引把「`Variables.xml` 宣告位置 = 該方塊.腳位」的變數與「`L:Block.Pin` 指向該方塊」的連線還原成腳位列，
   方向以證據決定（宣告變數：可調常數→I；位址＝某輸出腳／另一變數→I 並接該來源（後者同時登記為鏡像 `m`）；有讀取者／警報／HMI 且無其他寫入者→O；否則 `?`；
   連線：與 referrer 相反）。方向來源字母 `R`（回推）或 `L`。**清單只有證據看得到的部分，可能不完整**；宣告變數也可能是巨集內部變數。

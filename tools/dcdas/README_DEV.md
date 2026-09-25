@@ -37,7 +37,8 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
   `PRO_<stem>*Hi|Lo` (`OUT`); one instance was confirmed in the tool, the rest is inference (`dir_source='R'`).
   `resolve.load_xref` then adds `origin='xref'` rows from `tools/xref_manual.csv`
   (connections the user verified in the configuration tool's Where-Used but the XML cannot show, e.g. pins of a fully
-  encrypted voter instance; `dir_source='T'`; opaque blocks only; verified beats inferred). `dcdas.py xref-paste <txt>
+  encrypted voter instance; `dir_source='T'` when the row's `grade` is tool, `'M'` for mirror/infer rows (`resolve.xref_grade`,
+  derived from the note prefix when the column is empty); opaque blocks only; verified beats inferred). `dcdas.py xref-paste <txt>
   --ctrl X` turns a pasted Where-Used tree into such rows: new pins of opaque blocks, and recovered (decl/link/pair) pins
   the tool confirms, which the next build then replaces with the verified row. `query.show` / the web card also report `hidden_ref` / `hid`:
   ReferencedIn programs (not encrypted) in which no pin of the variable is indexed at all, i.e. the reference sits inside an
@@ -72,7 +73,12 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
 * Address-only pins (`conn_kind='A'`) are often published as global variables declared AT the pin (`GlobalNamePrefix`
   Block/Task/Full; same address). `resolve.link_declared_pins` links `pin.var_id` by (1) name `Block.Pin`, (2)
   `decl_connection == Program.Task….Pin`, (3) unique same-address variable (non-`DistributedIO.` preferred); conn_kind
-  stays 'A'. ~167k pins. Multi-writer lint counts ordinary-block writers only (interface pin + inner block = one path).
+  stays 'A'. ~167k pins. Multi-writer lint (`query.MULTI_WRITER_SQL`): >= 2 DISTINCT ordinary blocks (kind 'block', or a
+  recovered/xref pin of an opaque macro) write the variable; task/userblock interface pins never count (interface pin +
+  inner block = one path) and writes to different array elements (`X[0]`, `X[1]`) are not the same variable. Patterns:
+  plain (check, cross-program first), duplicate (same block type, identical inputs), sfc (SFC scaffolding). The web card
+  applies the same rule through the ref tuple's 8th field (kind b/t). `lint` also compares each consumer's exchange
+  signature (SigMajor/DataLength from ConsumedData, stored on egd_consumed) with the producer's exchange.
 * Template pins: a `Pin` whose `LibName` contains `{...}` (`{Device}`, `{Device}{Type}`, `{Device}{BlockSuffix}`) gets its
   instance `Name` expanded from the block's `Device`/`Type`/`BlockSuffix` attributes (the `Device` attribute itself may be a
   literal `{Unit}{Device}` expanded by the enclosing macro, so never match on `block.device`). Stored in `pin.lib_name`

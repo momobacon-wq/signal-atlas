@@ -351,6 +351,47 @@ def main():
     check("hidden-ref: a program where the variable is only a pin mirror is not a hidden reference (BOPE1.C10BBA30QA310RDY3.OUT_VAL)",
           hid.get("kind") == "show" and hid.get("hidden_ref") == [], str(hid.get("hidden_ref")))
 
+    # ---- printed logic sheets (skipped when the local corpus has not been built)
+    from dcdas import parse_pei as _pei
+    if not _pei.print_db_path().exists():
+        print("  (print corpus absent: print-scan checks skipped)")
+    else:
+        pconn = _pei.open_print(create=False)
+        gates = dict(pconn.execute("SELECT name, gate_status FROM print_pdf"))
+        # the two files that must never be ingested: one truncated print job, and one
+        # file that is a print of ANOTHER device saved under this controller's name
+        check("print gate refuses the truncated G12_P.pdf", gates.get("G12_P.pdf") == "truncated", str(gates.get("G12_P.pdf")))
+        check("print gate refuses WSC1_P.pdf (its Device Name cell says another device)",
+              gates.get("WSC1_P.pdf") == "wrong_device", str(gates.get("WSC1_P.pdf")))
+        npass = sum(1 for v in gates.values() if v == "pass")
+        check("print gate passes 11 of 13 printed logic-sheet exports", npass == 11, str(npass))
+        dev = one(pconn, "SELECT count(*) FROM print_pdf WHERE gate_status='pass' AND device_name<>ctrl")
+        check("every ingested print's Device Name equals its controller", dev == 0, str(dev))
+        # the parser must never contradict a pin the engineer verified in the tool
+        pc = _q.print_check(conn, pconn, ctrl="H11", limit=5)
+        c = pc["counts"]
+        check("print vs index H11: 0 conflicts against the tool-verified hand rows", c["xref_tool_conflict"] == 0, str(c["xref_tool_conflict"]))
+        check("print vs index H11: 0 conflicts against a pin the XML states plainly", c["xml_conflict"] == 0, str(c["xml_conflict"]))
+        check("print vs index H11: >= 99% of compared pins agree",
+              c["compared"] > 20000 and c["agree"] / c["compared"] >= 0.99, f"{c['agree']}/{c['compared']}")
+        # the falsification the report exists for: a 'pair'-inferred wire the drawing
+        # contradicts.  An agreement-only test would pass on a parser that never disagrees.
+        want = {("IN", "RhAttOutPress_AI"), ("OUT", "ai_RhAttOutPress"), ("DEVICE_STATUS", "RhAttOutPress_DS")}
+        got = {(r[0], r[1]) for r in pconn.execute(
+            "SELECT pin_name, wire_text FROM print_pin WHERE block_path='HardwireInputs_1/HW_ISC_RH/AI_INT_1' "
+            "AND pin_name IN ('IN','OUT','DEVICE_STATUS')")}
+        check("H11_P p249 wires HW_ISC_RH/AI_INT_1 to RhAttOutPress (the index's 'pair' guess says RhBfrAttDrnTemp)",
+              want <= got, str(sorted(got)))
+        check("print vs index H11: the report lists that mis-paired wire",
+              any(x["block"].endswith("HW_ISC_RH/AI_INT_1") for x in _q.print_check(conn, pconn, ctrl="H11", limit=200)["sections"]["wire_conflict"]),
+              str(c["wire_conflict"]))
+        # a wrongly-resolved sheet path would silently attribute pins to the wrong block
+        bad = one(pconn, "SELECT count(*) FROM print_sheet WHERE kind='sheet' AND map_method='repair' AND block_prefix IS NULL")
+        check("every repaired sheet path resolved to exactly one container", bad == 0, str(bad))
+        # the corpus must never touch the index
+        check("the print corpus is a separate DB (an index rebuild cannot lose it, and a scan cannot corrupt the index)",
+              _pei.print_db_path() != dbm.db_path(), str(_pei.print_db_path()))
+
     # ---- quality gates
     for c in ("G11", "H11", "WSC1"):
         tot = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.ctrl=? AND p.conn_kind IN ('V','L','P','D')", c)

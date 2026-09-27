@@ -1454,3 +1454,179 @@ def audit_type(conn, block_type, ctrl=None, limit=200):
     return {"kind": "audit", "block_type": block_type, "ctrl": ctrl, "n_blocks": n_blocks, "n_pin_names": len(pins),
             "pins": pins[:limit], "pins_more": max(0, len(pins) - limit), "manual_pins": len(manual),
             "unknown_pin_names": [p["pin"] for p in unknown], "n_unknown_pin_names": len(unknown)}
+
+
+# ------------------------------------------------------------------------------------- printed sheets vs index
+# print_check compares the configuration tool's own printed logic sheets (parse_pei ->
+# print.sqlite) against the index, and CHANGES NOTHING. It exists because most of what the
+# index says about an opaque macro's pins is a guess (origin decl/link/pair/vote, dir_source
+# R), while the drawing states it. Ranking: the categories where a guess is contradicted come
+# first, confirmations last.
+#
+# Deliberately NOT treated as conflicts (they are compatible representations):
+#   * index conn_kind 'A' - the variable is declared AT the pin, so the sheet draws an
+#     off-page connector or nothing there
+#   * print wire_kind 'offpage'/'link'/'marker'/'none' - a sheet continuation, an inner
+#     block-to-block wire, or a bare glyph: none of them names a variable
+#   * '<var>.FIELD' on the sheet against a '<var>_FIELD' sub-variable in the index
+_PC_SUB = __import__("re").compile(r"\[\d+\]$")
+
+
+def _pc_same_var(print_text, print_var, idx_var):
+    """The drawing labels an array pin with its element ('LCY_SH_AR[5]') where the
+    index keeps the variable ('LCY_SH_AR'); same wire, so the subscript is stripped."""
+    if not idx_var:
+        return False
+    for cand in (print_var, print_text, _PC_SUB.sub("", print_text or "")):
+        if not cand:
+            continue
+        if cand == idx_var or cand.replace(".", "_") == idx_var or cand == idx_var.replace("_", "."):
+            return True
+        if idx_var.endswith("." + cand) or cand.endswith("." + idx_var):
+            return True
+    return False
+
+
+def print_check(conn, pconn, ctrl=None, what="all", limit=40):
+    """Compare the printed sheets with the index. Writes nothing.
+
+    Buckets, worst first. 'inferred' below means pin.origin is set (decl/link/pair/
+    vote/xref) or dir_source is a guess letter - i.e. the index does not have the
+    fact from the XML:
+      phantom_writer   inferred O, the drawing wires the pin as an input.  The site
+                       currently shows a writer that does not exist.
+      ghost_reader     inferred I, the drawing wires it as an output.  A real wire
+                       is missing, and trace stops one block short.
+      wire_conflict    both sides name a variable and they differ (inferred pin)
+      xref_tool_*      a hand row the engineer verified in the tool is contradicted:
+                       that means THIS parser is wrong, so it fails loudly
+      xref_soft_*      a mirrored / inferred hand row is contradicted: drawing wins
+      xml_conflict     the pin comes straight from the XML and still disagrees.
+                       Suspect the parser first (two boxes can sit 4 pt apart).
+      new_pin          the drawing names a pin the indexed block does not have
+      placeholder      the index holds the macro's own interface sub-variable
+                       ('<instance>.<PIN>', the recovery placeholder) while the
+                       drawing shows the wire actually on it - complementary, not a
+                       contradiction, but it is what the engineer wants to see
+    """
+    limit = int(limit or 40)
+    pconn.row_factory = None
+    pdfs = [dict(zip(("name", "ctrl", "gate", "note", "pages", "sheets", "pins"), r)) for r in pconn.execute(
+        "SELECT p.name, p.ctrl, p.gate_status, p.gate_note, p.page_count, p.n_sheets, "
+        "(SELECT count(*) FROM print_pin q JOIN print_sheet s ON s.id=q.sheet_id WHERE s.pdf_id=p.id) "
+        "FROM print_pdf p ORDER BY p.gate_status<>'pass', p.ctrl")]
+    scanned = [p["ctrl"] for p in pdfs if p["gate"] == "pass" and p["sheets"]]
+    want = [c for c in scanned if not ctrl or c == ctrl]
+
+    sql = ("SELECT s.ctrl, s.page, s.sheet_no, q.cell, q.block_path, q.block_label, q.pin_name, "
+           "q.direction, q.wire_kind, q.wire_text, q.var_name "
+           "FROM print_pin q JOIN print_sheet s ON s.id=q.sheet_id "
+           "JOIN print_pdf p ON p.id=s.pdf_id AND p.gate_status='pass' "
+           "WHERE q.pin_name IS NOT NULL AND q.block_path IS NOT NULL")
+    args = []
+    if ctrl:
+        sql += " AND s.ctrl=?"
+        args.append(ctrl)
+    KEYS = ("phantom_writer", "ghost_reader", "wire_conflict", "xref_tool_conflict",
+            "xref_soft_conflict", "xml_conflict", "new_pin", "placeholder")
+    sec = {k: [] for k in KEYS}
+    n = {k: 0 for k in KEYS}
+    n["rows"] = n["compared"] = n["agree"] = 0
+    idx_cache = {}
+    for (c, page, sheet, cell, bpath, blabel, pin, pdir, wkind, wtext, wvar) in pconn.execute(sql, args):
+        n["rows"] += 1
+        key = (c, bpath)
+        if key not in idx_cache:
+            row = conn.execute("SELECT id, is_opaque FROM block WHERE ctrl=? AND path=?",
+                               (c, bpath)).fetchone()
+            pins = {}
+            if row:
+                for r in conn.execute(
+                        "SELECT p.name, p.direction, p.dir_source, p.origin, p.conn_kind, p.connection, v.name "
+                        "FROM pin p LEFT JOIN variable v ON v.id=p.var_id WHERE p.block_id=?", (row[0],)):
+                    pins[r[0]] = tuple(r[1:])
+            idx_cache[key] = (row[1] if row else None, pins)
+        opaque, pins = idx_cache[key]
+        cite = {"ctrl": c, "block": bpath, "pin": pin, "page": page, "sheet": sheet, "cell": cell,
+                "print_dir": pdir, "print_wire": wtext, "print_kind": wkind}
+        if pin not in pins:
+            n["new_pin"] += 1
+            if len(sec["new_pin"]) < limit:
+                sec["new_pin"].append(dict(cite, opaque=opaque, n_index_pins=len(pins)))
+            continue
+        idir, isrc, iorigin, ick, iconn, ivar = pins[pin]
+        n["compared"] += 1
+        inferred = bool(iorigin) or isrc in ("R", "M", "H", "L", "C", "P")
+        grade = ("tool" if isrc == "T" else "soft") if iorigin == "xref" else None
+        rec = dict(cite, index_dir=idir, dir_source=isrc, origin=iorigin,
+                   index_wire=ivar or iconn, opaque=opaque)
+
+        if idir in ("I", "O") and idir != pdir:
+            if grade:
+                bucket = "xref_tool_conflict" if grade == "tool" else "xref_soft_conflict"
+            elif not inferred:
+                bucket = "xml_conflict"
+            else:
+                bucket = "phantom_writer" if idir == "O" else "ghost_reader"
+            n[bucket] += 1
+            if len(sec[bucket]) < limit:
+                sec[bucket].append(dict(rec, why="direction"))
+            continue
+        if wkind in ("var", "field") and ick not in ("A", None) and ivar:
+            if _pc_same_var(wtext, wvar, ivar):
+                n["agree"] += 1
+            elif ivar.startswith(blabel + ".") or ivar == blabel:
+                n["placeholder"] += 1              # the macro's own interface variable
+                if len(sec["placeholder"]) < limit:
+                    sec["placeholder"].append(dict(rec, why="placeholder"))
+            else:
+                bucket = ("xref_tool_conflict" if grade == "tool" else
+                          "xref_soft_conflict" if grade == "soft" else
+                          "wire_conflict" if inferred else "xml_conflict")
+                n[bucket] += 1
+                if len(sec[bucket]) < limit:
+                    sec[bucket].append(dict(rec, why="wire"))
+        else:
+            n["agree"] += 1
+
+    # what the drawing shows that the index has no row for at all
+    extra = {"internals": [], "encrypted": [], "unresolved": [],
+             "n_internals_pins": 0, "n_encrypted_pins": 0, "n_unresolved_pins": 0,
+             "n_internals": 0, "n_encrypted": 0, "n_unresolved": 0}
+    q = ("SELECT s.map_method, s.owner_path, s.sw_path, count(DISTINCT s.id), count(q.id) "
+         "FROM print_sheet s JOIN print_pdf p ON p.id=s.pdf_id AND p.gate_status='pass' "
+         "JOIN print_pin q ON q.sheet_id=s.id AND q.block_path IS NULL AND q.pin_name IS NOT NULL "
+         "WHERE s.kind='sheet'" + (" AND s.ctrl=?" if ctrl else "") +
+         " GROUP BY s.map_method, coalesce(s.owner_path, s.sw_path) ORDER BY 5 DESC")
+    for method, owner, sw, nsheet, npin in pconn.execute(q, args):
+        row = {"owner": owner or sw or "(rotated sheet: no readable path in the title block)",
+               "sheets": nsheet, "pins": npin, "method": method}
+        key = method if method in ("internals", "encrypted") else "unresolved"
+        extra[key].append(row)
+        extra["n_%s_pins" % key] += npin
+        extra["n_%s" % key] += 1
+    for key in ("internals", "encrypted", "unresolved"):
+        extra[key] = extra[key][:limit]
+
+    opq = conn.execute(
+        "SELECT count(*) FROM block b WHERE b.is_opaque=1 AND NOT EXISTS"
+        "(SELECT 1 FROM pin p WHERE p.block_id=b.id)" + (" AND b.ctrl=?" if ctrl else ""),
+        args).fetchone()[0]
+    drawn = pconn.execute(
+        "SELECT count(DISTINCT q.block_path) FROM print_pin q JOIN print_sheet s ON s.id=q.sheet_id "
+        "JOIN print_pdf p ON p.id=s.pdf_id AND p.gate_status='pass' WHERE q.block_path IS NOT NULL"
+        + (" AND s.ctrl=?" if ctrl else ""), args).fetchone()[0]
+    # opaque blocks with no indexed pin that the drawing DOES name: the payload.
+    # Set intersection, not a query per block: the corpus holds >100k distinct paths.
+    zero = {(r[0], r[1]) for r in conn.execute(
+        "SELECT b.ctrl, b.path FROM block b WHERE b.is_opaque=1 AND NOT EXISTS"
+        "(SELECT 1 FROM pin p WHERE p.block_id=b.id)" + (" AND b.ctrl=?" if ctrl else ""), args)}
+    drawn_paths = {(r[0], r[1]) for r in pconn.execute(
+        "SELECT DISTINCT s.ctrl, q.block_path FROM print_pin q JOIN print_sheet s ON s.id=q.sheet_id "
+        "JOIN print_pdf p ON p.id=s.pdf_id AND p.gate_status='pass' "
+        "WHERE q.block_path IS NOT NULL AND q.pin_name IS NOT NULL"
+        + (" AND s.ctrl=?" if ctrl else ""), args)}
+    filled = len(zero & drawn_paths)
+    return {"kind": "print_check", "ctrl": ctrl, "scanned": want, "pdfs": pdfs, "counts": n,
+            "sections": sec, "extra": extra, "opaque_zero_pin": opq, "opaque_zero_pin_drawn": filled,
+            "blocks_drawn": drawn, "limit": limit}

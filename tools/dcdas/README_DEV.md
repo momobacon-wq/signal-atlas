@@ -146,3 +146,31 @@ py tools\dcdas.py build --<stage> --no-post --ctrl WSC1 BOPE1     # then your st
 ```
 Use `sqlite3` in Python to inspect. Never write to the default DB from a stage test. `export-web --no-encrypt` produces
 plain JSON for local front-end testing; never publish it.
+
+## parse_pei.py — 組態工具列印報表（唯讀證據，不寫 index.sqlite）
+
+匯出的每台控制器有三種 PDF：`_P` 邏輯圖、`_C` 變數交叉表、`_D` 裝置摘要。只吃 `_P`。
+（`_C` 比對過 327k 個變數，型別／描述／初值／單位**零筆**與索引不符，所以它只是確認來源，不值得吃進去。）
+
+圖面幾何（皆實測）：A3 1190.52×842 pt、圖框 `[21,21,1168.7,713.9]`、欄 A–Z 在 `x=53.00+43.276i`、
+列 00–29 在 `y=37.70+22.730j`。解析的關鍵是**腳位短線（pin stub）**：線寬 ≥0.9、長 2–4.5 pt、貼在方塊邊上，
+**每個有接線的腳畫一條**；左邊＝輸入、右邊＝輸出。腳名取方塊內距自己那邊 ≤8 pt 且明顯偏該側的字串；
+接線標籤取短線自由端 ≤6 pt 內最近的自由字串，超過就記「無標籤」。顏色分類：`0x191970` 明示腳名、
+`0xA9A9A9` 與預設值相同的常數、`0x008000` 註解／數值、`0xFFFF00` 執行順序徽章；字級 4.6 是方塊實例名。
+
+必要的細節（每一條都是實測會出錯的）：`type=='f'` 的填色一律丟掉（虛線段與白色挖空，留著會把整張圖併成一個方塊）；
+0 面積矩形先加厚 0.1 pt 再做聯集（PyMuPDF 對 0 面積矩形的 `intersects()` 永遠 False，會把 OR 閘拆兩半）；
+高 <4 或寬 <2 且線寬 ≤0.40 才丟（0.48 是真方塊，丟了會少掉整顆巨集的腳）；字串與短線都會重覆送出，要去重。
+
+圖面身分：標題欄的 `Device Name` 是控制器、`Software Path` 是 `Program.Task[.UserBlock…]`，把 `.` 換成 `/`
+就是 `block.path` 的前綴。那格會在 76–86 字元處**直接截斷、不加省略號**，所以 `resolve_sheet_path` 分四種：
+`exact`（前綴就是索引的容器）、`repair`（截斷；補全必須唯一，否則不猜）、`internals`（前綴指到的是一顆**方塊**，
+這張圖畫的是該不透明巨集的內部，索引根本沒有這些子方塊）、`none`（放棄，該張不產生方塊路徑）。
+
+標題欄只讀 Device Name / Software Path / Sh. No. / Cont. on Sh. / Module Revision、工具版本格（靠欄位座標定位，不寫廠商字面）與
+Build Major/Minor 兩個時間戳。其他格子有客戶、廠址與人員識別資訊，**刻意不讀**，以免流進 repo 或站台。
+時間戳不可用 `Last Modified`（某些控制器那格放的是列印當天）。
+
+已知限制（`print-check` 會把它列在「無法解析」）：旋轉 90 度的順序圖（SFC）標題欄是直排字串，
+`read_header` 以橫列讀會抓到別格的標籤字，因此 Software Path 會經形狀驗證後丟掉（約 1,425 筆腳位
+無法歸屬）。這類圖面本來也沒有對應的索引方塊，先不處理；要處理就是讀 x 1089-1094 的直排欄位。

@@ -9,6 +9,8 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 
 - checkout 根目錄：`%LOCALAPPDATA%\dcdas\config.json` 的 `src_root`（或 env `DCDAS_SRC`）
 - 索引 DB（不進 repo）：`%LOCALAPPDATA%\dcdas\index.sqlite`（env `DCDAS_DB` 可覆寫）
+- 列印圖語料 DB（不進 repo）：`%LOCALAPPDATA%\dcdas\print.sqlite`（env `DCDAS_PRINT_DB`）；來源是組態工具匯出的
+  `<CTRL>_P.pdf`，位置由 `config.json` 的 `pei_dir`（或 env `DCDAS_PEI`）指定，預設 `src_root\PEI\PEI`
 - 站台密語：`config.json` 的 `web_key_file` 指向的檔案（或 env `DCDAS_WEB_KEY`）；**絕不可進 repo**
 - CLI：`py tools\dcdas.py <cmd>`（在本 repo 根目錄執行；`--json` 全指令可用）
 - 模組契約與 XML 事實：`tools/dcdas/README_DEV.md`；網頁資料契約：`CONTRACT.md`
@@ -28,8 +30,25 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 7. 誠實標示不確定：
    - 方向是推斷值。CLI 印 `O/T` 這種「方向/來源」字母：U=介面腳 Usage、T=手冊表、人工覆寫或工具查證、M=人工登錄但只是鏡射／推論、C=常數規則、L=連線投票、H=命名慣例、R=回推（不透明巨集）、`?`=未知。來源是 L/H/R/M 時在回答裡寫「推斷」。
    - **加密 ≠ 未使用**。來源 XML 內加密的程式與巨集無法追蹤；CLI 印 `encrypted: not traceable`，照實轉述，不要編邏輯。
+     但**組態工具列印出來的邏輯圖看得到加密內容**：若 `print.sqlite` 已建立，`print-check` 會列出圖上有而索引沒有的腳位與
+     方塊（引用 `<CTRL>_P.pdf p<頁> <圖號> <圖格>`）。這類證據目前**只在報告裡**，還沒寫進 `pin`，所以不要當成索引已知的事實。
    - CLI 印 `consumer outside checkout` 時照實說去向在 checkout 外。
    - 索引是 checkout 快照（`status` 顯示各控制器 MinorRev），不是現場控制器的即時狀態。
+
+## 列印邏輯圖（`print-scan` / `print-check`，唯讀證據）
+
+組態工具可把整台控制器的邏輯圖列印成 PDF。那份圖是**原廠真值**，而且畫得出 XML 看不到的東西：加密程式的方塊、
+不透明巨集的介面腳與內部。既有的 `tools/xref_manual.csv` 就是工程師逐張拍照手抄這些圖的結果。
+
+- `print-gate`：逐檔檢查可不可信（`%%EOF` 完整、三種讀取器頁數一致、**標題欄 Device Name 必須等於檔名所指的控制器**、
+  印出的 Build Major/Minor 與索引的 `controller.major_rev/minor_rev` 必須相差同一個整刻鐘時區位移、工具版本相符）。
+  任何一項不過就拒收並記下原因，不會半途吃進去。檔名不能當身分依據——實際遇過一支檔名寫 A、內容整本是 B 的列印。
+- `print-scan`：把圖面解析進 `print.sqlite`（`print_pdf` / `print_sheet` / `print_pin`）。**完全不動 `index.sqlite`。**
+  語料另存一個 DB 是刻意的：索引會因改 schema 或 checkout 變動被刪掉重建，重解析上萬張圖要好幾分鐘。
+  語料只存方塊路徑與變數**名稱**，不存索引的 row id，所以重建索引後仍然對得上。
+- `print-check`：唯讀差異報告。分類由重到輕：牴觸人工查證（tool 級）＞索引猜成輸出但圖上是輸入＞索引猜成輸入但圖上是輸出
+  ＞兩邊變數名不同＞牴觸 XML 明文腳位（先懷疑解析器）＞圖上有而索引沒有的新腳位＞索引只有巨集自身介面變數的佔位值。
+- 未標腳名的閘符號（AND/OR/NOT/LATCH/計時器）**不猜腳名**（依位置對 IN1/IN2/IN3 實測只有七成多），留空白。
 
 ## 路徑慣例
 

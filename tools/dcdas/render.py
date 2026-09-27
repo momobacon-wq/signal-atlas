@@ -460,10 +460,58 @@ def _audit(o, r):
         o.line(f"  ... +{r['pins_more']} more pin names")
 
 
+def _print_check(o, r):
+    c = r["counts"]
+    o.head("PRINT vs INDEX  (read-only: the printed logic sheets change nothing)"
+           + (f"  ctrl={r['ctrl']}" if r.get("ctrl") else ""))
+    for p in r["pdfs"]:
+        if p["gate"] != "pass":
+            o.line(f"  REFUSED {p['name']:<14} {p['gate']:<20} {p['note'] or ''}")
+    o.line(f"  corpus: {', '.join(r['scanned']) or '(nothing scanned)'}"
+           f"   pin rows={c['rows']}  compared={c['compared']}  agree={c['agree']}"
+           f" ({100.0 * c['agree'] / max(1, c['compared']):.2f}%)")
+    o.line(f"  blocks drawn={r['blocks_drawn']}   opaque blocks with no indexed pin={r['opaque_zero_pin']}"
+           f" of which drawn={r['opaque_zero_pin_drawn']}")
+    o.line()
+    for key, title in (
+            ("xref_tool_conflict", "HAND TABLE (tool-verified) CONTRADICTED - not empty means THIS PARSER is wrong"),
+            ("phantom_writer", "PHANTOM WRITER - the index guessed an output, the drawing wires it as an input"),
+            ("ghost_reader", "MISSING WRITER - the index guessed an input, the drawing wires it as an output"),
+            ("wire_conflict", "WIRE CONFLICT - both name a variable and they differ (guessed pin)"),
+            ("xref_soft_conflict", "HAND TABLE (mirrored/inferred) CONTRADICTED - the drawing wins, fix the CSV line"),
+            ("xml_conflict", "CONFLICT ON AN XML-STATED PIN - suspect the parser first"),
+            ("new_pin", "NEW PIN - the drawing names a pin the indexed block does not have"),
+            ("placeholder", "PLACEHOLDER ONLY - the index has the macro's own interface variable, the drawing has the wire")):
+        rows = r["sections"].get(key) or []
+        o.line(f"{title}: {c.get(key, 0)}")
+        for x in rows:
+            src = f"[{x.get('origin') or '-'}/{x.get('dir_source') or '-'}]"
+            o.line(f"  {x['ctrl']}.{x['block']}.{x['pin']}")
+            o.line(f"      {src:<12} drawing {x['print_dir']} {x.get('print_wire') or '(no label)':<30}"
+                   f"  index {x.get('index_dir') or '-'} {x.get('index_wire') or '-':<30}"
+                   f"  {x['ctrl']}_P.pdf p{x['page']} {x.get('sheet') or ''} {x.get('cell') or ''}")
+        if c.get(key, 0) > len(rows):
+            o.line(f"  ... +{c[key] - len(rows)} more (--limit / --json)")
+        o.line()
+    e = r["extra"]
+    o.line(f"ENCRYPTED-PROGRAM LOGIC (the drawing is the only source): "
+           f"{e['n_encrypted_pins']} pins in {e['n_encrypted']} sheet groups")
+    for x in e["encrypted"][:8]:
+        o.line(f"  {x['owner']:<70} sheets={x['sheets']:<3} pins={x['pins']}")
+    o.line(f"OPAQUE MACRO INTERNALS the index cannot represent: {e['n_internals_pins']} pins "
+           f"in {e['n_internals']} groups")
+    for x in e["internals"][:8]:
+        o.line(f"  {x['owner']:<70} sheets={x['sheets']:<3} pins={x['pins']}")
+    o.line(f"SHEETS WHOSE PATH COULD NOT BE RESOLVED: {e['n_unresolved_pins']} pins "
+           f"in {e['n_unresolved']} groups")
+    for x in e["unresolved"][:6]:
+        o.line(f"  [{x['method']}] {x['owner']:<64} pins={x['pins']}")
+
+
 _DISPATCH = {
     "show": _show, "trace": _trace, "block": _block, "task": _task, "find": _find, "io": _io,
     "egd_ctrl": _egd_ctrl, "egd_var": _egd_var, "screen": _screen, "screen_var": _screen_var, "alarm": _alarm, "diff_units": _diff_units,
-    "where": _where, "lint": _lint, "coverage": _coverage, "ambiguous": _ambiguous, "notfound": _notfound, "audit": _audit,
+    "where": _where, "lint": _lint, "print_check": _print_check, "coverage": _coverage, "ambiguous": _ambiguous, "notfound": _notfound, "audit": _audit,
 }
 
 

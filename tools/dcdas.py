@@ -10,6 +10,7 @@
   py tools/dcdas.py io <tag|var|module>      | egd <var|ctrl> | screen <cim|var> | alarm <pattern>
   py tools/dcdas.py where <CTRL.NAME | CTRL block-path>
   py tools/dcdas.py lint | coverage | audit-type <BLOCK_TYPE> | pindir-import | xref-paste <txt> --ctrl X | export-web <docs_dir>
+  py tools/dcdas.py print-gate | print-scan [--ctrl X] | print-check [--ctrl X]   (the printed logic sheets as evidence)
 All commands accept --json. Output is deliberately compact (one fact per line) for Claude.
 """
 import argparse
@@ -311,6 +312,46 @@ def cmd_xref_paste(a):
     resolve.xref_paste(conn, HERE, a.txt, a.ctrl, date=a.date, dry_run=a.dry_run, log=log)
 
 
+def cmd_print_gate(a):
+    """Which printed reports may be ingested at all -- and why not, for the rest."""
+    from dcdas import parse_pei
+    conn = dbm.open_ro()
+    rows, missing = parse_pei.gate_all(conn, Path(a.dir) if a.dir else None, ctrls=a.ctrl)
+    if a.json:
+        print(json.dumps({"gates": rows, "no_print": missing}, ensure_ascii=False, indent=1))
+        return
+    log(f"printed logic sheets in {a.dir or parse_pei.pei_dir()}")
+    for g in sorted(rows, key=lambda g: (g["gate_status"] != "pass", g["name"])):
+        log("  %-14s %-22s pages=%-5s device=%-7s %s"
+            % (g["name"], g["gate_status"], g["page_count"] or "-", g["device_name"] or "-", g["gate_note"]))
+    ok = [g for g in rows if g["gate_status"] == "pass"]
+    log(f"  {len(ok)} of {len(rows)} files ingestable; controllers with no print at all: "
+        f"{', '.join(missing) if missing else '-'}")
+
+
+def cmd_print_scan(a):
+    """Parse the printed logic sheets into the print corpus (never into the index)."""
+    from dcdas import parse_pei
+    conn = dbm.open_ro()
+    pconn = parse_pei.open_print()
+    t0 = time.time()
+    s = parse_pei.scan(conn, pconn, ctrls=a.ctrl, pdf_dir=Path(a.dir) if a.dir else None,
+                       pages=a.pages, log=log)
+    log("corpus %s: %d sheets, %d pin rows, %d files refused  (%.0f s)"
+        % (parse_pei.print_db_path(), s["sheets"], s["pins"], len(s["refused"]), time.time() - t0))
+
+
+def cmd_print_check(a):
+    from dcdas import parse_pei, query, render
+    conn = dbm.open_ro()
+    pconn = parse_pei.open_print(create=False)
+    res = query.print_check(conn, pconn, ctrl=a.ctrl, what=a.what, limit=a.limit)
+    if a.json:
+        print(json.dumps(res, ensure_ascii=False, indent=1, default=str))
+    else:
+        print(render.render(res, a))
+
+
 def cmd_export_web(a):
     from dcdas import export_web
     conn = dbm.open_ro()
@@ -358,6 +399,14 @@ def main(argv=None):
     p = add("pindir-import", cmd_pindir_import); p.add_argument("--pdf", nargs="*", help="manual PDFs (default: known set)")
     p = add("xref-paste", cmd_xref_paste, help="pasted Where-Used tree -> tools/xref_manual.csv rows (opaque blocks only; new pins added, recovered pins upgraded)")
     p.add_argument("txt"); p.add_argument("--ctrl", required=True); p.add_argument("--date"); p.add_argument("--dry-run", action="store_true")
+    p = add("print-gate", cmd_print_gate, help="which printed logic-sheet exports may be trusted (device / revision / integrity)")
+    p.add_argument("dir", nargs="?", help="folder holding <CTRL>_P.pdf (default: the local pei_dir setting)")
+    p.add_argument("--ctrl", nargs="*")
+    p = add("print-scan", cmd_print_scan, help="parse the printed logic sheets into the print corpus (writes nothing to the index)")
+    p.add_argument("dir", nargs="?", help="folder holding <CTRL>_P.pdf (default: the local pei_dir setting)")
+    p.add_argument("--ctrl", nargs="*"); p.add_argument("--pages", nargs="*", type=int, help="only these 1-based pages (debugging)")
+    p = add("print-check", cmd_print_check, help="read-only diff: what the printed drawing says vs what the index inferred")
+    p.add_argument("--ctrl"); p.add_argument("--what", default="all"); p.add_argument("--limit", type=int, default=40)
     p = add("export-web", cmd_export_web); p.add_argument("docs", nargs="?", default=str(HERE.parent / "docs"))
     p.add_argument("--key-file", help="file holding the site passphrase (default: web_key_file in the local config)")
     p.add_argument("--no-encrypt", action="store_true", help="plain JSON export (local testing only; never publish)")

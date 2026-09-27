@@ -358,16 +358,48 @@ def main():
     else:
         pconn = _pei.open_print(create=False)
         gates = dict(pconn.execute("SELECT name, gate_status FROM print_pdf"))
-        # the two files that must never be ingested: one truncated print job, and one
-        # file that is a print of ANOTHER device saved under this controller's name
-        check("print gate refuses the truncated G12_P.pdf", gates.get("G12_P.pdf") == "truncated", str(gates.get("G12_P.pdf")))
-        check("print gate refuses WSC1_P.pdf (its Device Name cell says another device)",
-              gates.get("WSC1_P.pdf") == "wrong_device", str(gates.get("WSC1_P.pdf")))
-        npass = sum(1 for v in gates.values() if v == "pass")
-        check("print gate passes 11 of 13 printed logic-sheet exports", npass == 11, str(npass))
-        dev = one(pconn, "SELECT count(*) FROM print_pdf WHERE gate_status='pass' AND device_name<>ctrl")
-        check("every ingested print's Device Name equals its controller", dev == 0, str(dev))
-        # the parser must never contradict a pin the engineer verified in the tool
+        # Properties, not a snapshot: two exports are broken today (one truncated, one a
+        # print of another device under this controller's name) and the engineer will
+        # re-print them, which must not turn this suite red.
+        bad = one(pconn, "SELECT count(*) FROM print_pdf WHERE gate_status='pass' AND device_name<>ctrl")
+        check("every ingested print's Device Name equals its controller", bad == 0, str(bad))
+        bad = one(pconn, "SELECT count(*) FROM print_pdf WHERE gate_status<>'pass' AND coalesce(gate_note,'')=''")
+        check("every refused print records why it was refused", bad == 0, str(bad))
+        bad = one(pconn, "SELECT count(*) FROM print_pdf WHERE gate_status='pass' AND (page_count IS NULL OR page_count=0 OR n_sheets=0)")
+        check("no print passes the gate with nothing in it", bad == 0, str(bad))
+        bad = one(pconn, "SELECT count(*) FROM print_pdf WHERE gate_status='pass' AND (tz_offset_min IS NULL OR tz_offset_min % 15 <> 0)")
+        check("every ingested print's build stamps differ from the index's by a whole quarter-hour",
+              bad == 0, str(bad))
+        # the two known-broken files: asserted only while the scanned bytes are unchanged,
+        # so a re-export retires the check instead of failing it
+        import hashlib as _hl
+        for name, want in (("G12_P.pdf", "truncated"), ("WSC1_P.pdf", "wrong_device")):
+            row = pconn.execute("SELECT gate_status, sha256 FROM print_pdf WHERE name=?", (name,)).fetchone()
+            if not row:
+                continue
+            f = _pei.pei_dir() / name
+            if f.exists() and _pei.sha256_of(f) == row[1]:
+                check(f"print gate still refuses the unchanged {name} ({want})", row[0] == want, str(row[0]))
+        # the keystone: the drawing must never contradict a pin the engineer verified in
+        # the configuration tool. Checked across ALL controllers, by join, not per controller.
+        tool = {(r[0], r[1], r[2]): (r[3], r[4]) for r in conn.execute(
+            "SELECT b.ctrl, b.path, p.name, p.direction, v.name FROM pin p JOIN block b ON b.id=p.block_id "
+            "LEFT JOIN variable v ON v.id=p.var_id WHERE p.origin='xref' AND p.dir_source='T'")}
+        clash = []
+        for r in pconn.execute(
+                "SELECT s.ctrl, q.block_path, q.pin_name, q.direction, q.var_name, q.wire_text "
+                "FROM print_pin q JOIN print_sheet s ON s.id=q.sheet_id "
+                "JOIN print_pdf p ON p.id=s.pdf_id AND p.gate_status='pass' "
+                "WHERE q.block_path IS NOT NULL AND q.pin_name IS NOT NULL"):
+            t = tool.get((r[0], r[1], r[2]))
+            if not t:
+                continue
+            if t[0] in ("I", "O") and t[0] != r[3]:
+                clash.append((r[0], r[1], r[2], "direction", t[0], r[3]))
+            elif t[1] and r[4] and not _q._pc_same_var(r[5], r[4], t[1]):
+                clash.append((r[0], r[1], r[2], "wire", t[1], r[4]))
+        check("no printed sheet contradicts a tool-verified hand row, on any controller",
+              not clash, str(clash[:3]))
         pc = _q.print_check(conn, pconn, ctrl="H11", limit=5)
         c = pc["counts"]
         check("print vs index H11: 0 conflicts against the tool-verified hand rows", c["xref_tool_conflict"] == 0, str(c["xref_tool_conflict"]))

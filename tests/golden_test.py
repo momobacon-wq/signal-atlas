@@ -458,6 +458,41 @@ def main():
         check("print-show S1.L52TGM: the EGD consumer copies on H11/H12 sheets are shown, no bare-name matches",
               {e["var"] for e in ps["egd"]} >= {"H11.S1.L52TGM", "H12.S1.L52TGM"}
               and all(e["var"].endswith(".S1.L52TGM") for e in ps["egd"]), str([e["var"] for e in ps["egd"]]))
+        # ---- parser facts the verifiers established on the PDFs
+        bad = one(pconn, "SELECT count(*) FROM print_sheet WHERE ctrl='S1S' AND page=61 AND block_prefix='ST_LPExhP-TAL/FNCTN_SetpointCst'")
+        check("a Software Path with '-' is read (S1S p61 ST_LPExhP-TAL.FNCTN_SetpointCst)", bad == 1, str(bad))
+        bad = one(pconn, "SELECT count(*) FROM print_sheet s JOIN print_pdf p ON p.id=s.pdf_id "
+                         "WHERE p.name='G11_P.pdf' AND s.page=2692 AND s.block_prefix='Exciter/SW_IN'")
+        check("the Software Path cell is found even with a second 'Software' word in the strip (G11 p2692)", bad == 1, str(bad))
+        bad = one(pconn, "SELECT count(*) FROM print_pin WHERE wire_kind='field'")
+        check("no 'Block.PIN' link is filed as a field of a same-named variable", bad == 0, str(bad))
+        bad = one(pconn, "SELECT count(*) FROM print_pin WHERE wire_kind='default' AND var_name IS NOT NULL")
+        check("a grey default is never matched to a variable", bad == 0, str(bad))
+        got = {r[0] for r in pconn.execute("SELECT DISTINCT q.block_path FROM print_pin q JOIN print_sheet s ON s.id=q.sheet_id "
+                                           "WHERE s.ctrl='H11' AND q.block_label LIKE 'DigitalPeerIOHealth_14_' AND s.page=1324")}
+        check("touching block symbols are split (H11 p1324 DigitalPeerIOHealth_142/143/144 each drawn)", len(got) == 3, str(got))
+        got = one(pconn, "SELECT q.wire_text FROM print_pin q JOIN print_sheet s ON s.id=q.sheet_id "
+                         "WHERE s.ctrl='H11' AND q.block_label='HrhBypPressCv' AND q.pin_name='TV'")
+        check("a feedback wire on an input stub is kept (H11 HrhBypPressCv.TV <- its own CVO)", got == "HrhBypPressCv.CVO", str(got))
+        bad = one(pconn, "SELECT count(*) FROM (SELECT q.sheet_id, q.block_label, q.pin_name FROM print_pin q "
+                         "WHERE q.pin_name IS NOT NULL GROUP BY 1,2,3,q.side HAVING count(*) > 1 "
+                         "AND q.block_label LIKE 'DigitalPeerIOHealth%')")
+        check("no peer-health block carries the same printed pin twice on one sheet", bad == 0, str(bad))
+        # a partial scan must never be the one that drops an old-schema corpus; readers refuse it
+        import tempfile as _tf
+        _t = Path(_tf.mkdtemp()) / "old.sqlite"
+        _c = sqlite3.connect(str(_t)); _c.executescript("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT); "
+                                                        "INSERT INTO meta VALUES('print_schema','0');"); _c.commit(); _c.close()
+        for what, fn in (("a partial print-scan", lambda: _pei.open_print(_t, partial=True)),
+                         ("a reader", lambda: _pei.open_print_ro(_t))):
+            try:
+                fn().close()
+                ok = False
+            except SystemExit:
+                ok = True
+            check(f"{what} refuses an old-schema corpus", ok)
+        check("the refused partial scan left the old corpus alone",
+              sqlite3.connect(str(_t)).execute("SELECT value FROM meta").fetchone() == ("0",))
         pro.close()
         # the pointer in `show` must never fail a good `show`, even when the corpus is unusable
         import subprocess as _sp

@@ -359,7 +359,7 @@ def cmd_print_scan(a):
     """Parse the printed logic sheets into the print corpus (never into the index)."""
     from dcdas import parse_pei
     conn = dbm.open_ro()
-    pconn = parse_pei.open_print()
+    pconn = parse_pei.open_print(partial=bool(a.ctrl or a.pages))
     t0 = time.time()
     s = parse_pei.scan(conn, pconn, ctrls=a.ctrl, pdf_dir=Path(a.dir) if a.dir else None,
                        pages=a.pages, log=log)

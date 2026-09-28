@@ -1520,7 +1520,8 @@ def print_check(conn, pconn, ctrl=None, what="all", limit=40):
     Buckets, worst first. 'inferred' below means pin.origin is set (decl/link/pair/
     vote/xref) or dir_source is a guess letter - i.e. the index does not have the
     fact from the XML:
-      phantom_writer   inferred O, the drawing wires the pin as an input.  The site
+      phantom_writer   inferred O, the drawing shows the pin on the input side (wired or
+                       with its default).  The site
                        currently shows a writer that does not exist.
       ghost_reader     inferred I, the drawing wires it as an output.  A real wire
                        is missing, and trace stops one block short.
@@ -1604,7 +1605,7 @@ def print_check(conn, pconn, ctrl=None, what="all", limit=40):
          "WHERE s.kind='sheet'" + (" AND s.ctrl=?" if ctrl else "") +
          " GROUP BY s.map_method, coalesce(s.owner_path, s.sw_path) ORDER BY 5 DESC")
     for method, owner, sw, nsheet, npin in pconn.execute(q, args):
-        row = {"owner": owner or sw or "(rotated sheet: no readable path in the title block)",
+        row = {"owner": owner or sw or "(no readable Software Path in the title block)",
                "sheets": nsheet, "pins": npin, "method": method}
         key = method if method in ("internals", "encrypted") else "unresolved"
         extra[key].append(row)
@@ -1657,14 +1658,15 @@ _PS_SQL = ("SELECT s.id, p.name, s.page, s.sheet_no, q.cell, s.sw_path, s.map_me
            "q.block_path, q.block_label, q.exec_order, q.pin_name, q.direction, q.wire_kind, q.wire_text, "
            "q.var_name FROM print_pin q JOIN print_sheet s ON s.id=q.sheet_id "
            "JOIN print_pdf p ON p.id=s.pdf_id AND p.gate_status='pass' WHERE s.ctrl=? AND ")
-# a drawn wire is this variable when its label is the name or an element of it ('X[5]').
+# a drawn wire is this variable when the parser matched it (var_name), or its label is the
+# name or an element of it ('X[5]').
 # 'field' rows ('Block.PIN') are block-to-block links that share a variable's name, never the variable.
-_PS_VAR = "q.wire_kind<>'field' AND (q.wire_text=? OR substr(q.wire_text, 1, ?)=?)"
+_PS_VAR = "q.wire_kind<>'field' AND (q.var_name=? OR q.wire_text=? OR substr(q.wire_text, 1, ?)=?)"
 _PS_SLASH = "replace(s.sw_path, '.', '/')"
 
 
 def _ps_var_args(name):
-    return (name, len(name) + 1, name + "[")
+    return (name, name, len(name) + 1, name + "[")
 
 
 def _ps_status(pconn, ctrl):
@@ -1681,8 +1683,38 @@ def _ps_status(pconn, ctrl):
 class _PsIndex:
     """Index lookups for one controller, cached across the rows of one query."""
 
-    def __init__(self, conn, ctrl):
-        self.conn, self.ctrl, self._pins, self._named = conn, ctrl, {}, {}
+    def __init__(self, conn, ctrl, pconn=None):
+        self.conn, self.ctrl, self.pconn = conn, ctrl, pconn
+        self._pins, self._named, self._ids, self._groups = {}, {}, {}, {}
+
+    def group(self, sid, label):
+        """Every drawn pin of one block on one sheet (for naming by elimination)."""
+        k = (sid, label)
+        if sid is None:
+            return []
+        if k not in self._groups:
+            self._groups[k] = _ps_rows(self.pconn, "q.sheet_id=? AND q.block_label=? ORDER BY q.id",
+                                       (self.ctrl, sid, label)) if self.pconn else []
+        return self._groups[k]
+
+    def fed_by(self, path, pin, side):
+        """The far ends of a line drawn at path.pin, per the index. A block-to-block line
+        is stored as an L: link on ONE of its two pins, so this pin may show no wire.
+        Only SIBLING blocks count (the far end is on the same sheet): the macro's own
+        children also link to its pins, from the inside, and are never drawn here. An
+        input takes its line from an output; an output sends it to inputs."""
+        bid = self._ids.get(path)
+        if not bid:
+            return []
+        parent = path.rsplit("/", 1)[0] + "/"
+        want = ("O",) if side == "I" else ("I", "S", "?")
+        out = []
+        for r in self.conn.execute(
+                "SELECT b.path, p.name, p.direction FROM pin p JOIN block b ON b.id=p.block_id "
+                "WHERE p.tgt_block_id=? AND p.tgt_pin=? AND b.id<>?", (bid, pin, bid)):
+            if r[0].startswith(parent) and "/" not in r[0][len(parent):] and r[2] in want:
+                out.append("%s.%s" % (r[0], r[1]))
+        return out
 
     def pins(self, path):
         """-> ({pin name: (dir, src, origin, conn_kind, connection, var name)}, is_opaque) or (None, None)."""
@@ -1691,6 +1723,7 @@ class _PsIndex:
                                   (self.ctrl, path)).fetchone()
             pins = None
             if b:
+                self._ids[path] = b[0]
                 pins = {r[0]: tuple(r[1:]) for r in self.conn.execute(
                     "SELECT p.name, p.direction, p.dir_source, p.origin, p.conn_kind, p.connection, v.name "
                     "FROM pin p LEFT JOIN variable v ON v.id=p.var_id WHERE p.block_id=?", (b[0],))}
@@ -1717,9 +1750,10 @@ class _PsIndex:
             under = [p for p in cands if p.startswith(pre)]      # string prefix: the cell clips mid-name
             if len(under) == 1:
                 return under[0], "by its label under the printed path"
-            if under:
-                cands = under
-        if row["wire"] and row["wire_kind"] not in ("none", "const"):
+            if not under:
+                return None, None        # the printed path says it is not any of these
+            cands = under
+        if row["wire"] and row["wire_kind"] not in ("none", "const", "default"):
             hit = [p for p in cands if any(_pc_same_var(row["wire"], row["var"], t[5])
                                            for t in (self.pins(p)[0] or {}).values())]
             if len(hit) == 1:
@@ -1732,19 +1766,42 @@ class _PsIndex:
 def _ps_pair(pins, row):
     """Name an unnamed drawn pin from the index: the one pin on the block carrying the same
     wire (preferring the drawn direction). -> pin name or None."""
-    if not pins or not row["wire"]:
+    if not pins or not row["wire"] or row["wire_kind"] == "default":
         return None
     w = row["wire"]
     same = []
     for name, t in pins.items():
+        lit = t[4] and t[4][:2] in ("N:", "E:") and t[4][2:].casefold() == w.casefold()
         if row["wire_kind"] == "const":
-            if t[4] and t[4].split(":", 1)[-1].casefold() == w.casefold():
+            if lit:
                 same.append(name)
-        elif _pc_same_var(w, row["var"], t[5]) or (t[4] and t[4] in ("L:" + w, w)):
+        elif lit or _pc_same_var(w, row["var"], t[5]) or (t[4] and t[4] in ("L:" + w, w)):
             same.append(name)
     if len(same) > 1:
         same = [n for n in same if pins[n][0] == row["dir"]]
     return same[0] if len(same) == 1 else None
+
+
+def _ps_eliminate(ix, row, pins):
+    """An unnamed drawn pin that its wire cannot name: when it is the ONLY unnamed pin of its
+    side left on the block, and exactly one index pin that could sit on that side is not yet
+    accounted for, that is its name. Ordinary blocks only (an opaque macro's index pins are
+    incomplete, so 'the only one left' proves nothing). Pins of unknown direction count as
+    candidates for either side, so they can only block a naming, never cause one."""
+    if not ix.pconn or row.get("sid") is None:
+        return None
+    named, open_ = set(), 0
+    for g in ix.group(row["sid"], row["label"]):
+        n = g["pin"] or _ps_pair(pins, g)
+        if n:
+            named.add(n)
+        elif g["dir"] == row["dir"]:
+            open_ += 1
+    if open_ != 1:
+        return None
+    ok = ("I", "S") if row["dir"] == "I" else ("O",)
+    left = [k for k, t in pins.items() if k not in named and (t[0] in ok or t[0] in ("?", None, ""))]
+    return left[0] if len(left) == 1 else None
 
 
 def _ps_verdict(ix, row):
@@ -1760,17 +1817,33 @@ def _ps_verdict(ix, row):
     pins, opaque = ix.pins(bp)
     pins = pins or {}
     if row["pin"] is None:
-        name = _ps_pair(pins, row)
+        name, how = _ps_pair(pins, row), "by its wire"
+        if name and name in {g["pin"] for g in ix.group(row.get("sid"), row["label"]) if g["pin"]}:
+            name = None                  # printed elsewhere on this block: this stub is not it
+        if not name and not opaque:
+            name, how = _ps_eliminate(ix, row, pins), "by elimination (the only one of its side left)"
         if not name:
             row["verdict"] = "unnamed"
-            row["why"] = "the drawing prints no pin name and no index pin on this block carries this wire"
+            row["why"] = ("the drawing prints no pin name, and neither its wire nor elimination names it"
+                          if row["wire_kind"] not in ("none", "default") else
+                          "the drawing prints no pin name, the pin carries no label, and elimination cannot name it")
             return row
-        row["pin"], row["paired"] = name, True
+        row["pin"], row["paired"] = name, how
     if row["pin"] not in pins:
         row["verdict"] = "new_pin"
-        row["why"] = ("opaque macro with no indexed pins: the drawing supplies this one" if opaque and not pins
-                      else "the index has no such pin on this block")
+        row["why"] = ("opaque macro with no indexed pins: the drawing supplies this one" if opaque and not pins else
+                      f"opaque macro: the index holds only {len(pins)} of its pins; the drawing supplies this one"
+                      if opaque else "the index has no such pin on this block")
         return row
+    if row["wire_kind"] in ("default", "none"):
+        own = pins[row["pin"]][4]
+        if own and own.startswith("L:") and "." in own:
+            # the pin's own link names the far end: that, never a guess from the other side
+            far = own[2:]
+            far = "%s/%s" % (bp.rsplit("/", 1)[0], far) if "/" not in far else far
+            row["fed_by"] = [far] + [x for x in ix.fed_by(bp, row["pin"], row["dir"]) if x != far]
+        else:
+            row["fed_by"] = ix.fed_by(bp, row["pin"], row["dir"])
     t = pins[row["pin"]]
     idir, isrc, iorigin, ick, iconn, ivar = t
     row.update(index_dir=idir, index_src=isrc, index_origin=iorigin, index_wire=ivar or iconn)
@@ -1818,7 +1891,7 @@ def _ps_egd(conn, pconn, v, limit):
     for role, ctrl, name, full in sides:
         if _ps_status(pconn, ctrl)[1]:
             continue
-        ix = _PsIndex(conn, ctrl)
+        ix = _PsIndex(conn, ctrl, pconn)
         rows = [_ps_verdict(ix, r) for r in _ps_rows(
             pconn, _PS_VAR + " ORDER BY q.direction DESC, s.page, q.id", (ctrl,) + _ps_var_args(name))]
         if rows:
@@ -1847,7 +1920,7 @@ def _ps_var(conn, pconn, key, limit):
            "egd": _ps_egd(conn, pconn, v, limit)}
     if refused:
         return out
-    ix = _PsIndex(conn, ctrl)
+    ix = _PsIndex(conn, ctrl, pconn)
     rows = [_ps_verdict(ix, r) for r in _ps_rows(
         pconn, _PS_VAR + " ORDER BY q.direction DESC, s.page, q.id", (ctrl,) + _ps_var_args(name))]
     out["total"], out["counts"] = len(rows), _ps_count(rows)
@@ -1885,7 +1958,7 @@ def _ps_block(conn, pconn, ctrl, path, limit):
     b, err = _find_block(conn, ctrl, path)
     if err and err.get("kind") == "ambiguous":
         return err
-    ix = _PsIndex(conn, ctrl)
+    ix = _PsIndex(conn, ctrl, pconn)
     if b:
         path = out["block_path"] = b["path"]
         out.update(block_type=b["block_type"], block_kind=b["kind"], is_opaque=b["is_opaque"],
@@ -1924,8 +1997,8 @@ def _ps_block(conn, pconn, ctrl, path, limit):
         "SELECT p.name, s.page, s.sheet_no, s.sw_path, s.map_method, count(DISTINCT q.block_label), count(q.id) "
         "FROM print_sheet s JOIN print_pdf p ON p.id=s.pdf_id AND p.gate_status='pass' "
         "LEFT JOIN print_pin q ON q.sheet_id=s.id WHERE s.ctrl=? AND s.kind='sheet' AND "
-        "(s.owner_path=? OR " + _PS_SLASH + "=? OR substr(" + _PS_SLASH + ", 1, ?)=?) "
-        "GROUP BY s.id ORDER BY s.page", (ctrl, path, path, n + 1, path + "/"))]
+        "(s.owner_path=? OR s.block_prefix=? OR " + _PS_SLASH + "=? OR substr(" + _PS_SLASH + ", 1, ?)=?) "
+        "GROUP BY s.id ORDER BY s.page", (ctrl, path, path, path, n + 1, path + "/"))]
     if b and b["kind"] == "block":
         drawn = {r["pin"] for r in rows}
         pins = ix.pins(path)[0] or {}

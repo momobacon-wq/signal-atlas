@@ -27,13 +27,17 @@ Sheet geometry (reverse-engineered; every number verified against the real files
   body       the single stroked rect [21,21,1168.7,713.9], stroke width 0.36
   grid       columns A..Z at x = 53.00 + 43.276*i, rows 00..29 at y = 37.70 + 22.730*j
   PIN STUB   a 2.0-4.5 pt horizontal segment at stroke width >= 0.9 butted against
-             a block edge, drawn ONCE PER CONNECTED PIN. Left stub = input side,
-             right stub = output side. The whole parser keys on this.
+             a block edge, drawn once per SHOWN pin - wired or not: an unwired pin
+             has a bare stub or one carrying its grey default value. Left stub =
+             input side, right stub = output side. The whole parser keys on this.
   pin label  a span inside the block rect within 8 pt of its own edge and at least
              3 pt closer to that edge than to the opposite one
   wire label the nearest free span whose gap to the stub's free end is <= 6 pt
-  colours    0x191970 explicit pin label, 0xA9A9A9 literal equal to the block
-             default, 0x008000 comment / numeric literal, 0xFFFF00 exec-order badge
+  colours    0x191970 explicit pin label, 0xA9A9A9 the pin's default value: the pin
+             itself holds no variable or constant (wire_kind 'default'); it may
+             still be fed by a line from another block, whose link is stored on
+             the source pin. 0x008000 comment / numeric literal, 0xFFFF00 exec-
+             order badge. A black literal is usually a constant set on the pin.
   name       span at font size ~4.6, black -> block instance name
 
 Measured against the index over 44 tasks (3 controllers, 750 blocks, 3.7k pin rows):
@@ -70,12 +74,16 @@ SHEETREF = re.compile(r"^[A-Za-z0-9_\-]+\.[A-Z]\d{1,2}$")
 LINKREF = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
 NUMLIT = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$")
 EQNCHARS = re.compile(r"[*+/><=&|^-]")
-BOOLLIT = {"TRUE", "FALSE"}
+BOOLLIT = {"TRUE", "FALSE"}            # compared upper-cased
+# an enumeration / bit-set literal wired to a pin: "MAN-AUTO-LOCK", "AVAIL-MOM_OUT"
+# (2+ characters a token, so the equation 'A-B' on a CALC stays an equation)
+ENUMLIT = re.compile(r"^[A-Z][A-Z0-9_]+(-[A-Z][A-Z0-9_]+)+$")
 # bare marker glyphs the sheet prints beside a wire; never a variable
 MARKERS = {"EGD", "A", "N", "S", "R", "T", "P", "I", "O", "BQ", "L", "H"}
-SWPATH = re.compile(r"^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$")
+# program / task / block names may carry "-" and "&" (e.g. "ST_LPExhP-TAL")
+SWPATH = re.compile(r"^[A-Za-z0-9_&-]+(\.[A-Za-z0-9_&-]+)*$")
 
-PRINT_SCHEMA = "3"
+PRINT_SCHEMA = "7"
 
 PRINT_DDL = r"""
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -101,7 +109,7 @@ CREATE TABLE IF NOT EXISTS print_pin(
   block_label TEXT NOT NULL, block_path TEXT, exec_order INTEGER,
   pin_name TEXT, side TEXT CHECK(side IN ('L','R')),
   direction TEXT CHECK(direction IN ('I','O')),
-  wire_kind TEXT CHECK(wire_kind IN ('var','field','const','offpage','link','equation','marker','none')),
+  wire_kind TEXT CHECK(wire_kind IN ('var','field','const','default','offpage','link','equation','marker','none')),
   wire_text TEXT, var_name TEXT, wire_field TEXT);
 CREATE INDEX IF NOT EXISTS ix_print_pin_sheet ON print_pin(sheet_id);
 CREATE INDEX IF NOT EXISTS ix_print_pin_block ON print_pin(block_path, pin_name);
@@ -123,7 +131,10 @@ def print_db_path() -> Path:
     return Path(p) if p else dbm.local_dir() / "print.sqlite"
 
 
-def open_print(path: Path = None, create=True) -> sqlite3.Connection:
+def open_print(path: Path = None, create=True, partial=False) -> sqlite3.Connection:
+    """partial: the caller will scan only some controllers / pages. An old-schema corpus
+    is rebuilt from scratch, so a partial scan must refuse rather than silently drop
+    every other controller."""
     path = path or print_db_path()
     if not create and not path.exists():
         raise SystemExit(f"print corpus not built: {path}  (run: py tools/dcdas.py print-scan)")
@@ -131,6 +142,15 @@ def open_print(path: Path = None, create=True) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA journal_mode=OFF")
     conn.execute("PRAGMA synchronous=OFF")
+    if create and conn.execute("SELECT 1 FROM sqlite_master WHERE name='meta'").fetchone():
+        r = conn.execute("SELECT value FROM meta WHERE key='print_schema'").fetchone()
+        if not r or r[0] != PRINT_SCHEMA:          # derived data: rebuilt, never migrated
+            if partial:
+                conn.close()
+                raise SystemExit(f"print corpus is schema {r[0] if r else '?'}, this code writes "
+                                 f"{PRINT_SCHEMA}: run a FULL print-scan (no --ctrl / --pages) to rebuild it")
+            conn.executescript("DROP TABLE IF EXISTS print_pin; DROP TABLE IF EXISTS print_sheet; "
+                               "DROP TABLE IF EXISTS print_pdf; DROP TABLE IF EXISTS meta;")
     conn.executescript(PRINT_DDL)
     return conn
 
@@ -141,7 +161,13 @@ def open_print_ro(path: Path = None) -> sqlite3.Connection:
     path = path or print_db_path()
     if not path.exists():
         raise SystemExit(f"print corpus not built: {path}  (run: py tools/dcdas.py print-scan)")
-    return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    r = conn.execute("SELECT value FROM meta WHERE key='print_schema'").fetchone()
+    if not r or r[0] != PRINT_SCHEMA:     # an old corpus means other things by its kinds
+        conn.close()
+        raise SystemExit(f"print corpus is schema {r[0] if r else '?'}, this code reads {PRINT_SCHEMA}: "
+                         "run  py tools/dcdas.py print-scan")
+    return conn
 
 
 def sha256_of(path: Path) -> str:
@@ -177,6 +203,15 @@ def read_header(page):
                 return w[0], w[1]
         return None
 
+    def label(first, second):
+        """The cell whose label is the two words '<first> <second>' on one line. The strip
+        can carry the first word elsewhere too (a second 'Software' in another cell), and
+        taking the leftmost one then reads the wrong cell."""
+        for w in sorted(lab.get(first, []), key=lambda t: t[0]):
+            if any(abs(t[1] - w[1]) < 1.0 and w[2] <= t[0] <= w[2] + 8.0 for t in lab.get(second, [])):
+                return w[0], w[1]
+        return None
+
     def value(a, xmax=1e9, dy=5.7):
         if a is None:
             return ""
@@ -185,13 +220,13 @@ def read_header(page):
         v.sort(key=lambda w: w[0])
         return " ".join(w[4] for w in v)
 
-    a_sw, a_dev = anchor("Software"), anchor("Device")
+    a_sw, a_dev = label("Software", "Path"), label("Device", "Name")
     a_sh, a_cont, a_mod = anchor("No."), anchor("Cont."), anchor("Module")
     path = value(a_sw, a_sw[0] + 260) if a_sw else ""
-    # On the rotated sequence sheets the title block is a vertical strip, so reading
-    # it as rows picks up label words from other cells. A Software Path is always a
-    # dotted identifier chain: anything else is a misread and is dropped, rather than
-    # stored as a path that addresses nothing.
+    # the cell clips long paths, sometimes right after a dot
+    path = path.rstrip(".")
+    # A Software Path is always a dotted identifier chain: anything else is a misread
+    # and is dropped, rather than stored as a path that addresses nothing.
     if not SWPATH.match(path):
         path = ""
     prog, _, task = path.partition(".")
@@ -333,6 +368,15 @@ def _cluster(shapes, fitz):
     return [r for r in out if r is not None]
 
 
+def _union(rs, fitz):
+    if not rs:
+        return None
+    u = fitz.Rect(rs[0])
+    for q in rs[1:]:
+        u |= q
+    return u
+
+
 def _collect_spans(page):
     seen, out = set(), []
     for b in page.get_text("dict")["blocks"]:
@@ -361,11 +405,18 @@ def _is_grid_label(s):
 
 
 def classify_wire(text, color, block_names):
-    """-> wire_kind for the label found on a stub."""
+    """-> wire_kind for the label found on a stub. Colour first: grey text is the pin's
+    default value, printed when the pin itself holds no variable or constant ('default').
+    That is NOT the same as unwired: a line from another block is stored on the SOURCE
+    pin only, so the target pin still shows its grey default. A black literal is usually
+    a constant set on the pin (ANALOG_ALARM prints its INH default in black, though).
+    A variable-name lookup that overrides the look of the text happens in scan()."""
+    if color == 0xA9A9A9:
+        return "default"
+    if NUMLIT.match(text) or text.upper() in BOOLLIT or ENUMLIT.match(text):
+        return "const"
     if EQNCHARS.search(text):
         return "equation"
-    if color == 0xA9A9A9 or NUMLIT.match(text) or text in BOOLLIT:
-        return "const"
     if SHEETREF.match(text):
         return "offpage"
     if LINKREF.match(text) and text.split(".")[0] in block_names:
@@ -376,8 +427,10 @@ def classify_wire(text, color, block_names):
 
 
 def parse_page(doc, pno, fitz):
-    """pno is 0-based. -> list of one dict per CONNECTED pin (an unwired pin has
-    no stub and is therefore invisible; that is a property of the drawing)."""
+    """pno is 0-based. -> one dict per pin STUB. A pin with nothing on it has a stub
+    too: bare (wire_kind 'none') or carrying its grey default ('default'). 'none' means
+    "no label at the stub's end": unwired, or a line drawn to another block whose label
+    sits only at the far end. Hidden pins are not drawn at all."""
     page = doc[pno]
     hdr = read_header(page)
     shapes, stubs, badges = _collect_ink(page)
@@ -411,6 +464,36 @@ def parse_page(doc, pno, fitz):
         if best is not None:
             used.add(best)
 
+    # Block symbols drawn edge to edge merge into ONE cluster, and only the top name gets
+    # it; the other blocks would be dropped with all their pins, and their stubs credited
+    # to the first. A block left without a rectangle takes its OWN outline piece: the
+    # frame whose top-left sits just left of its name and at most 18 pt below it (inside
+    # the box for peer-health blocks). A device block's type text ('DUALSEL_V2') and a
+    # symbol's text ('1+sTC') sit 11-36 pt right of the frame edge, so they never match.
+    # The block that held the merged cluster is narrowed to its own outline the same way.
+    def _outline(n):
+        c = [q for q in shapes if n["x0"] - 5.5 <= q.x0 <= n["x0"] - 1.5
+             and n["y0"] - 3.0 <= q.y0 <= n["y0"] + 18.0 and q.width >= 8.0 and q.height >= 4.0]
+        if not c:
+            return None
+        o = min(c, key=lambda q: (q.y0, -q.width * q.height))
+        return _union([q for q in shapes if (o + (-0.6, -0.6, 0.6, 0.6)).contains(q)], fitz)
+
+    split = set()
+    for b in blocks:
+        if b["rect"] is None:
+            o = _outline(b["span"])
+            if o is not None:
+                owner = next((a for a in blocks if a["rect"] is not None and a["rect"].contains(o)), None)
+                b["rect"] = o
+                if owner is not None:
+                    split.add(id(owner))
+    for a in blocks:
+        if id(a) in split:
+            o = _outline(a["span"])
+            if o is not None:
+                a["rect"] = o
+
     for s in badge_txt:                     # the exec-order badge sits right of the name
         cand = [b for b in blocks if abs(b["span"]["cy"] - s["cy"]) < 4.0
                 and s["x0"] >= b["span"]["x1"] - 1]
@@ -429,23 +512,58 @@ def parse_page(doc, pno, fitz):
                        and r.y0 <= s["cy"] <= r.y1 for r in allr)]
     stubs = sorted({(round(a, 1), round(b_, 1), round(c, 1)) for a, b_, c in stubs})
 
+    def _claims(r):
+        """-> [(stub, side, distance of its block end from the edge)] for one block."""
+        out = []
+        for st in stubs:
+            sx0, sx1, sy = st
+            if not (r.y0 - 3 <= sy <= r.y1 + 3):
+                continue
+            if abs(sx1 - r.x0) < 4.0:
+                out.append((st, "L", abs(sx1 - r.x0)))
+            elif abs(sx0 - r.x1) < 4.5:
+                out.append((st, "R", abs(sx0 - r.x1)))
+        # One stub is sometimes drawn as two touching segments; both butt the edge within
+        # tolerance. Keep the INNER one: its free end is where the wire label starts
+        # (measuring from the outer end loses labels, and catches notes 8 pt away).
+        out.sort(key=lambda c: (c[1], c[0][2], c[2]))
+        kept = []
+        for c in out:
+            twin = next((k for k in kept if k[1] == c[1] and abs(k[0][2] - c[0][2]) < 0.25
+                         and k[0][0] - 0.3 <= c[0][1] and c[0][0] <= k[0][1] + 0.3), None)
+            if twin is None:
+                kept.append([c[0], c[1], c[2], c[0][0] if c[1] == "L" else c[0][1]])
+            else:                # the label starts at the INNERMOST free end of the pair
+                twin[3] = max(twin[3], c[0][0]) if c[1] == "L" else min(twin[3], c[0][1])
+        return [tuple(k) for k in kept]
+
+    live = [b for b in blocks if b["rect"] is not None and not b["name"].startswith("_COMMENT")]
+    claims = {id(b): _claims(b["rect"]) for b in live}
+    # a stub two blocks claim on the SAME side (a small block butted against a big frame):
+    # the smallest block whose own rectangle holds the stub's row owns it
+    owners = {}
+    for b in live:
+        for st, side, _, _ in claims[id(b)]:
+            owners.setdefault((st, side), []).append(b)
+
+    def _owns(b, st, side):
+        cand = owners[(st, side)]
+        if len(cand) == 1:
+            return True
+        inner = [x for x in cand if x["rect"].y0 - 0.5 <= st[2] <= x["rect"].y1 + 0.5]
+        if not inner:
+            return True
+        return b is min(inner, key=lambda x: x["rect"].width * x["rect"].height)
+
     rows = []
-    for b in blocks:
+    for b in live:
         r = b["rect"]
-        if r is None or b["name"].startswith("_COMMENT"):
-            continue
         inside = [s for s in body
                   if r.x0 - 1 <= s["x0"] and s["x1"] <= r.x1 + 1
                   and r.y0 - 1 <= s["cy"] <= r.y1 + 1
                   and s["color"] in (0x000000, 0x191970) and s["font"].endswith("F1")]
-        for (sx0, sx1, sy) in stubs:
-            if not (r.y0 - 3 <= sy <= r.y1 + 3):
-                continue
-            if abs(sx1 - r.x0) < 4.0:
-                side = "L"
-            elif abs(sx0 - r.x1) < 4.5:
-                side = "R"
-            else:
+        for (sx0, sx1, sy), side, _, end in claims[id(b)]:
+            if not _owns(b, (sx0, sx1, sy), side):
                 continue
             pin = None
             for s in [s for s in inside if abs(s["cy"] - sy) <= ROW_TOL]:
@@ -454,7 +572,7 @@ def parse_page(doc, pno, fitz):
                     pin = pin or s["t"]
                 elif side == "R" and dr <= PIN_LBL_OFF and dl - dr > 3.0:
                     pin = pin or s["t"]
-            tip = sx0 if side == "L" else sx1          # the stub's free end
+            tip = end                                   # the stub's (innermost) free end
             if side == "L":
                 out = [s for s in free if s["x1"] <= tip + 0.8 and abs(s["cy"] - sy) <= ROW_TOL]
                 out.sort(key=lambda s: tip - s["x1"])
@@ -715,6 +833,14 @@ def scan(idx_conn, pconn, ctrls=None, pdf_dir: Path = None, pages=None, log=prin
                                         "SELECT name, block_count FROM program WHERE ctrl=?", (ctrl,))})
         vnames = vars_by_ctrl[ctrl]
         bpaths, bparents, bprogs = blocks_by_ctrl[ctrl]
+        bnames_ctrl = {p.rsplit("/", 1)[-1] for p in bpaths}
+        kids_of = {}
+        for c in bparents:
+            if "/" in c:
+                kids_of.setdefault(c.rsplit("/", 1)[0], []).append(c)
+
+        def children(p):
+            return kids_of.get(p, [])
 
         doc = fitz.open(str(path))
         rng = range(doc.page_count) if not pages else [p - 1 for p in pages]
@@ -737,8 +863,20 @@ def scan(idx_conn, pconn, ctrls=None, pdf_dir: Path = None, pages=None, log=prin
                 n_other += (kind == "other")
                 continue
             n_sheet += 1
+            parsed = parse_page(doc, pno, fitz)
+            if prefix and method in ("exact", "repair") and parsed:
+                # The title cell clips right before '.Action_Logic_<step>' on SFC action
+                # sheets, so the printed path names the step, one level above the blocks.
+                # Descend only into the ONE child container that holds the drawn labels.
+                labels = {r["block"] for r in parsed}
+                if not any("%s/%s" % (prefix, l) in bpaths for l in labels):
+                    kids = [k for k in children(prefix)
+                            if any("%s/%s" % (k, l) in bpaths for l in labels)]
+                    if len(kids) == 1:
+                        prefix = kids[0]
+                        pconn.execute("UPDATE print_sheet SET block_prefix=? WHERE id=?", (prefix, sid))
             rows = []
-            for r in parse_page(doc, pno, fitz):
+            for r in parsed:
                 # 'internals' sheets draw the inside of an opaque macro: those blocks
                 # exist in no index row at all, so they keep block_path NULL and are
                 # attributed to the owner instance through the sheet
@@ -747,13 +885,30 @@ def scan(idx_conn, pconn, ctrls=None, pdf_dir: Path = None, pages=None, log=prin
                     bp = None            # drawn, but the index has no such block
                 vn = fld = None
                 t, kd = r["wire_text"], r["wire_kind"]
-                if kd == "var" and t:
-                    if t in vnames:
-                        vn = t
-                    elif "." in t:
+                if t and r["side"] == "R" and "." in t and t.split(".", 1)[0] == r["block"]:
+                    # 'OR_8.OUT' on OR_8's own OUTPUT stub: the label of the facing
+                    # block's input, caught by the window. (On an INPUT stub the same
+                    # text is a real feedback wire - a seal-in rung, a PID's TV <- CVO.)
+                    t, kd = None, "none"
+                if t and kd != "default" and t in vnames:
+                    # an exact variable name wins over the look of the text: 'S1.L4' is
+                    # an EGD copy, not a sheet ref; 'k_A/B' is a name, not an equation
+                    vn, kd = t, "var"
+                elif kd == "var" and t:
+                    if "." in t:
                         base, _, f = t.rpartition(".")
                         if base in vnames:
-                            vn, fld, kd = base, f, "field"
+                            # 'X.PIN' where a block X exists is a block-to-block link that
+                            # happens to share a variable's name, never a field of it
+                            if (prefix and "%s/%s" % (prefix, base) in bpaths) or base in bnames_ctrl:
+                                kd = "link"
+                            else:
+                                vn, fld, kd = base, f, "field"
+                    elif t[0].isdigit() and t[1:] in vnames:
+                        # a stray glyph printed over the label's first character
+                        # ('0LpEcon...'): the rest is an exact name. wire_text keeps the
+                        # raw text, so the evidence shown is still what was printed.
+                        vn = t[1:]
                 rows.append((sid, r["cell"], r["block"], bp, r["exec"], r["pin"], r["side"],
                              r["direction"], kd, t, vn, fld))
             pconn.executemany(

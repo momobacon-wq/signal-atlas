@@ -520,7 +520,16 @@ def _ps_where(x):
     return f"{base}/{x['label']}" if base else f"(sheet path not read)/{x['label']}"
 
 
+def _ps_dir_word(x):
+    return "from" if x["dir"] == "I" else "to"
+
+
 def _ps_wire(x):
+    if x.get("fed_by"):
+        return f"(line {_ps_dir_word(x)} {', '.join(x['fed_by'])} per the index" + (
+            f"; grey default {x['wire']} shown)" if x["wire_kind"] == "default" else ")")
+    if x["wire_kind"] == "default":
+        return f"(no variable or constant on this pin; default {x.get('wire')} shown)"
     if x["wire_kind"] == "none" or not x.get("wire"):
         return "(no label: unwired, or a line to another block)"
     return x["wire"]
@@ -540,7 +549,7 @@ def _ps_index(x):
 def _ps_notes(x):
     n = []
     if x.get("paired"):
-        n.append("pin name taken from the index by its wire")
+        n.append("pin name taken from the index " + (x["paired"] if isinstance(x["paired"], str) else "by its wire"))
     if x.get("placed"):
         n.append("sheet not attached by the parser; placed " + x["placed"])
     return n
@@ -579,6 +588,8 @@ def _print_show(o, r):
                 pin = x["pin"] or "(unnamed)"
                 if r["mode"] == "var":
                     head = f"  {_ps_where(x)}.{pin}"
+                    if x.get("fed_by"):
+                        head += f"   (line {_ps_dir_word(x)} {', '.join(x['fed_by'])} per the index)"
                     if x.get("wire") and x["wire"] != r["key"].split(".", 1)[1]:
                         head += f"   (drawn as {x['wire']})"
                     o.line(head)
@@ -590,8 +601,9 @@ def _print_show(o, r):
                 o.line(f"      {_ps_cite(x)}")
             o.line()
         if r.get("index_only"):
-            o.line(f"INDEX PINS WITH NO DRAWN ROW: {len(r['index_only'])}  (the parser found nothing for these: "
-                   "no readable label, or a sheet it could not attach; not evidence against the index)")
+            o.line(f"INDEX PINS WITH NO DRAWN ROW: {len(r['index_only'])}  (not shown on the block (hidden or "
+                   "parameter pins), drawn but not nameable (listed above as '(unnamed)'), or on a sheet the parser "
+                   "could not attach; not evidence against the index)")
             for x in r["index_only"][:30]:
                 o.line(f"  {x['dir'] or '-'}/{x['src'] or '-'} {x['pin']:<{w}} {x['wire'] or '-'}"
                        + (f" [{x['origin']}]" if x.get("origin") else ""))

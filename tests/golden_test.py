@@ -417,6 +417,56 @@ def main():
         check("print vs index H11: the report lists that mis-paired wire",
               any(x["block"].endswith("HW_ISC_RH/AI_INT_1") for x in _q.print_check(conn, pconn, ctrl="H11", limit=200)["sections"]["wire_conflict"]),
               str(c["wire_conflict"]))
+        # ---- print-show: one signal / one block, set against the index
+        pro = _pei.open_print_ro()
+        ps = _q.print_show(conn, pro, "H11", "HardwireInputs_1/HW_ISC_RH/AI_INT_1")
+        got = {x["pin"]: x["verdict"] for x in ps["rows"]}
+        check("print-show H11 .../AI_INT_1: IN / OUT / DEVICE_STATUS are wire conflicts against the 'pair' guess",
+              all(got.get(p) == "wire_conflict" for p in ("IN", "OUT", "DEVICE_STATUS")), str(got))
+        # a MOVE prints no pin names: both drawn pins must be named from the index by their wire,
+        # and so must not be listed again as 'index pins with no drawn row'
+        ps = _q.print_show(conn, pro, "G11", "GeneratorBreaker/FNCTN_SerialBreaker/MOVE_3")
+        got = {x["pin"]: x["verdict"] for x in ps["rows"]}
+        check("print-show G11 .../MOVE_3: unnamed drawn pins paired to SRC/DEST, none left 'not drawn'",
+              got.get("SRC") == "agree" and got.get("DEST") == "agree" and not ps.get("index_only"),
+              f"{got} index_only={ps.get('index_only')}")
+        # 'Block.PIN' links that share a variable's name are never that variable's writers
+        ps = _q.print_show(conn, pro, "G11.88QB1")
+        check("print-show G11.88QB1: a same-named block link is not counted as a second writer",
+              ps["by_dir"].get("O", 0) == 0 and not any(x["wire_kind"] == "field" for x in ps["rows"]),
+              str(ps["by_dir"]))
+        check("print-show on an ambiguous block path returns the candidates, not 'nothing drawn'",
+              _q.print_show(conn, pro, "G11", "AI_INT_12")["kind"] == "ambiguous")
+        check("print-show on a path that exists nowhere says so",
+              _q.print_show(conn, pro, "S1", "NoSuchProgram/NoSuchTask")["kind"] == "notfound")
+        # a refused or absent print shows nothing but the reason (property, not a file snapshot)
+        for c, gs in pconn.execute("SELECT ctrl, gate_status FROM print_pdf WHERE gate_status<>'pass' "
+                                   "AND ctrl NOT IN (SELECT ctrl FROM print_pdf WHERE gate_status='pass')"):
+            v = one(conn, "SELECT full_name FROM variable WHERE ctrl=? AND id IN (SELECT var_id FROM pin) LIMIT 1", c)
+            if v:
+                ps = _q.print_show(conn, pro, v)
+                check(f"print-show {c} (print {gs}): reason given, no drawn rows", bool(ps.get("refused")) and not ps["rows"],
+                      str(ps.get("refused")))
+        # counts come from ALL rows, never from the shown slice
+        ps = _q.print_show(conn, pro, "G11.L52GX", limit=3)
+        check("print-show G11.L52GX --limit 3: totals cover every drawn row",
+              ps["total"] > 3 and sum(ps["counts"].values()) == ps["total"]
+              and sum(ps["by_dir"].values()) == ps["total"] and len(ps["rows"]) == 3, f"{ps['total']} {ps['by_dir']}")
+        # the other controllers' sheets are found through EGD under the name the signal has THERE,
+        # never by bare name (two controllers reuse names for different signals)
+        ps = _q.print_show(conn, pro, "S1.L52TGM")
+        check("print-show S1.L52TGM: the EGD consumer copies on H11/H12 sheets are shown, no bare-name matches",
+              {e["var"] for e in ps["egd"]} >= {"H11.S1.L52TGM", "H12.S1.L52TGM"}
+              and all(e["var"].endswith(".S1.L52TGM") for e in ps["egd"]), str([e["var"] for e in ps["egd"]]))
+        pro.close()
+        # the pointer in `show` must never fail a good `show`, even when the corpus is unusable
+        import subprocess as _sp
+        for what, bad_db in (("missing", Path(__file__).resolve().parent / "no_such_dir" / "print.sqlite"),
+                             ("not a database", Path(__file__).resolve())):
+            _r = _sp.run([sys.executable, str(Path(__file__).resolve().parents[1] / "tools" / "dcdas.py"), "show", "G11.L52GX"],
+                         capture_output=True, text=True, encoding="utf-8", env=dict(os.environ, DCDAS_PRINT_DB=str(bad_db)))
+            check(f"show still succeeds when the print corpus is {what}",
+                  _r.returncode == 0 and "PRINTED SHEETS" not in _r.stdout, _r.stderr[-200:])
         # a wrongly-resolved sheet path would silently attribute pins to the wrong block
         bad = one(pconn, "SELECT count(*) FROM print_sheet WHERE kind='sheet' AND map_method='repair' AND block_prefix IS NULL")
         check("every repaired sheet path resolved to exactly one container", bad == 0, str(bad))

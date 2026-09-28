@@ -135,6 +135,15 @@ def open_print(path: Path = None, create=True) -> sqlite3.Connection:
     return conn
 
 
+def open_print_ro(path: Path = None) -> sqlite3.Connection:
+    """The corpus for reading only (print-check, print-show, the pointer in show): no DDL,
+    no pragmas, so a reader can never alter it or race a running print-scan into a bad state."""
+    path = path or print_db_path()
+    if not path.exists():
+        raise SystemExit(f"print corpus not built: {path}  (run: py tools/dcdas.py print-scan)")
+    return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+
+
 def sha256_of(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:

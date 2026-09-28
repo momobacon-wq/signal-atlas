@@ -24,18 +24,22 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 4. 端子 / EGD / 畫面 / 警報：`io <tag|var|module>`、`egd <var|ctrl> [--page X]`、`screen <cim|var>`、`alarm <pattern>`。
 5. 要驗證或引用原始 XML 時，用 `where <CTRL.NAME>` 拿到 `file:line`，再用 `Read` 的 offset/limit 只讀那幾十行。
    **不要** grep checkout、不要整檔 Read `_*.xml` 或 `Variables.xml`（單檔可達 18 MB、全案 800 MB）。
+5a. 索引說看不到或只是推斷時（`encrypted: not traceable`、`no visible pins`、`[decl]/[link]/[pair]/[vote]`、來源 L/H/R/C、`?`、
+   沒有寫入者），而且 `print.sqlite` 已建立：跑 `print-show <CTRL.NAME>` 或 `print-show <CTRL> <Program/Task/.../Block>`，
+   看列印圖怎麼畫（`show` 結尾的 `PRINTED SHEETS:` 行也會提示）。回答時把它**另起一段**當「列印圖證據（尚未併入索引）」，
+   引用 `<CTRL>_P.pdf p<頁> Sh.<圖號> <圖格>`；`INDEX PINS NOT DRAWN AS WIRED` 不是反證（沒接線的腳不畫）。
 6. 回答用中文散文 + 英文訊號名；每個結論引用 `CTRL/Program/Task/Block.Pin (file:line)`，並附網頁深連結
    `https://momobacon-wq.github.io/signal-atlas/#/v/<CTRL.NAME>`；要看圖時附 Task 圖 `#/d/<CTRL>/<Program>/<Task>?sel=<CTRL.NAME>`
    或訊號圖 `#/g/<CTRL.NAME>?up=2&down=2`（`show` 的 WRITERS 行 `CTRL/Program/Task/…` 的前三段就是 Task 圖路徑）。
 7. 誠實標示不確定：
    - 方向是推斷值。CLI 印 `O/T` 這種「方向/來源」字母：U=介面腳 Usage、T=手冊表、人工覆寫或工具查證、M=人工登錄但只是鏡射／推論、C=常數規則、L=連線投票、H=命名慣例、R=回推（不透明巨集）、`?`=未知。來源是 L/H/R/M 時在回答裡寫「推斷」。
    - **加密 ≠ 未使用**。來源 XML 內加密的程式與巨集無法追蹤；CLI 印 `encrypted: not traceable`，照實轉述，不要編邏輯。
-     但**組態工具列印出來的邏輯圖看得到加密內容**：若 `print.sqlite` 已建立，`print-check` 會列出圖上有而索引沒有的腳位與
+     但**組態工具列印出來的邏輯圖看得到加密內容**：若 `print.sqlite` 已建立，`print-check`（全控制器）與 `print-show`（單一訊號／方塊）會列出圖上有而索引沒有的腳位與
      方塊（引用 `<CTRL>_P.pdf p<頁> <圖號> <圖格>`）。這類證據目前**只在報告裡**，還沒寫進 `pin`，所以不要當成索引已知的事實。
    - CLI 印 `consumer outside checkout` 時照實說去向在 checkout 外。
    - 索引是 checkout 快照（`status` 顯示各控制器 MinorRev），不是現場控制器的即時狀態。
 
-## 列印邏輯圖（`print-scan` / `print-check`，唯讀證據）
+## 列印邏輯圖（`print-scan` / `print-check` / `print-show`，唯讀證據）
 
 組態工具可把整台控制器的邏輯圖列印成 PDF。那份圖是**原廠真值**，而且畫得出 XML 看不到的東西：加密程式的方塊、
 不透明巨集的介面腳與內部。既有的 `tools/xref_manual.csv` 就是工程師逐張拍照手抄這些圖的結果。
@@ -48,6 +52,16 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
   語料只存方塊路徑與變數**名稱**，不存索引的 row id，所以重建索引後仍然對得上。
 - `print-check`：唯讀差異報告。分類由重到輕：牴觸人工查證（tool 級）＞索引猜成輸出但圖上是輸入＞索引猜成輸入但圖上是輸出
   ＞兩邊變數名不同＞牴觸 XML 明文腳位（先懷疑解析器）＞圖上有而索引沒有的新腳位＞索引只有巨集自身介面變數的佔位值。
+- `print-show`：單一變數或方塊的列印圖內容，逐腳對照索引。衝突類別直接用 `print-check` 的分類（同一個 `_pc_bucket`，
+  兩者不會分歧），一致再細分 `agree`／`agree_dir`／`fills_dir`，另有 `new_pin`／`placeholder`／`drawing_only`／`unnamed`。
+  - 圖上沒印腳名的方塊（MOVE、CALC、比較器…）用接線向索引借腳名（該方塊上**唯一**接同一條線的腳），並註記。
+  - 解析器沒掛上路徑的圖頁（SFC 動作頁少一層、標題欄截斷或讀不到）用標籤定位，而且只接受**唯一**命中：先限定在印出的路徑底下，
+    再看接線，最後才看整台控制器是否只有這一顆同名方塊（有可讀路徑卻對不上時不用最後這招）。
+  - `Block.PIN` 形式的標籤是方塊之間的連線，就算剛好有同名變數也**不算**該變數的腳。
+  - 其他控制器只經 EGD（`producer_var_id`）找對應，並用該訊號在**那台**的名字查；同名不同訊號（`S1.L4` 與 `G11.L4`）不混。
+  - 方塊路徑也可給索引裡沒有的加密程式方塊（用圖上的標籤比對），或給 Program 或 `Program/Task` 容器列出圖上的所有方塊。
+  - 列印檔被 gate 拒收或根本沒有時只說原因。`show` 在語料存在時會多印一行 `PRINTED SHEETS:` 指過來；語料壞掉或不存在時這行靜默略過，
+    絕不讓 `show` 失敗。讀語料一律 `open_print_ro()`（唯讀 URI、不跑 DDL）。
 - 未標腳名的閘符號（AND/OR/NOT/LATCH/計時器）**不猜腳名**（依位置對 IN1/IN2/IN3 實測只有七成多），留空白。
 
 ## 路徑慣例

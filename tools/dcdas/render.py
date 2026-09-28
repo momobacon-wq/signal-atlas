@@ -508,10 +508,141 @@ def _print_check(o, r):
         o.line(f"  [{x['method']}] {x['owner']:<64} pins={x['pins']}")
 
 
+def _ps_cite(x):
+    sh = (x.get("sheet") or "?").strip()
+    return f"{x['pdf']} p{x['page']} sheet {sh} {x.get('cell') or ''}".rstrip()
+
+
+def _ps_where(x):
+    if x.get("block_path"):
+        return x["block_path"]
+    base = (x.get("owner") or x.get("prefix") or x.get("sw_path") or "").replace(".", "/")
+    return f"{base}/{x['label']}" if base else f"(sheet path not read)/{x['label']}"
+
+
+def _ps_wire(x):
+    if x["wire_kind"] == "none" or not x.get("wire"):
+        return "(no label: unwired, or a line to another block)"
+    return x["wire"]
+
+
+def _ps_index(x):
+    if "index_dir" not in x:
+        return x.get("why", "")
+    s = f"index {x['index_dir'] or '-'}/{x['index_src'] or '-'} {x.get('index_wire') or '-'}"
+    if x.get("index_origin"):
+        s += f" [{x['index_origin']}]"
+    if x.get("why"):
+        s += f"  ({x['why']})"
+    return s
+
+
+def _ps_notes(x):
+    n = []
+    if x.get("paired"):
+        n.append("pin name taken from the index by its wire")
+    if x.get("placed"):
+        n.append("sheet not attached by the parser; placed " + x["placed"])
+    return n
+
+
+def _print_show(o, r):
+    o.head(f"PRINTED SHEETS  {r['key']}   (drawing evidence; nothing here is written to the index)")
+    if r.get("refused"):
+        o.line(f"  {r['refused']}")
+    else:
+        if r["mode"] == "block":
+            if r.get("block_path"):
+                flags = [x for x, on in (("opaque", r.get("is_opaque")), ("encrypted program", r.get("encrypted"))) if on]
+                o.line(f"  index {r.get('block_kind') or 'block'}: {r['block_path']} [{r.get('block_type') or '-'}]"
+                       + (f"  ({', '.join(flags)})" if flags else ""))
+            elif r.get("matched_by_label"):
+                o.line("  not an index block: matched by its drawn label on the sheets of its container")
+            elif r.get("container"):
+                o.line("  not an index block: a container, listed from its sheets")
+        else:
+            o.line(f"  index: {r['index_pins']} pins wired to it")
+        c = r["counts"]
+        if r["total"]:
+            o.line(f"  drawn pins: {r['total']}   " + "  ".join(f"{k}={c[k]}" for k in sorted(c)))
+        o.line()
+        if r["mode"] == "var":
+            groups = (("O", "DRAWN WRITERS (pin on the output side)"), ("I", "DRAWN READERS (pin on the input side)"))
+        else:
+            groups = ((None, "DRAWN PINS"),) if r["total"] else ()
+        w = max([len(x["pin"] or "(unnamed)") for x in r["rows"]] + [8])
+        for d, title in groups:
+            rows = [x for x in r["rows"] if d is None or x["dir"] == d]
+            tot = r["total"] if d is None else r["by_dir"].get(d, 0)
+            o.line(f"{title}: {tot}" + (f"  ({len(rows)} shown)" if len(rows) < tot else ""))
+            for x in rows:
+                pin = x["pin"] or "(unnamed)"
+                if r["mode"] == "var":
+                    head = f"  {_ps_where(x)}.{pin}"
+                    if x.get("wire") and x["wire"] != r["key"].split(".", 1)[1]:
+                        head += f"   (drawn as {x['wire']})"
+                    o.line(head)
+                else:
+                    o.line(f"  {x['dir']} {pin:<{w}} {_ps_wire(x)}")
+                o.line(f"      {x['verdict']:<18} {_ps_index(x)}")
+                for n in _ps_notes(x):
+                    o.line(f"      {n}")
+                o.line(f"      {_ps_cite(x)}")
+            o.line()
+        if r.get("index_only"):
+            o.line(f"INDEX PINS WITH NO DRAWN ROW: {len(r['index_only'])}  (the parser found nothing for these: "
+                   "no readable label, or a sheet it could not attach; not evidence against the index)")
+            for x in r["index_only"][:30]:
+                o.line(f"  {x['dir'] or '-'}/{x['src'] or '-'} {x['pin']:<{w}} {x['wire'] or '-'}"
+                       + (f" [{x['origin']}]" if x.get("origin") else ""))
+            o.line()
+        if r.get("index_drawn"):
+            o.line(f"INDEX PINS ON THIS VARIABLE, AS THE DRAWING SHOWS THEM: {len(r['index_drawn'])}"
+                   "  (the drawn label is another name, or there is none)")
+            for x in r["index_drawn"][:30]:
+                o.line(f"  {x['dir']} {x['block_path']}.{x['pin']}   drawn: {_ps_wire(x)}")
+                o.line(f"      {x['verdict']:<18} {_ps_index(x)}")
+                o.line(f"      {_ps_cite(x)}")
+            o.line()
+        if r.get("index_unmatched"):
+            u = r["index_unmatched"]
+            o.line(f"INDEX PINS ON THIS VARIABLE WITH NO DRAWN MATCH: {len(u)}  (an unlabelled wire end, a sheet the "
+                   "parser could not attach, or a program not printed; not evidence against the index)")
+            for x in u[:30]:
+                o.line(f"  {x['dir'] or '-'}/{x['src'] or '-'} {x['path']}.{x['pin']}"
+                       + (f" [{x['origin']}]" if x.get("origin") else ""))
+            if len(u) > 30:
+                o.line(f"  ... +{len(u) - 30} more (--json)")
+            o.line()
+        if r.get("inside"):
+            o.line(f"SHEETS DRAWING THE INSIDE OF THIS PATH: {len(r['inside'])}")
+            for x in r["inside"][:30]:
+                o.line(f"  {x['pdf']} p{x['page']} sheet {(x['sheet'] or '?').strip()}  [{x['method']}]  "
+                       f"blocks={x['blocks']} pins={x['pins']}  {x['sw_path'] or ''}")
+            if len(r["inside"]) > 30:
+                o.line(f"  ... +{len(r['inside']) - 30} more (--json)")
+            o.line()
+        if r.get("container"):
+            o.line(f"BLOCKS DRAWN ON THIS CONTAINER'S SHEETS: {r['container_total']}"
+                   + (f"  ({len(r['container'])} shown)" if len(r["container"]) < r["container_total"] else ""))
+            for x in r["container"]:
+                ex = x["exec"] if x["exec"] is not None else "-"
+                o.line(f"  {x['label']:<32} exec={ex:<5} pins={x['pins']:<4} {x['pdf']} p{x['page']} "
+                       f"sheet {(x['sheet'] or '?').strip()}  {x['sw_path'] or ''}")
+            o.line()
+        if not r["total"] and not r.get("inside") and not r.get("container") and not r.get("index_drawn"):
+            o.line("  nothing drawn for it on the ingested sheets")
+    for e in r.get("egd") or []:
+        o.line(f"EGD {e['role'].upper()} {e['var']}: {e['total']} drawn pins" +
+               (f"  ({len(e['rows'])} shown)" if len(e["rows"]) < e["total"] else ""))
+        for x in e["rows"]:
+            o.line(f"  {x['dir']} {_ps_where(x)}.{x['pin'] or '(unnamed)'}   {x['verdict']}   {_ps_cite(x)}")
+
+
 _DISPATCH = {
     "show": _show, "trace": _trace, "block": _block, "task": _task, "find": _find, "io": _io,
     "egd_ctrl": _egd_ctrl, "egd_var": _egd_var, "screen": _screen, "screen_var": _screen_var, "alarm": _alarm, "diff_units": _diff_units,
-    "where": _where, "lint": _lint, "print_check": _print_check, "coverage": _coverage, "ambiguous": _ambiguous, "notfound": _notfound, "audit": _audit,
+    "where": _where, "lint": _lint, "print_check": _print_check, "print_show": _print_show, "coverage": _coverage, "ambiguous": _ambiguous, "notfound": _notfound, "audit": _audit,
 }
 
 

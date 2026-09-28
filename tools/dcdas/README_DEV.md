@@ -174,3 +174,13 @@ Build Major/Minor 兩個時間戳。其他格子有客戶、廠址與人員識�
 已知限制（`print-check` 會把它列在「無法解析」）：旋轉 90 度的順序圖（SFC）標題欄是直排字串，
 `read_header` 以橫列讀會抓到別格的標籤字，因此 Software Path 會經形狀驗證後丟掉（約 1,425 筆腳位
 無法歸屬）。這類圖面本來也沒有對應的索引方塊，先不處理；要處理就是讀 x 1089-1094 的直排欄位。
+
+### print-show（單一訊號／方塊的圖面證據）
+
+`query.print_show` 讀 `print.sqlite`（`parse_pei.open_print_ro()`，唯讀）並逐腳呼叫 `_pc_bucket`——與 `print_check` 同一個分類器。
+三個會讓證據被說錯的陷阱，驗證時各自抓到過真實案例：
+- 閘與 MOVE/CALC 類方塊不印腳名（語料約 9 萬列 `pin_name` 為空）。不命名就比對，會把它們全部列成「索引有、圖上沒畫」。
+  `_ps_pair` 只在方塊上**唯一**一支腳接同一條線時借用索引的腳名。
+- `print_pin.block_path` 為空不代表索引沒有這顆方塊：SFC 動作頁的 Software Path 少了 `Action_Logic_<step>` 一層、
+  標題欄會截斷或讀不到。`_PsIndex.place` 以標籤＋印出的路徑前綴／接線做**唯一**定位，找不到才說 `drawing_only`。
+- `wire_kind='field'`（`X.FIELD` 且 `X` 是變數）在本案全是 `Block.PIN` 連線，只是剛好有同名 BOOL 變數。變數模式排除它們。

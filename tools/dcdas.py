@@ -11,6 +11,7 @@
   py tools/dcdas.py where <CTRL.NAME | CTRL block-path>
   py tools/dcdas.py lint | coverage | audit-type <BLOCK_TYPE> | pindir-import | xref-paste <txt> --ctrl X | export-web <docs_dir>
   py tools/dcdas.py print-gate | print-scan [--ctrl X] | print-check [--ctrl X]   (the printed logic sheets as evidence)
+  py tools/dcdas.py print-show CTRL.NAME | print-show CTRL Program/Task/.../Block   (what the drawing shows for one signal / block)
 All commands accept --json. Output is deliberately compact (one fact per line) for Claude.
 """
 import argparse
@@ -251,6 +252,31 @@ def cmd_find(a):
 
 def cmd_show(a):
     _q(a, lambda q, c: q.show(c, a.signal, all_rows=a.all))
+    if not a.json:
+        _print_pointer(a.signal)
+
+
+def _print_pointer(signal):
+    """After `show`: say so when the printed sheets wire this variable too (they can show what
+    the encrypted XML hides). Silent when the print corpus has not been built."""
+    from dcdas import parse_pei, query
+    try:
+        if not parse_pei.print_db_path().exists():
+            return
+        v, err = query.resolve_signal(dbm.open_ro(), signal)
+        if err:
+            return
+        pconn = parse_pei.open_print_ro()
+        try:
+            h = query.print_hint(pconn, v["ctrl"], v["name"])
+        finally:
+            pconn.close()
+    except Exception:            # a pointer must never turn a good `show` into a failure
+        return
+    if h:
+        extra = f", {h['encrypted']} of them in encrypted programs" if h["encrypted"] else ""
+        print(f"PRINTED SHEETS: {h['n']} drawn pins on this variable{extra}"
+              f"  ->  py tools/dcdas.py print-show {v['full_name']}")
 
 
 def cmd_trace(a):
@@ -344,8 +370,19 @@ def cmd_print_scan(a):
 def cmd_print_check(a):
     from dcdas import parse_pei, query, render
     conn = dbm.open_ro()
-    pconn = parse_pei.open_print(create=False)
+    pconn = parse_pei.open_print_ro()
     res = query.print_check(conn, pconn, ctrl=a.ctrl, what=a.what, limit=a.limit)
+    if a.json:
+        print(json.dumps(res, ensure_ascii=False, indent=1, default=str))
+    else:
+        print(render.render(res, a))
+
+
+def cmd_print_show(a):
+    from dcdas import parse_pei, query, render
+    conn = dbm.open_ro()
+    pconn = parse_pei.open_print_ro()
+    res = query.print_show(conn, pconn, a.key, a.path, limit=a.limit)
     if a.json:
         print(json.dumps(res, ensure_ascii=False, indent=1, default=str))
     else:
@@ -357,6 +394,13 @@ def cmd_export_web(a):
     conn = dbm.open_ro()
     key = None if a.no_encrypt else dbm.web_passphrase(a.key_file)
     export_web.run(conn, Path(a.docs), HERE, log, passphrase=key)
+
+
+def _positive(v):
+    n = int(v)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return n
 
 
 # ------------------------------------------------------------------------------------------------------ main
@@ -407,6 +451,10 @@ def main(argv=None):
     p.add_argument("--ctrl", nargs="*"); p.add_argument("--pages", nargs="*", type=int, help="only these 1-based pages (debugging)")
     p = add("print-check", cmd_print_check, help="read-only diff: what the printed drawing says vs what the index inferred")
     p.add_argument("--ctrl"); p.add_argument("--what", default="all"); p.add_argument("--limit", type=int, default=40)
+    p = add("print-show", cmd_print_show, help="what the printed sheets draw for one variable (CTRL.NAME) or block (CTRL path), against the index")
+    p.add_argument("key", help="CTRL.NAME, or CTRL when a block path follows")
+    p.add_argument("path", nargs="?", help="Program/Task/.../Block (also a Program/Task the index cannot open)")
+    p.add_argument("--limit", type=_positive, default=60)
     p = add("export-web", cmd_export_web); p.add_argument("docs", nargs="?", default=str(HERE.parent / "docs"))
     p.add_argument("--key-file", help="file holding the site passphrase (default: web_key_file in the local config)")
     p.add_argument("--no-encrypt", action="store_true", help="plain JSON export (local testing only; never publish)")

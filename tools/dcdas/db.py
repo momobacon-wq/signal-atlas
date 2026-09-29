@@ -12,7 +12,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = "11"
+SCHEMA_VERSION = "12"
 
 
 def local_dir() -> Path:
@@ -91,11 +91,13 @@ CREATE TABLE IF NOT EXISTS block_attr(block_id INTEGER, name TEXT, value TEXT, P
 
 CREATE TABLE IF NOT EXISTS pin(
   id INTEGER PRIMARY KEY, block_id INTEGER NOT NULL, name TEXT NOT NULL,
-  direction TEXT CHECK(direction IN ('I','O','S','?')), dir_source TEXT CHECK(dir_source IN ('U','T','M','C','L','H','R','-')),
+  direction TEXT CHECK(direction IN ('I','O','S','?')), dir_source TEXT CHECK(dir_source IN ('U','T','M','C','L','H','R','G','-')),
   conn_kind TEXT CHECK(conn_kind IN ('V','L','P','D','N','E','A','-')), connection TEXT,
   var_id INTEGER, tgt_block_id INTEGER, tgt_pin TEXT, address TEXT, value TEXT, alias TEXT,
   alias_override INTEGER, usage_declared TEXT, description TEXT, line_no INTEGER,
-  origin TEXT CHECK(origin IN ('decl','link','pair','vote','xref')), lib_name TEXT, UNIQUE(block_id, name));
+  origin TEXT CHECK(origin IN ('decl','link','pair','vote','xref','print')), lib_name TEXT, UNIQUE(block_id, name));
+-- where on the printed logic sheets a pin promoted from them (origin 'print' or dir_source 'G') is drawn
+CREATE TABLE IF NOT EXISTS pin_cite(pin_id INTEGER PRIMARY KEY, pdf TEXT NOT NULL, page INTEGER NOT NULL, cell TEXT);
 CREATE INDEX IF NOT EXISTS ix_pin_origin ON pin(origin);
 CREATE INDEX IF NOT EXISTS ix_pin_var ON pin(var_id, direction);
 CREATE INDEX IF NOT EXISTS ix_pin_block ON pin(block_id);

@@ -285,11 +285,23 @@
     return obj && obj.v && obj.v[full] ? obj.v[full] : null;
   };
   /** Task 檔：task/<sha1('CTRL|Program/Task')[:3]>.json → {n, b:{key:record,…}}（b 依文件順序，首鍵是 kind:"task" 根）或 null */
+  const taskSync = new Map(); // tkey -> 已載入的 task entry（同一物件仍由 jsonCache 的分片持有，不另佔記憶體）；供同步查 pv
   D.task = async function (tkey, signal) {
     const hh = (await D.sha1(tkey)).slice(0, 3);
     const obj = await D.json('task/' + hh + '.json', signal);
-    return obj && obj.t && obj.t[tkey] ? obj.t[tkey] : null;
+    const t = obj && obj.t && obj.t[tkey] ? obj.t[tkey] : null;
+    if (t) taskSync.set(tkey, t);
+    return t;
   };
+  /** 已載入 task entry 的 pv（列印邏輯圖出處）：blockKey + '#' + pin → [pdf, page, cell] 或 null（同步；方塊都經 D.block → D.task 載入，故已快取） */
+  D.pvOf = function (blockKey, pin) {
+    if (!blockKey || pin == null) return null;
+    const t = taskSync.get(D.taskKeyOf(blockKey));
+    const pv = t && t.pv;
+    return (pv && pv[blockKey + '#' + pin]) || null;
+  };
+  /** pv → '圖面 G11_P.pdf p163 G16'（缺欄省略）；無 → '' */
+  D.pvText = (pv) => (Array.isArray(pv) && pv.length ? '圖面 ' + [pv[0], pv[1] != null && pv[1] !== '' ? 'p' + pv[1] : null, pv[2]].filter((x) => x != null && x !== '').join(' ') : '');
   /** 方塊：key = 'CTRL|block_path'；在所屬 task 檔內查（同 task 的方塊共用一次抓取） */
   D.block = async function (key, signal) {
     const t = await D.task(D.taskKeyOf(key), signal);
@@ -308,6 +320,30 @@
       }
     }
     return out;
+  };
+  /** 同 task 內「L: 連線存在對方腳上」的反查：誰的 L:Block.Pin 指向 (key, pin)。多數 L 連線記在讀取端（輸入腳），
+   *  所以由輸出腳往下游時要反查；up = 往上游（找指向本輸入腳、方向 O 的寫入端），否則往下游（找方向不是 O 的讀取端）。
+   *  反向索引每個 task entry 只建一次（WeakMap；大型 task 不做 O(n²) 掃描）。回傳 [{key, blk, pin, t}] */
+  const peerIdx = new WeakMap();
+  D.linkPeers = async function (key, pin, up, signal) {
+    const t = await D.task(D.taskKeyOf(key), signal);
+    if (!t || !t.b) return [];
+    let idx = peerIdx.get(t);
+    if (!idx) {
+      idx = new Map();
+      for (const k in t.b) {
+        const b = t.b[k];
+        for (const p of b.pins || []) {
+          if (p[3] !== 'L' || !p[6] || p[7] == null) continue;
+          const kk = p[6] + '#' + p[7];
+          if (!idx.has(kk)) idx.set(kk, []);
+          idx.get(kk).push({ key: k, blk: b, pin: p[0], t: p });
+        }
+      }
+      peerIdx.set(t, idx);
+    }
+    const all = idx.get(key + '#' + pin) || [];
+    return all.filter((x) => x.key !== key && (up ? x.t[1] === 'O' : x.t[1] !== 'O'));
   };
   /** 延遲載入 assets/<name>（?v= 用 atlas-build 的 data-app）；同名只載一次 */
   const scriptCache = new Map();
@@ -411,7 +447,7 @@
 
   /* ------------------------------------------------------------------ 徽章：方向 / 來源 / 旗標 */
   D.DIR_LABEL = { I: '輸入', O: '輸出', S: '狀態/常數', C: '常數', '?': '方向未知' };
-  D.SRC_LABEL = { U: '介面腳 Usage', T: '手冊表/人工覆寫/工具查證', M: '人工登錄：鏡射或推論', C: '常數規則', L: '連線投票', H: '命名慣例', R: '回推', '-': '無' };
+  D.SRC_LABEL = { U: '介面腳 Usage', T: '手冊表/人工覆寫/工具查證', M: '人工登錄：鏡射或推論', C: '常數規則', L: '連線投票', H: '命名慣例', R: '回推', G: '圖面（列印邏輯圖的左右側）', '-': '無' };
   D.dirBadge = function (dir) {
     dir = dir || '?';
     return D.h('span', { class: 'bd dir dir-' + (dir === '?' ? 'q' : dir), text: dir, title: '方向：' + (D.DIR_LABEL[dir] || dir) });
@@ -419,34 +455,47 @@
   D.srcBadge = function (src) {
     src = src || '-';
     const legend = (D.man && D.man.dir_legend && D.man.dir_legend[src]) || D.SRC_LABEL[src] || src;
-    const inferred = src === 'L' || src === 'H' || src === 'R' || src === 'M';
+    const inferred = src === 'L' || src === 'H' || src === 'R' || src === 'M'; // G（列印邏輯圖）是證據，不是推斷
     return D.h('span', { class: 'bd src src-' + (src === '-' ? 'none' : src) + (inferred ? ' inferred' : ''), text: src, title: '來源：' + legend + (inferred ? '（推斷）' : '') });
   };
-  /* ---- 不透明巨集（介面在加密區）：回推腳位 org（tuple 第 12 欄 'd' 宣告／'l' 連線／'p' 同編號配對／'v' 三取二表決推斷／'x' 人工查證／null 明文）、鎖頭圖示、介面說明行、程式庫目錄 */
-  D.ORG_LABEL = { d: '宣告', l: '連線', p: '配對', v: '表決', x: '登錄' };
-  D.ORG_TITLE = { d: '由宣告變數回推', l: '由 L: 連線回推', p: '由同層同編號的 AI／FF_AI 方塊配對推斷（IN 讀其輸出；OUT／DEVICE_STATUS 依 ai_<名>／<名>_DS 命名與 ReferencedIn 推斷）', v: '三取二表決巨集推斷：由 FNCTN_<名> task 名與程式內只在加密方塊引用的 (ai_)<名>A／B／C、_BQ／.BQ、k_<名>_HYST、k_PRO_<名>_*_SP、PRO_<名>*Hi 變數推斷（一顆實例經組態工具確認；多顆表決器的設定值／輸出不推斷）', x: '人工登錄（tools/xref_manual.csv）：來源字母 T = 組態工具交互參照或邏輯圖確認；M = 從另一台控制器鏡射或依規律推論，未在工具確認' };
+  /* ---- 不透明巨集（介面在加密區）：回推腳位 org（tuple 第 12 欄 'd' 宣告／'l' 連線／'p' 同編號配對／'v' 三取二表決推斷／'x' 人工登錄／'g' 列印邏輯圖／null 明文）、鎖頭圖示、介面說明行、程式庫目錄 */
+  D.ORG_LABEL = { d: '宣告', l: '連線', p: '配對', v: '表決', x: '登錄', g: '圖面' };
+  D.ORG_TITLE = { d: '由宣告變數回推', l: '由 L: 連線回推', p: '由同層同編號的 AI／FF_AI 方塊配對推斷（IN 讀其輸出；OUT／DEVICE_STATUS 依 ai_<名>／<名>_DS 命名與 ReferencedIn 推斷）', v: '三取二表決巨集推斷：由 FNCTN_<名> task 名與程式內只在加密方塊引用的 (ai_)<名>A／B／C、_BQ／.BQ、k_<名>_HYST、k_PRO_<名>_*_SP、PRO_<名>*Hi 變數推斷（一顆實例經組態工具確認；多顆表決器的設定值／輸出不推斷）', x: '人工登錄（tools/xref_manual.csv）：來源字母 T = 組態工具交互參照或邏輯圖確認；M = 從另一台控制器鏡射或依規律推論，未在工具確認', g: '腳位取自組態工具列印的邏輯圖（左入右出；XML 看不到的不透明巨集腳位，或被圖面更正的推斷腳）' };
   D.orgOf = (p) => (p && p.length > 11 && p[11]) || null;
   D.orgLabel = (org) => (org ? D.ORG_LABEL[org] || org : '明文');
-  /** 回推腳位小徽章「推」（人工查證為「證」；class org）；title 說明依據 */
-  D.orgBadge = (org) => D.h('span', { class: 'bd org', text: org === 'x' ? '錄' : '推', title: D.ORG_TITLE[org] || '回推' });
+  const ORG_TXT = { x: '錄', g: '圖' };
+  D.orgText = (org) => ORG_TXT[org] || '推';
+  /** 腳位來源小徽章：回推「推」／人工登錄「錄」／列印邏輯圖「圖」（class 'bd org org-<org>'）；title 說明依據 */
+  D.orgBadge = (org) => D.h('span', { class: 'bd org org-' + (org || 'none'), text: D.orgText(org), title: D.ORG_TITLE[org] || '回推' });
+  /** 圖面腳：pin tuple（[..., src(2), ..., org(11)]）或 port 物件（{org, src}）的 org 'g' 或方向來源 'G' */
+  D.isDrawn = (p) => !!p && (Array.isArray(p) ? (D.orgOf(p) === 'g' || p[2] === 'G') : (p.org === 'g' || p.src === 'G'));
   /** 鎖頭（10×11 viewBox；鎖環＋鎖身，只描邊） */
   D.LOCK_D = 'M3 5V3.5a2 2 0 0 1 4 0V5M1.5 5h7v5.5h-7z';
   D.lockIcon = (title) => D.svg('svg', { viewBox: '0 0 10 11', class: 'lock-ico', 'aria-hidden': title ? null : 'true', role: title ? 'img' : null }, title ? D.svg('title', { text: title }) : null, D.svg('path', { d: D.LOCK_D }));
   /** manifest.lib_iface[type]：不透明巨集型別的程式庫目錄 [[pin, dir]…]（只有名稱與方向，無接線）；無 → null */
   D.libIface = (type) => (D.man && D.man.lib_iface && type && D.man.lib_iface[type]) || null;
-  /** 不透明方塊的介面說明：rc=[nDecl,nLink,nPair,nXref,nVote] → 回推；否則目錄；否則無腳位。回傳 {kind:'rc'|'cat'|'none', n, text, cat} */
+  /** 不透明方塊的介面說明：rc=[nDecl,nLink,nPair,nXref,nVote,nPrint] → 回推／圖面；否則目錄；否則無腳位。
+   *  nPrint（第 6 欄，org 'g'）是列印邏輯圖的腳位——權威證據，不是「可能不完整」的推斷；但圖面只畫該頁有接線的腳，title 保留短提醒。
+   *  回傳 {kind:'rc'|'cat'|'none', n, text, title, cat, nd, nl, np, nx, nv, ng} */
   D.opaqueInfo = function (rec) {
     const rc = rec && rec.rc;
     if (Array.isArray(rc)) {
-      const nd = Number(rc[0]) || 0, nl = Number(rc[1]) || 0, np = Number(rc[2]) || 0, nx = Number(rc[3]) || 0, nv = Number(rc[4]) || 0, n = nd + nl + np + nx + nv; // [宣告, 連線, 配對, 查證, 表決]
-      if (n > 0) return { kind: 'rc', n, nd, nl, np, nx, nv, text: '介面回推 ' + n + ' 腳（可能不完整）' };
+      const nd = Number(rc[0]) || 0, nl = Number(rc[1]) || 0, np = Number(rc[2]) || 0, nx = Number(rc[3]) || 0, nv = Number(rc[4]) || 0, ng = Number(rc[5]) || 0; // [宣告, 連線, 配對, 登錄, 表決, 圖面]
+      const ni = nd + nl + np + nx + nv, n = ni + ng;
+      const parts = [];
+      if (nd) parts.push('宣告 ' + nd); if (nl) parts.push('連線 ' + nl); if (np) parts.push('配對 ' + np); if (nv) parts.push('表決 ' + nv); if (nx) parts.push('登錄 ' + nx);
+      if (ng > 0) {
+        return { kind: 'rc', n, nd, nl, np, nx, nv, ng, text: '圖面 ' + ng + ' 腳' + (ni ? '＋回推 ' + ni + ' 腳' : ''),
+          title: '圖面 ' + ng + ' 腳（組態工具列印的邏輯圖；只含該頁有接線的腳）' + (parts.length ? '；回推：' + parts.join('、') + '（可能不完整）' : '') };
+      }
+      if (n > 0) return { kind: 'rc', n, nd, nl, np, nx, nv, ng: 0, text: '介面回推 ' + n + ' 腳（可能不完整）', title: parts.join('、') };
     }
     const cat = D.libIface(rec && rec.type);
     if (cat && cat.length) return { kind: 'cat', n: cat.length, cat, text: '目錄介面 ' + cat.length + ' 腳（無接線）' };
     return { kind: 'none', n: 0, text: '介面加密，無可見腳位' };
   };
   /** 介面說明行（鎖頭 + 文字）：側欄／方塊頁共用 */
-  D.opaqueLine = (rec, cls) => { const oi = D.opaqueInfo(rec); return D.h('p', { class: 'opq-line muted small' + (cls ? ' ' + cls : ''), title: oi.kind === 'rc' ? '宣告 ' + oi.nd + '、連線 ' + oi.nl + '、配對 ' + oi.np + '、表決 ' + oi.nv + '、查證 ' + oi.nx : null }, D.lockIcon(), ' ', oi.text); };
+  D.opaqueLine = (rec, cls) => { const oi = D.opaqueInfo(rec); return D.h('p', { class: 'opq-line muted small' + (cls ? ' ' + cls : ''), title: oi.kind === 'rc' ? oi.title || null : null }, D.lockIcon(), ' ', oi.text); };
   /** 程式庫目錄表（腳位／方向）＋說明 caption */
   D.catalogueTable = (cat) => D.frag(
     D.h('p', { class: 'cat-cap muted small', text: '程式庫目錄（只有名稱與方向，接線在加密區）' }),
@@ -555,7 +604,7 @@
         D.table(['控制器', '種類', '冗餘', '版本', 'MinorRev', '訊號', '方塊', '程式', '加密', 'I/O'],
           (D.man.controllers || []).map((c) => [c.name, c.kind, c.redundancy, c.product_version, revs[c.name] || '—', D.int(c.n_vars), D.int(c.n_blocks), D.int(c.n_programs), D.int(c.n_encrypted), D.int(c.n_io)]))),
       D.h('div', { class: 'foot-row muted small' },
-        D.h('span', null, '腳位方向為推斷值（U/T/C/L/H，? 未知）；加密程式只索引宣告與 EGD；本站為匯出快照。'),
+        D.h('span', null, '腳位方向為推斷值（U/T/M/C/L/H/R/G，? 未知；G = 列印邏輯圖）；加密程式只索引宣告與 EGD；本站為匯出快照。'),
         (D.man.related || []).map((r) => D.h('a', { class: 'lk', href: r.href, target: '_blank', rel: 'noopener', text: r.label }))));
   }
 

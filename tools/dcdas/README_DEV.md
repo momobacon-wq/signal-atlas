@@ -203,3 +203,15 @@ Build Major/Minor 兩個時間戳。其他格子有客戶、廠址與人員識�
 - `print_pin.block_path` 為空不代表索引沒有這顆方塊：SFC 動作頁的 Software Path 少了 `Action_Logic_<step>` 一層、
   標題欄會截斷或讀不到。`_PsIndex.place` 以標籤＋印出的路徑前綴／接線做**唯一**定位，找不到才說 `drawing_only`。
 - `wire_kind='field'`（`X.FIELD` 且 `X` 是變數）在本案全是 `Block.PIN` 連線，只是剛好有同名 BOOL 變數。變數模式排除它們。
+
+### load_print — 列印圖升格進索引（schema 12：origin `print`、dir_source `G`、`pin_cite`）
+
+`resolve.load_print` 在 `recover_*` 之後、`load_xref` 之前跑（`build` 與 `xref-reload` 都有），逐列呼叫 `query._ps_verdict`，只做三件事：
+不透明巨集上圖有索引沒有的腳（V／L／N；灰色預設值與無標籤不收）、`?` 方向依左右側定、推斷列被圖面推翻時以圖面列取代。
+驗證時抓到、已寫成規則的陷阱：
+- 圖上 `Block.PIN` 連線若指向 **XML 已接線**（常數、變數、連線）的腳，不升格——G11/G12 `IO_OPT_1.IO_Opt → 88QB1.IO_OPT` 那支腳 XML 與圖面都是常數 `AVAIL-MOM_OUT`。
+- 欄位參照列（conn_kind `D`，`X.BQ` 存成文字、沒有 var_id）也要比對；原本 `_pc_bucket` 只比 var，54 支表決器 BQ 推斷列錯了卻被當成一致。
+- 同一顆方塊的配對前提只有一個：圖面推翻它的 IN/OUT 配對後，剩下沒被圖面**同線**確認的 `pair` 列一併刪除（只同側不算確認）。
+- 取代推斷列時保留 address／value／alias／描述，`pin_mirror` 跟著改指新列（刪掉會讓 94 個變數變成「無可見寫入者」）。
+- XML 明文腳只改方向，而且只在圖上的線就是它自己的變數時才改。
+`print_check`／`print_show` 用 `_PC_PINS_SQL` 看「不含升格列」的索引；已升格的腳在 print-check 計入 `promoted`，不再算 `new_pin`。

@@ -368,8 +368,13 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     pins_by_block = defaultdict(list)
     block_vars = defaultdict(set)      # block_id -> var ids referenced by its pins (for the per-task description map)
     a_vars_by_block = defaultdict(set)   # block_id -> var ids on declared-at-pin (A + var) pins
-    rc_by_block = {}                   # block_id -> [nDecl, nLink, nPair, nXref, nVote] for opaque macros with recovered interface pins
-    ORG = {"decl": "d", "link": "l", "pair": "p", "xref": "x", "vote": "v"}
+    rc_by_block = {}                   # block_id -> [nDecl, nLink, nPair, nXref, nVote, nPrint] for opaque macros with recovered interface pins
+    # where each pin promoted from the printed sheets is drawn: task key -> {"<block key>#<pin>": [pdf, page, cell]}
+    task_pv = defaultdict(dict)
+    for r in conn.execute("SELECT b.ctrl, b.path, p.name, c.pdf, c.page, c.cell FROM pin_cite c "
+                          "JOIN pin p ON p.id=c.pin_id AND (p.origin='print' OR p.dir_source='G') JOIN block b ON b.id=p.block_id"):
+        task_pv[task_key(r[0], r[1])][f"{r[0]}|{r[1]}#{r[2]}"] = [r[3], r[4], r[5]]
+    ORG = {"decl": "d", "link": "l", "pair": "p", "xref": "x", "vote": "v", "print": "g"}
     for r in conn.execute("""SELECT block_id,name,direction,dir_source,conn_kind,connection,var_id,tgt_block_id,tgt_pin,address,alias,description,origin
                              FROM pin ORDER BY block_id,id"""):
         tb = blk.get(r[7]) if r[7] else None
@@ -377,7 +382,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
                                     (f"{tb[0]}|{tb[2]}" if tb else None), r[8], r[9], r[10],
                                     (r[11].split("\n")[0].strip() or None) if r[11] else None, ORG.get(r[12])])
         if r[12]:
-            rc_by_block.setdefault(r[0], [0, 0, 0, 0, 0])[{"decl": 0, "link": 1, "pair": 2, "xref": 3}.get(r[12], 4)] += 1
+            rc_by_block.setdefault(r[0], [0, 0, 0, 0, 0, 0])[{"decl": 0, "link": 1, "pair": 2, "xref": 3, "vote": 4}.get(r[12], 5)] += 1
         if r[6] is not None:
             block_vars[r[0]].add(r[6])
             if (r[4] or "-") == "A" or r[12]:
@@ -428,7 +433,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     for tkey, items in task_items.items():
         vd = {var_name[v]: var_desc[v] for v in task_vars.get(tkey, ()) if v in var_desc and v in var_name}
         vu = {var_name[v]: [var_nw.get(v, 0), var_nr.get(v, 0), var_ext.get(v, 0)] for v in task_avars.get(tkey, ()) if v in var_name}
-        body = '{"n":%d,"vd":%s,"vu":%s,"vm":%s,"b":{%s}}' % (task_n[tkey], _dump(vd), _dump(vu), _dump(task_vm.get(tkey, {})), ",".join(items))
+        pv = (',"pv":' + _dump(task_pv[tkey])) if task_pv.get(tkey) else ""
+        body = '{"n":%d,"vd":%s,"vu":%s,"vm":%s%s,"b":{%s}}' % (task_n[tkey], _dump(vd), _dump(vu), _dump(task_vm.get(tkey, {})), pv, ",".join(items))
         sizes.append(len(body))
         tshards[_shard(tkey)].append(_dump(tkey) + ":" + body)
     for sh, items in tshards.items():
@@ -513,7 +519,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         "controllers": [{"name": c["name"], "kind": c["kind"], "redundancy": c["redundancy"],
                          "product_version": c["product_version"], **counts[c["name"]]} for c in ctrls],
         "shards": {"var": 16 ** VAR_SHARDS, "task": 16 ** VAR_SHARDS, "screen": 16 ** SCREEN_SHARDS},
-        "dir_legend": {"U": "介面腳 Usage", "T": "手冊表/人工覆寫/工具查證", "M": "人工登錄：鏡射或推論（未在工具確認）", "C": "常數規則", "L": "連線投票", "H": "命名慣例", "R": "回推（不透明巨集）", "?": "未知"},
+        "dir_legend": {"U": "介面腳 Usage", "T": "手冊表/人工覆寫/工具查證", "M": "人工登錄：鏡射或推論（未在工具確認）", "C": "常數規則", "L": "連線投票", "H": "命名慣例", "R": "回推（不透明巨集）", "G": "圖面（列印邏輯圖的左右側）", "?": "未知"},
         "opaque": {"n": n_opaque, "recovered": n_opaque_rec},
         "lib_iface": dict(lib_iface),
         "flags": {"1": "has_writer", "2": "has_io", "4": "has_egd", "8": "has_hmi", "16": "has_alarm", "32": "const",

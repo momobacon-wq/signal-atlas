@@ -181,7 +181,7 @@ def run(conn, repo_dir, log=print) -> dict:
     t0 = time.time()
     dec = decide(agg, targeted, lib, over, table)
     src_count = Counter(v[1] for v in dec.values())
-    log(f"  decided   : {len(dec)} keys  " + " ".join(f"{k}={src_count[k]}" for k in "UTCLH-") + f"   {time.time()-t0:.1f}s")
+    log(f"  decided   : {len(dec)} keys  " + " ".join(f"{k}={src_count[k]}" for k in "UTCLHG-") + f"   {time.time()-t0:.1f}s")
 
     # pin_dir table (owned entirely by this stage)
     t0 = time.time()
@@ -225,7 +225,7 @@ def run(conn, repo_dir, log=print) -> dict:
     # report
     by_src = {r[0]: r[1] for r in conn.execute("SELECT dir_source, count(*) FROM pin GROUP BY 1")}
     by_dir = {r[0]: r[1] for r in conn.execute("SELECT direction, count(*) FROM pin GROUP BY 1")}
-    log("  pins by source: " + " ".join(f"{k}={by_src.get(k,0)}" for k in "UTCLH-")
+    log("  pins by source: " + " ".join(f"{k}={by_src.get(k,0)}" for k in "UTCLHG-")
         + "   by direction: " + " ".join(f"{k}={by_dir.get(k,0)}" for k in "IOS?"))
     cov = coverage(conn, limit=0)
     for c in cov["controllers"]:

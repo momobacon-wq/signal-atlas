@@ -37,8 +37,9 @@
     ? D.h('div', { class: 'mirror' }, mirrors.map((m, i) => D.frag(i ? D.h('br') : null, D.h('a', { href: D.hrefV(m), class: 'lk mono small', text: m, title: '此腳位的值發佈為變數 ' + m }))))
     : '—');
 
-  /** 腳位列（方塊頁／側欄共用）：第 12 欄 org（回推腳，只在不透明方塊上）→「腳位來源」欄：明文／宣告（推）／連線（推）／配對（推）／表決（推）／查證（證） */
-  function pinRow(p, mirrors) {
+  /** 腳位列（方塊頁／側欄共用）：第 12 欄 org（回推腳，只在不透明方塊上）→「腳位來源」欄：明文／宣告（推）／連線（推）／配對（推）／表決（推）／登錄（錄）／圖面（圖）；
+   *  第三參數 pv = task entry 的 pv['key#pin']（[pdf, page, cell]）→ 同欄下方「圖面 <pdf> p<page> <cell>」 */
+  function pinRow(p, mirrors, pv) {
     const [name, dir, src, ck, conn, varFull, tgtKey, tgtPin, addr, alias] = p;
     const org = D.orgOf(p);
     let connCell;
@@ -49,7 +50,8 @@
     return D.h('tr', null,
       D.h('td', { class: 'nowrap' }, D.mono(name, 'b')),
       D.h('td', { class: 'nowrap' }, D.dirBadge(dir), ' ', D.srcBadge(src)),
-      D.h('td', { class: 'nowrap' }, org ? D.frag(D.orgBadge(org), ' ', D.h('span', { class: 'small', text: D.orgLabel(org) })) : D.h('span', { class: 'muted small', text: '明文' })),
+      D.h('td', { class: 'nowrap' }, org ? D.frag(D.orgBadge(org), ' ', D.h('span', { class: 'small', text: D.orgLabel(org) })) : D.h('span', { class: 'muted small', text: '明文' }),
+        pv ? D.h('div', { class: 'pv-ref mono', text: D.pvText(pv), title: '組態工具列印的邏輯圖：' + D.pvText(pv) }) : null),
       D.h('td', { class: 'nowrap' }, D.tag(ck || '-'), ' ', D.h('span', { class: 'muted small', text: ckLabel(ck, varFull) })),
       D.h('td', null, connCell),
       D.h('td', null, varFull ? D.h('a', { href: D.hrefV(varFull), class: 'lk mono small', text: varFull }) : '—'),
@@ -122,13 +124,16 @@
     const mm = D.mirrorMap(tEntry, ctrl);
     const nMirror = mm ? pins.filter((p) => mm.has(key + '#' + p[0])).length : 0;
     const nOrg = pins.filter((p) => D.orgOf(p)).length;
+    const nDrawn = pins.filter((p) => D.orgOf(p) === 'g').length;
+    const pvMap = (tEntry && tEntry.pv) || {}; // 列印邏輯圖出處（org 'g' 或來源 'G' 的腳）
     // 不透明方塊：有回推腳 → 表加「腳位來源」；無腳位但程式庫有目錄 → 目錄表（只有名稱與方向）；都沒有 → 介面加密
     const oi = b.opaque ? D.opaqueInfo(b) : null;
     let pinsBody;
     if (pins.length) pinsBody = D.frag(
-      nOrg ? D.h('p', { class: 'muted small', text: '「腳位來源」= 明文（組態檔內列出）／宣告（由宣告在該腳位的變數回推）／連線（由同層方塊的 L: 連線回推）／配對（同層同編號的 AI／FF_AI 方塊：IN 讀其輸出，OUT／DEVICE_STATUS 依 ai_<名>／<名>_DS 命名與 ReferencedIn 推斷）／表決（三取二表決巨集：由 task 名與程式內只在加密方塊引用的 A／B／C 輸入、_BQ、HYST、設定值、輸出變數推斷，一顆實例經工具確認）／查證（組態工具交互參照確認、人工登錄於 tools/xref_manual.csv）；回推腳共 ' + nOrg + ' 腳，方向由證據推斷、可能不完整。' }) : null,
+      nOrg ? D.h('p', { class: 'muted small', text: '「腳位來源」= 明文（組態檔內列出）／宣告（由宣告在該腳位的變數回推）／連線（由同層方塊的 L: 連線回推）／配對（同層同編號的 AI／FF_AI 方塊：IN 讀其輸出，OUT／DEVICE_STATUS 依 ai_<名>／<名>_DS 命名與 ReferencedIn 推斷）／表決（三取二表決巨集：由 task 名與程式內只在加密方塊引用的 A／B／C 輸入、_BQ、HYST、設定值、輸出變數推斷，一顆實例經工具確認）／登錄（組態工具交互參照確認、人工登錄於 tools/xref_manual.csv）／圖面（取自組態工具列印的邏輯圖：左入右出，權威證據，附 pdf／頁／格）；' +
+        (nOrg - nDrawn ? '回推腳共 ' + (nOrg - nDrawn) + ' 腳，方向由證據推斷、可能不完整' : '') + (nOrg - nDrawn && nDrawn ? '；' : '') + (nDrawn ? '圖面腳 ' + nDrawn + ' 腳（圖面只含該頁有接線的腳）' : '') + '。' }) : null,
       nMirror ? D.h('p', { class: 'muted small', text: '「發佈為」= 該腳位的值被組態工具發佈成的全域變數（腳位值鏡像）；共 ' + nMirror + ' 腳。' }) : null,
-      D.table(D.PIN_HEADS, pins.map((p) => pinRow(p, mm ? mm.get(key + '#' + p[0]) : null)), 'pins'));
+      D.table(D.PIN_HEADS, pins.map((p) => pinRow(p, mm ? mm.get(key + '#' + p[0]) : null, pvMap[key + '#' + p[0]] || null)), 'pins'));
     else if (oi && oi.kind === 'cat') pinsBody = D.catalogueTable(oi.cat);
     else pinsBody = D.empty(b.opaque ? '介面加密，無可見腳位' : '沒有腳位');
     const secs = [

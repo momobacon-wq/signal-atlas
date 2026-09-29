@@ -1,8 +1,10 @@
-/* Signal Atlas — Task 邏輯圖 #/d/<CTRL>/<Program>/<Task>?ub=<block_path>&f=&pins=1&cm=0|1&sel=<CTRL.VAR>&b=<key>&page=k&all=1&desc=off|brief|full(0|1|2)&pin=cut|wrap|full(0|1|2)
+/* Signal Atlas — Task 邏輯圖 #/d/<CTRL>/<Program>/<Task>?ub=<block_path>&f=&pins=1&cm=0|1&sel=<CTRL.VAR>&b=<key>&page=k&all=1&desc=off|brief|full(0|1|2)&pin=cut|wrap|full(0|1|2)&fan=4|8|all
  * 由 task/<hhh>.json 的整份 task 記錄建圖（buildGraph，規則見 plan §二），交給 D.dg（diagram.js）排版／渲染／互動。
  * 說明：腳位 tuple 第 11 欄 → port.desc；entry.vd[varFull] → port.varDesc / tag.desc / graph.varDesc（舊資料 10 欄／無 vd → 無描述）。
  * 宣告於腳位（ck 'A' 且有 varFull）：走線／標籤規則同 V；可見性依 entry.vu[varFull]=[nW,nR,flags]（除自己外還有人接、或 I/O／EGD／HMI／警報）或 PID 家族關鍵腳；?pins=1 全顯。
  * 回推腳（tuple 第 12 欄 org：'d' 由宣告變數、'l' 由 L: 連線；只在 opaque 方塊上）：'d' 的可見性同宣告於腳位（另加「同 scope 有夥伴」）；'l' 只在被同 scope 的 L 腳指到時畫；腳位名後加「推」徽章。
+ * 圖面腳（org 'g'，列印邏輯圖）：ck V／L／N／E 一律畫（不受 vu／夥伴限制），徽章「圖」；port.pv = entry.pv['key#pin']（出處）；src-g 樣式由 diagram.js 依 org／src 決定。
+ * 扇出：同變數走線的讀取者上限 4／8／全部（?fan=、localStorage atlas.dg.fan，預設 8；寫入者上限 2），超過者改標籤並在狀態列計數。
  * 規模分級：≤300 方塊全畫；301–1000 依連通群組分頁；>1000 拒絕並提供篩選／型別 chips／分頁。 */
 'use strict';
 (function () {
@@ -17,6 +19,18 @@
   const stripK = (s) => String(s == null ? '' : s).replace(/^[NEL]:/, '');
   /** PID 家族（type 以 PID 開頭）即使沒人用也要顯示的關鍵腳 */
   const PID_PINS = new Set(['PV', 'SP', 'CVO', 'CV', 'CVI', 'AUTO', 'RSP', 'OUT']);
+  /** 扇出（同變數內部走線的讀取者上限）：?fan=4|8|all 只影響本次；否則 localStorage atlas.dg.fan；預設 8。按鈕循環 4 → 8 → 全部 */
+  const FAN_LS = 'atlas.dg.fan', FAN_MODES = ['4', '8', 'all'], FAN_LABEL = { 4: '4', 8: '8', all: '全部' };
+  const normFan = (v) => { v = v == null ? '' : String(v).toLowerCase(); return FAN_MODES.indexOf(v) >= 0 ? v : null; };
+  function fanPref(q) {
+    const f = normFan(q && q.fan);
+    if (f) return f;
+    try { const v = normFan(localStorage.getItem(FAN_LS)); if (v) return v; } catch (e) { /* 私密模式 */ }
+    return '8';
+  }
+  const saveFan = (f) => { try { localStorage.setItem(FAN_LS, f); } catch (e) { /* ignore */ } };
+  const fanCap = (f) => (f === 'all' ? Infinity : Number(f) || 8);
+  D.dtask.fanPref = fanPref;
   /** 變數腳：V，或宣告於腳位的 A（有 varFull） */
   const isVarPin = (ck, varFull) => !!varFull && (ck === 'V' || ck === 'A');
 
@@ -25,6 +39,8 @@
     const b = t.b;
     const vd = t.vd || {}; // {varFull: description}（舊資料無 → 空）
     const vu = t.vu || {}; // {varFull: [nW, nR, flags]} 宣告於腳位變數的全索引用量（舊資料無 → 空）
+    const pv = t.pv || {}; // {'blockKey#pin': [pdf, page, cell]} 列印邏輯圖出處（org 'g' 或來源 'G' 的腳；舊資料無 → 空）
+    const fan = fanCap(fanPref(q)); // 同變數內部走線的讀取者上限（寫入者上限固定 2）
     const mm = (D.mirrorMap && D.mirrorMap(t, ctrl)) || null; // Map('key#pin' → [鏡像變數名…])；舊資料無 vm → null
     const descMode = D.dg.descPref(q);
     const root = b[rootKey] || {};
@@ -34,7 +50,7 @@
     for (const k in b) if (k.startsWith(prefix) && k.indexOf('/', prefix.length) < 0) members.push([k, b[k], idx++]);
     const memberSet = new Set(members.map((m) => m[0]));
     const nodes = new Map(), edges = [], tags = [], warn = [];
-    const meta = { title: rootKey.slice(rootKey.indexOf('|') + 1), warn, nComment: 0, nHiddenComment: 0, nHiddenPins: 0, nDeclared: 0, nRecovered: 0 };
+    const meta = { title: rootKey.slice(rootKey.indexOf('|') + 1), warn, nComment: 0, nHiddenComment: 0, nHiddenPins: 0, nDeclared: 0, nRecovered: 0, nDrawn: 0, nFanCapped: 0 };
     // 宣告於腳位的變數腳可見性：有人接（nW+nR>1）／有 I/O、EGD、HMI、警報旗標／PID 家族關鍵腳
     const declaredShown = (rec, pin, varFull) => { const u = vu[varFull]; return !!(u && (u[0] + u[1] > 1 || u[2] !== 0)) || (String(rec.type || '').startsWith('PID') && PID_PINS.has(pin)); };
     // 同 scope 內同一變數接在別的方塊上（回推腳的可見性：同 task 有寫入者／讀取者才畫，免得不透明巨集一次冒出上百支腳）
@@ -65,11 +81,13 @@
         // 宣告於腳位（A+var）與回推的變數腳（org 'd'，V 或 A）同一套可見性：有人接／旗標／PID 關鍵腳／同 scope 有夥伴／?pins=1；
         // 回推的 'l' 腳（ck '-'）只在同 scope 有 L 腳指到它時才畫（need）
         const declared = !!varFull && (ck === 'A' || (org && ck === 'V'));
-        const shown = !!q.pins || !!(need && need.has(pin)) || (!org && (ck === 'V' || ck === 'L' || ck === 'P' || ck === 'N' || ck === 'E')) || (declared && (declaredShown(rec, pin, varFull) || partnered(k, varFull)));
+        // 圖面腳（org 'g'，列印邏輯圖）是權威證據：接變數／L:／常數／列舉就畫，不受 vu／夥伴條件限制
+        const drawnShown = org === 'g' && (ck === 'V' || ck === 'L' || ck === 'N' || ck === 'E');
+        const shown = !!q.pins || !!(need && need.has(pin)) || drawnShown || (!org && (ck === 'V' || ck === 'L' || ck === 'P' || ck === 'N' || ck === 'E')) || (declared && (declaredShown(rec, pin, varFull) || partnered(k, varFull)));
         if (!shown) { meta.nHiddenPins++; continue; }
-        if (org) meta.nRecovered++; else if (declared) meta.nDeclared++;
+        if (org === 'g' || src === 'G') meta.nDrawn++; else if (org) meta.nRecovered++; else if (declared) meta.nDeclared++;
         const port = { id: k + '#' + pin, pin, dir: dir || '?', src, ck, conn, varFull: varFull || null, tgtKey, tgtPin, inline: null, org,
-          desc: (p.length > 10 && p[10]) || null, varDesc: (varFull && vd[varFull]) || null, mirror: (mm && mm.get(k + '#' + pin)) || null };
+          desc: (p.length > 10 && p[10]) || null, varDesc: (varFull && vd[varFull]) || null, mirror: (mm && mm.get(k + '#' + pin)) || null, pv: pv[k + '#' + pin] || null };
         if (ck === 'N' || ck === 'E') {
           const txt = stripK(conn);
           if ((rec.type === 'RUNG' || rec.type === 'CALC') && (pin === 'EQN' || pin === 'EQUAT')) node.body = D.dg.wrapText(pin + ' = ' + txt, 240, 3);
@@ -122,13 +140,15 @@
         covered.add(port.id);
       }
     }
-    // V（含宣告於腳位的 A+varFull）：同變數在 scope 內 |W| 1..2 且 |Rd| 1..4 → 內部走線；否則標籤
+    // V（含宣告於腳位的 A+varFull）：同變數在 scope 內 |W| 1..2 且 |Rd| 1..扇出上限（工具列「扇出」4／8／全部）→ 內部走線；否則標籤
     const byVar = new Map();
     for (const n of nodes.values()) for (const port of n.left.concat(n.right)) if (isVarPin(port.ck, port.varFull)) { if (!byVar.has(port.varFull)) byVar.set(port.varFull, { W: [], R: [] }); byVar.get(port.varFull)[port.dir === 'O' ? 'W' : 'R'].push(port); }
     const portNode = (p) => p.id.slice(0, p.id.indexOf('#'));
     for (const [v, g] of byVar) {
       const wired = new Set();
-      if (g.W.length >= 1 && g.W.length <= 2 && g.R.length >= 1 && g.R.length <= 4) {
+      const wOK = g.W.length >= 1 && g.W.length <= 2;
+      if (wOK && g.R.length > fan) meta.nFanCapped++; // 只因扇出上限而改用標籤的變數
+      if (wOK && g.R.length >= 1 && g.R.length <= fan) {
         for (const w of g.W) for (const r of g.R) {
           if (portNode(w) === portNode(r)) continue; // 自寫自讀 → 標籤
           addEdge({ id: w.id + '>' + r.id, from: w.id, to: r.id, kind: 'V', varFull: v, label: shortVar(v), multi: g.W.length > 1 });
@@ -310,7 +330,7 @@
     const rootKey = q.ub ? ctrl + '|' + q.ub : tkey;
     const rootPath = rootKey.slice(rootKey.indexOf('|') + 1);
     const cur = { ctrl, program, task, tkey, rootKey };
-    const href = (patch) => D.hrefD(ctrl, program, task, Object.assign({ ub: q.ub, f: q.f, pins: q.pins, cm: q.cm, page: q.page, all: q.all, desc: q.desc }, patch));
+    const href = (patch) => D.hrefD(ctrl, program, task, Object.assign({ ub: q.ub, f: q.f, pins: q.pins, cm: q.cm, page: q.page, all: q.all, desc: q.desc, fan: q.fan }, patch));
     D.setTitle('邏輯圖 ' + rootPath + ' (' + ctrl + ')');
     const crumbs = [D.link('#/', '搜尋'), ' › ', D.mono(ctrl), ' › ', D.link(D.hrefP(ctrl, program), program, 'lk mono'), ' › ', D.link(D.hrefB(ctrl, program + '/' + task), task, 'lk mono'), ' › 邏輯圖'];
     if (q.ub) crumbs.push(' › ', D.mono(q.ub.split('/').slice(2).join('/'), 'b'));
@@ -340,6 +360,10 @@
     const N = nBlocks(full);
     // 工具列
     inst.addTool(D.dg.tool('pins', '全腳位', () => D.go(href({ pins: q.pins ? null : 1 })), { pressed: !!q.pins, title: '顯示只有位址／device 的腳（?pins=1）' }));
+    const fanMode = fanPref(q);
+    const fanNext = FAN_MODES[(FAN_MODES.indexOf(fanMode) + 1) % FAN_MODES.length];
+    inst.addTool(D.dg.tool('fan', '扇出：' + FAN_LABEL[fanMode], () => { saveFan(fanNext); D.go(href({ fan: fanNext })); },
+      { title: '同一變數在本 task 內畫成走線的讀取者上限（寫入者上限 2）：4 → 8 → 全部 循環；超過者改用腳位旁標籤。?fan=4|8|all', pressed: fanMode === 'all' }));
     inst.addTool(D.dg.tool('cm', '註解', () => D.go(href({ cm: full.meta.cmOn ? 0 : 1 })), { pressed: full.meta.cmOn, title: '顯示／隱藏 _COMMENT（' + full.meta.nComment + '）' }));
     inst.addTool(D.dg.tool('block', '方塊頁', null, { href: D.hrefB(ctrl, rootPath), title: '開此 ' + (q.ub ? 'UserBlock' : 'Task') + ' 的方塊頁' }));
     if (q.ub) inst.addTool(D.dg.tool(null, '回 Task', null, { href: href({ ub: null, page: null }), title: '回到 Task 圖' }));
@@ -386,6 +410,8 @@
     const st = ['抓取 ' + (D.fetchCount - f0) + ' 個分片', '方塊 ' + D.int(nBlocks(graph)) + (full.meta.nHiddenComment ? '（隱藏 ' + full.meta.nHiddenComment + ' 個註解）' : ''), '連線 ' + nEdges, '標籤 ' + graph.tags.length, '群組 ' + tm.comps, '排版 ' + Math.round(tm.layout) + ' ms'];
     if (full.meta.nDeclared) st.push('宣告於腳位 ' + full.meta.nDeclared);
     if (full.meta.nRecovered) st.push('回推腳位 ' + full.meta.nRecovered);
+    if (full.meta.nDrawn) st.push('圖面腳位 ' + full.meta.nDrawn);
+    if (full.meta.nFanCapped) st.push(full.meta.nFanCapped + ' 個變數超過扇出上限改用標籤');
     if (nMirror) st.push('發佈為 ' + nMirror);
     if (full.meta.filter) st.push('篩選「' + full.meta.filter + '」' + full.meta.nMatched + ' 個');
     if (full.meta.warn.length) st.push('警告 ' + full.meta.warn.length);

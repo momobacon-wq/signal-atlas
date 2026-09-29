@@ -462,6 +462,7 @@ def load_xref(conn, repo_dir, ctrl_names, log=print):
             tot["replaced"] += 1
         conn.execute("""INSERT INTO pin(id, block_id, name, direction, dir_source, conn_kind, connection, var_id, description, line_no, origin)
                         VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (next_id, b[0], pin, d, src, "D" if field else "V", var, v[0] if v else None, note or None, b[2], "xref"))
+        conn.execute("DELETE FROM pin_cite WHERE pin_id=?", (ex[0],)) if ex else None
         tot[src] = tot.get(src, 0) + 1
         next_id += 1
         tot["loaded"] += 1
@@ -724,3 +725,229 @@ def rebuild_fts(conn, log=print):
     conn.commit()
     n = conn.execute("SELECT count(*) FROM variable_fts").fetchone()[0]
     log(f"  variable_fts rows {n}  {time.time()-t0:.1f}s")
+
+
+# ---------------------------------------------------------------------------------------- printed sheets
+PRINT_SOURCE = "G"          # dir_source: the side of the block the printed sheet draws the pin on
+_PRINT_DIR_BUCKETS = ("ghost_reader", "phantom_writer")
+
+
+def print_fingerprint():
+    """{pdf name: sha256} of the ingestable printed sheets, or {} (no corpus). Stored in meta at build /
+    xref-reload so `status` can say STALE when the corpus has been re-scanned since."""
+    try:
+        from . import parse_pei
+    except ImportError:
+        from dcdas import parse_pei
+    if not parse_pei.print_db_path().exists():
+        return {}
+    try:
+        pconn = parse_pei.open_print_ro()
+    except SystemExit:
+        return {}
+    try:
+        return {r[0]: r[1] for r in pconn.execute("SELECT name, sha256 FROM print_pdf WHERE gate_status='pass'")}
+    finally:
+        pconn.close()
+
+
+def load_print(conn, ctrl_names, log=print):
+    """Promote what the configuration tool's PRINTED logic sheets prove into the index (origin 'print',
+    dir_source 'G'), after the recovery rules and BEFORE load_xref (a hand-verified row still wins).
+
+    The printed sheet is the tool's own drawing of the logic, gated per file (device, build stamps,
+    tool version, integrity; parse_pei.gate), so where it speaks it beats every inference here. It
+    never overrides what the XML states or what the engineer verified in the tool. Classes, all keyed
+    on a pin name PRINTED on the sheet or taken from the index by the pin's own wire (never by
+    elimination, never on a block placed only because its name is unique on the controller):
+      new      a pin the drawing shows on an OPAQUE macro that the index lacks, carrying a variable
+               the index knows (V), a link to a sibling block (L) or a literal (N). A grey default or
+               an unlabelled stub adds a pin but no association, so it is not promoted.
+      dir      a pin the index has with direction '?': the drawn side decides (in place).
+      fix      a pin whose direction the index GUESSED (origin set, or dir_source R/M/H/L/C) and the
+               drawing contradicts; and a recovered pin (origin set) whose inferred wire the drawing
+               contradicts. The inferred row is replaced; the XML's own connection is never touched.
+    A (block, pin) the sheets disagree about (two sheets, two answers) is left alone.
+    Every promoted pin gets a pin_cite row (pdf, page, cell) for the site's tooltip."""
+    try:
+        from . import parse_pei, query as q
+    except ImportError:
+        from dcdas import parse_pei, query as q
+    names = list(ctrl_names)
+    tot = {"new": 0, "dir": 0, "fix": 0, "conflict": 0, "skipped_xml": 0}
+    # undo the previous pass on plaintext pins (purge_recovered already dropped the 'print' rows)
+    blk = f"block_id IN (SELECT id FROM block WHERE ctrl IN ({_inlist(names)}))"
+    conn.execute(f"UPDATE pin SET direction='?', dir_source='-' WHERE dir_source='{PRINT_SOURCE}' AND origin IS NULL AND {blk}")
+    conn.execute("DELETE FROM pin_cite WHERE pin_id NOT IN (SELECT id FROM pin WHERE origin='print' OR dir_source=?)",
+                 (PRINT_SOURCE,))
+    if not parse_pei.print_db_path().exists():
+        log("  print corpus absent: nothing promoted")
+        conn.commit()
+        return tot
+    try:
+        pconn = parse_pei.open_print_ro()
+    except SystemExit as e:
+        log(f"  print corpus unusable ({e}): nothing promoted")
+        conn.commit()
+        return tot
+    pconn.row_factory = None
+    printed = {r[0] for r in pconn.execute("SELECT ctrl FROM print_pdf WHERE gate_status='pass'")}
+    next_id = (conn.execute("SELECT coalesce(max(id),0) FROM pin").fetchone()[0] or 0) + 1
+    for ctrl in names:
+        if ctrl not in printed:
+            continue
+        ix = q._PsIndex(conn, ctrl, pconn)
+        acts = {}                       # (block_path, pin) -> set of action tuples
+        cite = {}
+        confirmed = set()               # (block_path, pin) the drawing agrees with
+        disproved = set()               # blocks whose same-number pairing the drawing overturned
+        for r in q._ps_rows(pconn, "1=1 ORDER BY s.page, q.id", (ctrl,)):
+            r = q._ps_verdict(ix, r)
+            bp, pin, v = r.get("block_path"), r.get("pin"), r["verdict"]
+            if not bp or not pin:
+                continue
+            if (r.get("placed") or "").startswith("by its label (the only") or str(r.get("paired") or "").startswith("by elim"):
+                continue
+            pins, opaque = ix.pins(bp)
+            act = None
+            if v == "new_pin" and opaque and not r.get("paired"):
+                act = _print_new(conn, ctrl, bp, r)
+            elif v == "fills_dir":
+                act = ("dir", r["dir"])
+            elif v in _PRINT_DIR_BUCKETS:
+                t = (pins or {}).get(pin)
+                if t and t[2] is None and t[5] and r["wire_kind"] in ("var", "field") \
+                        and not q._pc_same_var(r.get("wire"), r.get("var"), t[5]):
+                    tot["skipped_xml"] += 1      # an XML pin: flip only when the drawn wire is its own
+                else:
+                    act = ("fix", r["dir"], _print_wire(conn, ctrl, r))
+            elif v == "wire_conflict" and (pins or {}).get(pin, (None,) * 3)[2]:
+                w = _print_wire(conn, ctrl, r)
+                if w:
+                    act = ("fix", r["dir"], w)
+            elif v in ("xml_conflict", "xref_tool_conflict", "xref_soft_conflict"):
+                tot["skipped_xml"] += 1
+            if act:
+                acts.setdefault((bp, pin), set()).add(act)
+                cite.setdefault((bp, pin), (r["pdf"], r["page"], r["cell"]))
+            elif v == "agree":            # the same wire, not merely the same side
+                confirmed.add((bp, pin))
+        for (bp, pin), a in acts.items():
+            if len(a) != 1:
+                tot["conflict"] += 1
+                continue
+            act = next(iter(a))
+            b = conn.execute("SELECT id, line_no FROM block WHERE ctrl=? AND path=?", (ctrl, bp)).fetchone()
+            ex = conn.execute("SELECT id, origin, conn_kind, connection, var_id, tgt_block_id, tgt_pin, description "
+                              "FROM pin WHERE block_id=? AND name=?", (b[0], pin)).fetchone()
+            c = cite[(bp, pin)]
+            note = "圖面 %s p%d %s" % c
+            if act[0] == "new":
+                if ex:
+                    continue
+                _, d, ck, cn, vid, tb, tp = act
+                conn.execute("INSERT INTO pin(id, block_id, name, direction, dir_source, conn_kind, connection, var_id, "
+                             "tgt_block_id, tgt_pin, description, line_no, origin) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                             (next_id, b[0], pin, d, PRINT_SOURCE, ck, cn, vid, tb, tp, note, b[1], "print"))
+                pid = next_id
+                next_id += 1
+            elif act[0] == "dir":
+                if not ex:
+                    continue
+                if ex[1] is None:
+                    conn.execute("UPDATE pin SET direction=?, dir_source=? WHERE id=?", (act[1], PRINT_SOURCE, ex[0]))
+                    pid = ex[0]
+                else:
+                    pid, next_id = _print_replace(conn, ex, b, pin, act[1], None, note, next_id)
+            else:                                   # fix
+                if not ex:
+                    continue
+                if ex[1] is None:                   # an XML pin: only its guessed direction changes
+                    conn.execute("UPDATE pin SET direction=?, dir_source=? WHERE id=?", (act[1], PRINT_SOURCE, ex[0]))
+                    pid = ex[0]
+                else:
+                    if ex[1] == "pair" and act[2]:
+                        disproved.add(b[0])
+                    pid, next_id = _print_replace(conn, ex, b, pin, act[1], act[2], note, next_id)
+            conn.execute("INSERT OR REPLACE INTO pin_cite(pin_id, pdf, page, cell) VALUES(?,?,?,?)", (pid,) + c)
+            tot[act[0]] += 1
+        # One pairing premise per block: once the drawing shows a block is paired with another
+        # channel, its remaining same-number pair rows are wrong unless the drawing confirms them.
+        for bid in disproved:
+            bpath = conn.execute("SELECT path FROM block WHERE id=?", (bid,)).fetchone()[0]
+            for pid_, pname in conn.execute("SELECT id, name FROM pin WHERE block_id=? AND origin='pair'", (bid,)).fetchall():
+                if (bpath, pname) not in confirmed:
+                    conn.execute("DELETE FROM pin WHERE id=?", (pid_,))
+                    conn.execute("DELETE FROM pin_mirror WHERE pin_id=?", (pid_,))
+                    tot["pair_dropped"] = tot.get("pair_dropped", 0) + 1
+    pconn.close()
+    conn.commit()
+    log(f"  print promoted: new pins {tot['new']}, directions {tot['dir']}, corrected guesses {tot['fix']}, "
+        f"disproved pair rows dropped {tot.get('pair_dropped', 0)} (sheets disagree: {tot['conflict']} left alone; "
+        f"XML / verified conflicts never touched: {tot['skipped_xml']})")
+    return tot
+
+
+def _print_var(conn, ctrl, r):
+    """-> variable id the drawn label names on this controller, or None."""
+    if r["wire_kind"] not in ("var",) or not r.get("var"):
+        return None
+    v = conn.execute("SELECT id FROM variable WHERE ctrl=? AND name=?", (ctrl, r["var"])).fetchone()
+    return v[0] if v else None
+
+
+def _print_wire(conn, ctrl, r):
+    """-> ('V', var_id) for a drawn variable, ('D', 'X.FIELD') for a drawn field reference whose base
+    variable exists (the index keeps those as text, conn_kind D), or None."""
+    vid = _print_var(conn, ctrl, r)
+    if vid:
+        return ("V", vid)
+    t = r.get("wire") or ""
+    if r["wire_kind"] in ("var", "field", "link") and "." in t and conn.execute(
+            "SELECT 1 FROM variable WHERE ctrl=? AND name=?", (ctrl, t.rsplit(".", 1)[0])).fetchone():
+        return ("D", t)
+    return None
+
+
+def _print_new(conn, ctrl, bp, r):
+    """-> ('new', dir, conn_kind, connection, var_id, tgt_block_id, tgt_pin) for an opaque-macro pin the
+    drawing shows, or None when the drawing gives it no association (grey default / no label)."""
+    k, t = r["wire_kind"], r.get("wire")
+    if k == "var":
+        vid = _print_var(conn, ctrl, r)
+        return ("new", r["dir"], "V", r["var"], vid, None, None) if vid else None
+    if k == "link" and t and "." in t:
+        blk, _, tp = t.partition(".")
+        tb = conn.execute("SELECT id FROM block WHERE ctrl=? AND path=?", (ctrl, "%s/%s" % (bp.rsplit("/", 1)[0], blk))).fetchone()
+        if not tb:
+            return None
+        far = conn.execute("SELECT origin, conn_kind FROM pin WHERE block_id=? AND name=?", (tb[0], tp)).fetchone()
+        if far and far[0] is None and far[1] in ("V", "N", "E", "L"):
+            return None          # the XML states what that pin is wired to; a drawn link cannot overrule it
+        return ("new", r["dir"], "L", "L:" + t, None, tb[0], tp)
+    if k == "const" and t:
+        return ("new", r["dir"], "N", "N:" + t, None, None, None)
+    return None
+
+
+def _print_replace(conn, ex, b, pin, d, var_id, note, next_id):
+    """Replace a recovered (inferred) row by the drawing's: its direction, and its variable when the
+    drawing names one; otherwise the inferred row's own connection is kept."""
+    keep = conn.execute("SELECT address, value, alias, lib_name, usage_declared, description FROM pin WHERE id=?",
+                        (ex[0],)).fetchone()
+    conn.execute("DELETE FROM pin WHERE id=?", (ex[0],))
+    if var_id and var_id[0] == "V":
+        name = conn.execute("SELECT name FROM variable WHERE id=?", (var_id[1],)).fetchone()[0]
+        ck, cn, vid, tb, tp = "V", name, var_id[1], None, None
+    elif var_id and var_id[0] == "D":
+        ck, cn, vid, tb, tp = "D", var_id[1], None, None, None
+    else:
+        ck, cn, vid, tb, tp = ex[2], ex[3], ex[4], ex[5], ex[6]
+    conn.execute("INSERT INTO pin(id, block_id, name, direction, dir_source, conn_kind, connection, var_id, "
+                 "tgt_block_id, tgt_pin, address, value, alias, lib_name, usage_declared, description, line_no, origin) "
+                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                 (next_id, b[0], pin, d, PRINT_SOURCE, ck, cn, vid, tb, tp) + tuple(keep[:5])
+                 + (keep[5] or note, b[1], "print"))
+    # the variable declared at this pin is still this pin's value: the mirror follows the row
+    conn.execute("UPDATE pin_mirror SET pin_id=? WHERE pin_id=?", (next_id, ex[0]))
+    return next_id, next_id + 1

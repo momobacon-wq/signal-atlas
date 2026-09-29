@@ -53,7 +53,8 @@ ORIGIN_NOTE = {"decl": "(recovered: variable declared at this pin of an opaque m
                "link": "(recovered: sibling L: link into this opaque macro)",
                "pair": "(recovered: paired with the sibling AI_k/FF_AI_k of the same number; outputs by ai_<stem>/<stem>_DS naming + ReferencedIn; inferred)",
                "vote": "(recovered: 2oo3 voter interface inferred from the FNCTN_<stem> task name and the program's encrypted-only references; one instance confirmed in the tool; inferred)",
-               "xref": "(verified in the configuration tool's cross-reference; hand-entered in tools/xref_manual.csv)"}
+               "xref": "(verified in the configuration tool's cross-reference; hand-entered in tools/xref_manual.csv)",
+               "print": "(from the configuration tool's printed logic sheet; left side = input, right = output)"}
 
 
 def _pin_ref(p):
@@ -875,7 +876,8 @@ def block(conn, ctrl, path):
                      "desc": (p["description"] or "").split("\n")[0].strip() if p["origin"] else None})
     recovered = {"decl": sum(1 for p in pins if p["origin"] == "decl"), "link": sum(1 for p in pins if p["origin"] == "link"),
                  "pair": sum(1 for p in pins if p["origin"] == "pair"), "xref": sum(1 for p in pins if p["origin"] == "xref"),
-                 "vote": sum(1 for p in pins if p["origin"] == "vote")}
+                 "vote": sum(1 for p in pins if p["origin"] == "vote"),
+                 "print": sum(1 for p in pins if p["origin"] == "print")}
     catalogue = []
     if b["is_opaque"] and not pins:
         catalogue = [{"pin": r[0], "usage": r[1]} for r in conn.execute(
@@ -1488,6 +1490,12 @@ def _pc_same_var(print_text, print_var, idx_var):
 
 
 _PC_GUESS = ("R", "M", "H", "L", "C", "P")
+# The index WITHOUT what was promoted from the printed sheets (origin 'print' rows dropped, a
+# direction taken from the drawing ('G') read as unknown), so the sheets are never compared
+# against rows made from themselves.
+_PC_PINS_SQL = ("SELECT p.name, CASE WHEN p.dir_source='G' THEN '?' ELSE p.direction END, "
+                "CASE WHEN p.dir_source='G' THEN '-' ELSE p.dir_source END, p.origin, p.conn_kind, p.connection, v.name "
+                "FROM pin p LEFT JOIN variable v ON v.id=p.var_id WHERE p.block_id=? AND coalesce(p.origin,'')<>'print'")
 _PC_DIR_BUCKETS = {"phantom_writer", "ghost_reader", "xml_conflict", "xref_tool_conflict", "xref_soft_conflict"}
 
 
@@ -1503,10 +1511,11 @@ def _pc_bucket(idx, pdir, wkind, wtext, wvar, blabel):
         if not inferred:
             return "xml_conflict"
         return "phantom_writer" if idir == "O" else "ghost_reader"
-    if wkind in ("var", "field") and ick not in ("A", None) and ivar:
-        if _pc_same_var(wtext, wvar, ivar):
+    ref = ivar or (iconn if ick == "D" else None)      # D: a field reference 'X.BQ' held as text
+    if wkind in ("var", "field") and ick not in ("A", None) and ref:
+        if _pc_same_var(wtext, wvar, ref):
             return "agree"
-        if ivar.startswith(blabel + ".") or ivar == blabel:
+        if ref.startswith(blabel + ".") or ref == blabel:
             return "placeholder"              # the macro's own interface variable
         return ("xref_tool_conflict" if grade == "tool" else
                 "xref_soft_conflict" if grade == "soft" else
@@ -1559,7 +1568,7 @@ def print_check(conn, pconn, ctrl=None, what="all", limit=40):
             "xref_soft_conflict", "xml_conflict", "new_pin", "placeholder")
     sec = {k: [] for k in KEYS}
     n = {k: 0 for k in KEYS}
-    n["rows"] = n["compared"] = n["agree"] = 0
+    n["rows"] = n["compared"] = n["agree"] = n["promoted"] = 0
     idx_cache = {}
     for (c, page, sheet, cell, bpath, blabel, pin, pdir, wkind, wtext, wvar) in pconn.execute(sql, args):
         n["rows"] += 1
@@ -1567,16 +1576,18 @@ def print_check(conn, pconn, ctrl=None, what="all", limit=40):
         if key not in idx_cache:
             row = conn.execute("SELECT id, is_opaque FROM block WHERE ctrl=? AND path=?",
                                (c, bpath)).fetchone()
-            pins = {}
+            pins, prom = {}, set()
             if row:
-                for r in conn.execute(
-                        "SELECT p.name, p.direction, p.dir_source, p.origin, p.conn_kind, p.connection, v.name "
-                        "FROM pin p LEFT JOIN variable v ON v.id=p.var_id WHERE p.block_id=?", (row[0],)):
+                for r in conn.execute(_PC_PINS_SQL, (row[0],)):
                     pins[r[0]] = tuple(r[1:])
-            idx_cache[key] = (row[1] if row else None, pins)
-        opaque, pins = idx_cache[key]
+                prom = {r[0] for r in conn.execute("SELECT name FROM pin WHERE block_id=? AND origin='print'", (row[0],))}
+            idx_cache[key] = (row[1] if row else None, pins, prom)
+        opaque, pins, prom = idx_cache[key]
         cite = {"ctrl": c, "block": bpath, "pin": pin, "page": page, "sheet": sheet, "cell": cell,
                 "print_dir": pdir, "print_wire": wtext, "print_kind": wkind}
+        if pin not in pins and pin in prom:
+            n["promoted"] += 1                     # already in the index, from this drawing
+            continue
         if pin not in pins:
             n["new_pin"] += 1
             if len(sec["new_pin"]) < limit:
@@ -1685,7 +1696,7 @@ class _PsIndex:
 
     def __init__(self, conn, ctrl, pconn=None):
         self.conn, self.ctrl, self.pconn = conn, ctrl, pconn
-        self._pins, self._named, self._ids, self._groups = {}, {}, {}, {}
+        self._pins, self._named, self._ids, self._groups, self._promoted = {}, {}, {}, {}, {}
 
     def group(self, sid, label):
         """Every drawn pin of one block on one sheet (for naming by elimination)."""
@@ -1724,9 +1735,9 @@ class _PsIndex:
             pins = None
             if b:
                 self._ids[path] = b[0]
-                pins = {r[0]: tuple(r[1:]) for r in self.conn.execute(
-                    "SELECT p.name, p.direction, p.dir_source, p.origin, p.conn_kind, p.connection, v.name "
-                    "FROM pin p LEFT JOIN variable v ON v.id=p.var_id WHERE p.block_id=?", (b[0],))}
+                pins = {r[0]: tuple(r[1:]) for r in self.conn.execute(_PC_PINS_SQL, (b[0],))}
+                self._promoted[path] = {r[0] for r in self.conn.execute(
+                    "SELECT name FROM pin WHERE block_id=? AND (origin='print' OR dir_source='G')", (b[0],))}
             self._pins[path] = (pins, b[1] if b else None)
         return self._pins[path]
 
@@ -1829,6 +1840,8 @@ def _ps_verdict(ix, row):
                           "the drawing prints no pin name, the pin carries no label, and elimination cannot name it")
             return row
         row["pin"], row["paired"] = name, how
+    if row["pin"] in ix._promoted.get(bp, ()):
+        row["promoted"] = True
     if row["pin"] not in pins:
         row["verdict"] = "new_pin"
         row["why"] = ("opaque macro with no indexed pins: the drawing supplies this one" if opaque and not pins else
@@ -1845,6 +1858,8 @@ def _ps_verdict(ix, row):
         else:
             row["fed_by"] = ix.fed_by(bp, row["pin"], row["dir"])
     t = pins[row["pin"]]
+    if row["pin"] in ix._promoted.get(bp, ()):
+        row["promoted"] = True
     idir, isrc, iorigin, ick, iconn, ivar = t
     row.update(index_dir=idir, index_src=isrc, index_origin=iorigin, index_wire=ivar or iconn)
     b = _pc_bucket(t, row["dir"], row["wire_kind"], row["wire"], row["var"], row["label"])

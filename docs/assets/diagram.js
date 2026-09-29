@@ -44,6 +44,8 @@
  *   D.dg.descPref(query) → 'off'|'brief'|'full' / D.dg.normMode(v) / D.dg.saveDescPref(mode) / D.dg.MODES / D.dg.MODE_LABEL
  *   D.dg.pinPref(query) → 'cut'|'wrap'|'full' / D.dg.normPinMode(v) / D.dg.savePinPref(mode) / D.dg.PIN_MODES / D.dg.PIN_LABEL / D.dg.wrapPin(name, maxW, maxLines)
  *   inst.pinMode／inst.setPin(mode|省略=循環)
+ * 圖面腳（D.isDrawn：org 'g' 或方向來源 'G'）：port／標籤／任一端為圖面腳的走線加 class src-g（圖面色 --drawn、箭頭 #dg-arrow-g）；
+ *   腳位 <title> 與側欄「來源」欄附 D.pvText(D.pvOf(key, pin))（列印邏輯圖 pdf／頁／格）。工具列「圖例」開 #legend-pop（線型／斜紋框／推・錄・圖徽章）。
  * 需先 D.loadScript('dagre.min.js')（全域 dagre）。CSP：無 inline script；SVG 文字皆走 textContent。 */
 'use strict';
 (function () {
@@ -510,7 +512,7 @@
   }
   function defs() {
     return D.svg('defs', null,
-      marker('dg-arrow', 'mk-l'), marker('dg-arrow-v', 'mk-v'), marker('dg-arrow-multi', 'mk-multi'), marker('dg-arrow-egd', 'mk-egd'), marker('dg-arrow-hl', 'mk-hl'),
+      marker('dg-arrow', 'mk-l'), marker('dg-arrow-v', 'mk-v'), marker('dg-arrow-multi', 'mk-multi'), marker('dg-arrow-egd', 'mk-egd'), marker('dg-arrow-hl', 'mk-hl'), marker('dg-arrow-g', 'mk-g'),
       D.svg('pattern', { id: 'dg-hatch', width: '7', height: '7', patternUnits: 'userSpaceOnUse' }, D.svg('path', { d: 'M0 7 L7 0', class: 'hatch' })));
   }
   function renderNode(graph, n) {
@@ -548,23 +550,24 @@
     subLines.forEach((t) => { g.appendChild(D.svg('text', { class: 'type sub', x: r1(bx + 7), y: ly - 1, text: t })); ly += SUB_LH; });
     if (n.opqLine) { g.appendChild(D.svg('text', { class: 'bdesc opq', x: r1(bx + 7), y: ly, text: n.opqLine })); ly += BDESC_H; }
     if (n.descLine) g.appendChild(D.svg('text', { class: 'bdesc', x: r1(bx + 7), y: ly, text: n.descLine }));
-    const dirCls = (p) => 'dir-' + (p.dir === '?' || !p.dir ? 'q' : p.dir);
+    const dirCls = (p) => 'dir-' + (p.dir === '?' || !p.dir ? 'q' : p.dir) + (D.isDrawn(p) ? ' src-g' : ''); // 圖面腳（org g／來源 G）另加 src-g
     // 腳位列：brief = 左側「pin␣␣描述」、右側「描述␣␣pin」同行（.pdesc tspan；nbsp 不會被折疊）；
     //   full = 腳位名一行，描述換行（p.descLines，size() 算好）在下方 .pdesc；port 圓點對齊腳位名那一行
-    //   回推腳（p.org）：腳位名最後一行後加 tspan.org「推」；title 一律含全名（＋描述／回推依據）
+    //   回推腳（p.org）：腳位名最後一行後加 tspan.org「推」（人工登錄「錄」、列印邏輯圖「圖」）；title 一律含全名（＋描述／回推依據）
     //   腳位名可能多行（size() 算好 p.nameLines；wrap 模式）：第 2 行起 tspan 帶 x/dy=PIN_LH；brief 的同行描述接在最後一行
     const pinText = (p, right) => {
       const lines = p.nameLines && p.nameLines.length ? p.nameLines : [dg.fitText(p.pin, PIN_NAME_MAX)];
       const x = right ? r1(bx + n.boxW - 7) : r1(bx + 7);
       const attrs = right ? { class: 'pin', x, y: p.y + 3.5, 'text-anchor': 'end' } : { class: 'pin', x, y: p.y + 3.5 };
-      const ttl = p.pin + (p.desc ? '\n' + p.desc : '') + (p.org ? '\n' + (D.ORG_TITLE[p.org] || '回推') : '');
+      const pvT = D.pvText(p.pv || D.pvOf(n.key, p.pin)); // 列印邏輯圖出處（task entry 的 pv）
+      const ttl = p.pin + (p.desc ? '\n' + p.desc : '') + (p.org ? '\n' + (D.ORG_TITLE[p.org] || '回推') : '') + (p.src === 'G' && p.org !== 'g' ? '\n方向取自' + D.SRC_LABEL.G : '') + (pvT ? '\n' + pvT : '');
       const title = D.svg('title', { text: ttl });
       const spans = (d) => {
         const out = [];
         lines.forEach((t, i) => {
           const last = i === lines.length - 1;
           const parts = [{ text: t }];
-          if (last && p.org) parts.push({ text: p.org === 'x' ? ' 證' : ORG_TXT, cls: 'org' }); // 人工查證腳為「證」（同寬）
+          if (last && p.org) parts.push({ text: ' ' + D.orgText(p.org), cls: 'org org-' + p.org }); // 推／錄（人工登錄）／圖（列印邏輯圖），同寬
           if (last && d) { if (right) parts.unshift({ text: d + NB2, cls: 'pdesc' }); else parts.push({ text: NB2 + d, cls: 'pdesc' }); }
           parts.forEach((s, j) => { const a = { text: s.text, class: s.cls || null }; if (i && j === 0) { a.x = x; a.dy = PIN_LH; } out.push(D.svg('tspan', a)); });
         });
@@ -610,9 +613,11 @@
     const tw = t.w;
     const left = t.side === 'L';
     const x0 = left ? a.x - TAG_GAP - tw : a.x + TAG_GAP;
-    const g = D.svg('g', { class: 'tag ' + (t.cls || '') + (card ? ' card' : ''), 'data-var': t.varFull || null, 'data-port': t.port, tabindex: t.varFull ? '0' : null });
+    const drawn = D.isDrawn(a.p); // 圖面腳的標籤另加 src-g
+    const g = D.svg('g', { class: 'tag ' + (t.cls || '') + (card ? ' card' : '') + (drawn ? ' src-g' : ''), 'data-var': t.varFull || null, 'data-port': t.port, tabindex: t.varFull ? '0' : null });
     const tt = t.title || t.text;
-    g.appendChild(D.svg('title', { text: tt + (t.varFull && t.varFull !== tt ? '\n' + t.varFull : '') + (t.desc ? '\n' + t.desc : '') }));
+    const pvT = drawn ? D.pvText(a.p.pv || D.pvOf(a.n.key, a.p.pin)) : '';
+    g.appendChild(D.svg('title', { text: tt + (t.varFull && t.varFull !== tt ? '\n' + t.varFull : '') + (t.desc ? '\n' + t.desc : '') + (pvT ? '\n' + pvT : '') }));
     g.appendChild(D.svg('line', { class: 'tag-ln', x1: r1(left ? a.x - TAG_GAP : a.x), y1: a.y, x2: r1(left ? a.x : a.x + TAG_GAP), y2: a.y }));
     g.appendChild(D.svg('rect', { x: r1(x0), y: a.y - 8, width: r1(tw), height: t.h, rx: 3 }));
     g.appendChild(D.svg('text', { class: card ? 'tname' : null, x: r1(x0 + TAG_PAD), y: a.y + 3.5, text: t.name }));
@@ -626,9 +631,11 @@
     const wires = D.svg('g', { class: 'wires' }), nodes = D.svg('g', { class: 'nodes' }), tags = D.svg('g', { class: 'tags' }), labels = D.svg('g', { class: 'wlabels' });
     for (const e of graph.edges) {
       if (e.kind === 'sticky' || !e.path) continue;
-      const cls = ['wire', 'kind-' + e.kind, e.multi ? 'multi' : '', e.kind === 'EGD' ? 'egd' : '', e.cls || ''].join(' ').trim();
+      // 任一端是圖面腳（org g／來源 G）→ src-g（圖面色＋自己的箭頭）；多寫入者 .multi 的警示色仍優先（CSS 順序）
+      const drawn = D.isDrawn(graph.ports.get(e.from)) || D.isDrawn(graph.ports.get(e.to));
+      const cls = ['wire', 'kind-' + e.kind, drawn ? 'src-g' : '', e.multi ? 'multi' : '', e.kind === 'EGD' ? 'egd' : '', e.cls || ''].join(' ').trim();
       const p = D.svg('path', { class: cls, d: e.path, 'data-var': e.varFull || null, 'data-edge': e.id });
-      p.appendChild(D.svg('title', { text: (e.label || e.varFull || e.kind) + '\n' + e.from + ' → ' + e.to }));
+      p.appendChild(D.svg('title', { text: (e.label || e.varFull || e.kind) + '\n' + e.from + ' → ' + e.to + (drawn ? '\n圖面（列印邏輯圖）' : '') }));
       wires.appendChild(p);
       if (e.label && e.labelXY) {
         const vd = (e.varFull && graph.varDesc && graph.varDesc[e.varFull]) || '';
@@ -648,7 +655,31 @@
     print: 'M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v7H6z',
     save: 'M12 3v12M7 10l5 5 5-5M4 21h16', close: 'M6 6l12 12M18 6L6 18', block: 'M4 5h16v14H4zM4 10h16', pins: 'M4 7h6M4 12h6M4 17h6M14 7h6M14 12h6M14 17h6', cm: 'M4 5h16v10H8l-4 4z',
     desc: 'M4 6h16M4 11h10M4 16h13M17 11h3', pin: 'M4 6h16M4 12h11a3 3 0 0 1 0 6h-4M4 18h4M11 15l-3 3 3 3',
+    legend: 'M4 6h4M4 12h4M4 18h4M11 6h9M11 12h9M11 18h9', fan: 'M4 12h6M10 12l9-7M10 12h10M10 12l9 7',
   };
+  /** 圖例（#legend-pop；auth.js 的閘門會把它設 inert）：線型／方塊／徽章的意義。swatch 用同一套 .dg-svg 規則（class 'dg-svg sw'），不畫箭頭（marker 在主圖 defs） */
+  function legendPop(onClose) {
+    const sw = (...kids) => D.svg('svg', { class: 'dg-svg sw', viewBox: '0 0 40 14', width: '40', height: '14', 'aria-hidden': 'true', focusable: 'false' }, kids);
+    const line = (cls) => D.svg('path', { class: 'wire ' + cls, d: 'M2 7 H38' });
+    const item = (swatch, text) => D.h('li', null, swatch, D.h('span', { text }));
+    const hatch = sw(D.svg('defs', null, D.svg('pattern', { id: 'dg-hatch-lg', width: '7', height: '7', patternUnits: 'userSpaceOnUse' }, D.svg('path', { d: 'M0 7 L7 0', class: 'hatch' }))),
+      D.svg('rect', { class: 'lg-box opq', x: '3', y: '1.5', width: '34', height: '11', rx: '2', fill: 'url(#dg-hatch-lg)' }));
+    const closeBtn = D.h('button', { type: 'button', class: 'icon-btn dg-legend-close', 'aria-label': '關閉圖例', title: '關閉', onclick: () => onClose(true) }, ico(ICONS.close));
+    const pop = D.h('div', { id: 'legend-pop', class: 'dg-legend', role: 'dialog', 'aria-label': '圖例', tabindex: '-1', hidden: true },
+      D.h('div', { class: 'dg-legend-head' }, D.h('span', { class: 'b', text: '圖例' }), closeBtn),
+      D.h('ul', { class: 'plain dg-legend-list' },
+        item(sw(D.svg('path', { class: 'wire kind-L', d: 'M2 4 H38' }), D.svg('path', { class: 'wire kind-V', d: 'M2 10 H38' })), '實線 = XML 明文（灰：L: 連線；藍：同 task 變數）'),
+        item(sw(line('kind-L dir-q')), '灰色虛線 = 方向未知（?）'),
+        item(sw(line('kind-V multi')), '警示色虛線 = 多寫入者'),
+        item(sw(line('kind-L src-g')), '圖面色 = 圖面（列印邏輯圖：左入右出，權威證據）'),
+        item(sw(line('kind-EGD egd')), '藍色長虛線 = 跨控制器 EGD（訊號圖）'),
+        item(hatch, '斜紋框 = 不透明巨集（介面加密，不可展開）')),
+      D.h('p', { class: 'dg-legend-badges' },
+        D.orgBadge('d'), ' 回推（可能不完整） ', D.orgBadge('x'), ' 人工登錄 ', D.orgBadge('g'), ' 圖面'),
+      D.h('p', { class: 'muted small dg-legend-foot', text: '腳位旁字母 = 方向來源：U/T/C 明文或查表；L/H/R/M 推斷（虛框）；G 圖面。' }));
+    pop.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(true); } });
+    return pop;
+  }
   dg.tool = function (name, text, onclick, opt) {
     opt = opt || {};
     const b = D.h(opt.href ? 'a' : 'button', { class: 'btn sm tb' + (opt.cls ? ' ' + opt.cls : ''), type: opt.href ? null : 'button', href: opt.href || null, title: opt.title || text, 'aria-label': text, 'aria-pressed': opt.pressed == null ? null : String(!!opt.pressed), onclick },
@@ -709,11 +740,24 @@
       if (inst.graph && inst.svg) inst.setGraph(inst.graph, Object.assign({}, inst.lastSetOpts || {}, { keepViewport: true }));
       return mode;
     };
+    // 圖例：按鈕 ⇄ 浮動面板（#legend-pop，畫布右上角）；Esc／關閉鈕／再按一次收起，收起時焦點回按鈕
+    const legendBtn = dg.tool('legend', '圖例', () => inst.toggleLegend(), { title: '線型、方塊與徽章的意義' });
+    legendBtn.setAttribute('aria-expanded', 'false');
+    legendBtn.setAttribute('aria-controls', 'legend-pop');
+    const legend = legendPop((refocus) => inst.toggleLegend(false, refocus));
+    wrap.appendChild(legend);
+    inst.toggleLegend = (open, refocus) => {
+      open = open == null ? legend.hidden : !!open;
+      legend.hidden = !open;
+      legendBtn.setAttribute('aria-expanded', String(open));
+      legendBtn.classList.toggle('on', open);
+      if (open) legend.focus({ preventScroll: true }); else if (refocus) legendBtn.focus();
+    };
     tools.append(
       dg.tool('fit', '適應', () => inst.fit(), { title: '適應視窗（0 / F）' }),
       dg.tool('plus', '放大', () => inst.zoom(1.25), { title: '放大（+）' }),
       dg.tool('minus', '縮小', () => inst.zoom(0.8), { title: '縮小（−）' }),
-      descBtn, pinBtn);
+      descBtn, pinBtn, legendBtn);
     const extra = D.h('span', { class: 'dg-tools-x' });
     tools.append(extra,
       dg.tool('print', '列印', () => inst.print(), { title: '列印（先適應視窗）' }),
@@ -982,24 +1026,29 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
 .node.comment .body{fill:var(--const)}
 .node .inline{fill:var(--const);font-size:10px}
 .port{fill:var(--surface);stroke:var(--muted);stroke-width:1.2}
-.port.dir-I{stroke:#1e40af}.port.dir-O{stroke:#166534;fill:#dcfce7}.port.dir-S{stroke:var(--const)}
+.port.dir-I{stroke:#1e40af}.port.dir-O{stroke:#166534;fill:#dcfce7}.port.dir-S{stroke:var(--const)}.port.dir-q{stroke-dasharray:2 1}
+.port.src-g{stroke:var(--drawn);stroke-width:1.8}
 .wire{fill:none;stroke:var(--muted);stroke-width:1.4;marker-end:url(#dg-arrow)}
 .wire.kind-V{stroke:var(--accent-2);marker-end:url(#dg-arrow-v)}
+.wire.dir-q{stroke-dasharray:3 2}
+.wire.src-g{stroke:var(--drawn);stroke-width:1.6;marker-end:url(#dg-arrow-g)}
 .wire.multi{stroke:var(--warn);stroke-dasharray:5 3;marker-end:url(#dg-arrow-multi)}
 .wire.egd{stroke:#1e40af;stroke-dasharray:6 3;marker-end:url(#dg-arrow-egd)}
-.mk{fill:var(--muted)}.mk-v{fill:var(--accent-2)}.mk-multi{fill:var(--warn)}.mk-egd{fill:#1e40af}.mk-hl{fill:var(--warn)}
+.mk{fill:var(--muted)}.mk-v{fill:var(--accent-2)}.mk-multi{fill:var(--warn)}.mk-egd{fill:#1e40af}.mk-hl{fill:var(--warn)}.mk-g{fill:var(--drawn)}
 .wlabel{font-size:10px;fill:var(--accent-text);paint-order:stroke;stroke:var(--bg);stroke-width:3px;stroke-linejoin:round}
 .tag rect{fill:var(--surface-2);stroke:var(--border-strong)}
 .tag text{fill:var(--text);font-size:10px}
 .tag.in rect{fill:#dbeafe;stroke:#93c5fd}.tag.out rect{fill:#dcfce7;stroke:#86efac}
 .tag.iface rect{fill:var(--accent-soft);stroke:var(--accent-2)}
 .tag.warn rect,.tag.ext-l rect{fill:var(--warn-bg);stroke:var(--warn-bd)}.tag.warn text,.tag.ext-l text{fill:var(--warn)}
+.tag.src-g rect{stroke:var(--drawn);stroke-width:1.4}.tag.src-g .tag-ln{stroke:var(--drawn)}
 .tag .tag-ln{stroke:var(--muted);stroke-width:1}
 .node .desc,.node .pdesc,.node .bdesc,.tag text.desc{font-size:10px;fill:var(--desc);font-weight:400}
 .tag text.tname{font-size:11px;font-weight:700}
 .node .cap-ln{stroke:var(--border);stroke-width:1}
 .node .lock{fill:none;stroke:var(--muted);stroke-width:1.2;stroke-linejoin:round}
 .node .pin .org{font-size:8px;fill:var(--accent-text);font-weight:700}
+.node .pin .org-g{fill:var(--drawn)}
 .node .bdesc.opq{fill:var(--muted)}
 `;
   function exportCss() {
@@ -1046,20 +1095,26 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
         const port = portByPin.get(name);
         return descTd(pinDesc || (port && (port.desc || port.varDesc)) || (varFull && vdMap[varFull]) || '');
       };
-      // 不透明方塊（有回推腳）多一欄「來源」：明文／宣告／連線
-      const rows = pins.map((p) => {
+      // 不透明方塊（或有 org／圖面出處的腳）多一欄「來源」：明文／宣告／連線／…／圖面（＋列印邏輯圖出處 '圖面 <pdf> p<page> <cell>'）
+      const pvs = pins.map((p) => D.pvOf(n.key, p[0]));
+      const srcCol = n.opaque || pins.some((p, i) => D.orgOf(p) || pvs[i]);
+      const rows = pins.map((p, i) => {
         const [name, dir, src, ck, conn, varFull, tgtKey, tgtPin] = p;
         const org = D.orgOf(p);
+        const pvT = D.pvText(pvs[i]);
         let to;
         if ((ck === 'V' || (ck === 'A' && org)) && varFull) to = D.h('a', { href: D.hrefV(varFull), class: 'lk mono', text: varFull, title: varFull });
         else if ((ck === 'L' || ck === 'P') && tgtKey) to = D.h('a', { href: D.hrefBKey(tgtKey), class: 'lk mono', text: tgtKey.slice(tgtKey.lastIndexOf('/') + 1) + '.' + (tgtPin || ''), title: conn || '' });
         else if (ck === 'N' || ck === 'E') to = D.mono(conn || '', 'const');
         else to = D.mono(conn || '—');
         const row = [D.frag(D.mono(name, 'b'), ' ', D.dirBadge(dir), D.srcBadge(src)), CK[ck] || ck || '—', to, descCell(name, varFull, p.length > 10 ? p[10] : null)];
-        if (n.opaque) row.splice(1, 0, org ? D.frag(D.orgBadge(org), ' ', D.orgLabel(org)) : D.h('span', { class: 'muted', text: '明文' }));
+        if (srcCol) {
+          const pvEl = pvT ? D.h('div', { class: 'pv-ref mono', text: pvT, title: '組態工具列印的邏輯圖：' + pvT }) : null;
+          row.splice(1, 0, D.h('td', { class: 'src-cell' }, org ? D.frag(D.orgBadge(org), ' ', D.orgLabel(org)) : D.h('span', { class: 'muted', text: '明文' }), pvEl));
+        }
         return row;
       });
-      out.push(D.h('h4', { text: '腳位（' + pins.length + '）' }), D.table(n.opaque ? ['腳位', '來源', '種類', '連到', '說明'] : ['腳位', '種類', '連到', '說明'], rows, 'pins compact'));
+      out.push(D.h('h4', { text: '腳位（' + pins.length + '）' }), D.table(srcCol ? ['腳位', '來源', '種類', '連到', '說明'] : ['腳位', '種類', '連到', '說明'], rows, 'pins compact'));
     } else if (n.opaque && D.opaqueInfo(n).kind === 'cat') {
       // 無腳位的不透明方塊：列程式庫目錄（只有名稱與方向）
       const cat = D.opaqueInfo(n).cat;

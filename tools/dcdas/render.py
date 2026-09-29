@@ -258,11 +258,13 @@ def _block(o, r):
         _kv(o, "help", r["library_help"]["mht_path"])
     rc = r.get("recovered") or {}
     if r["is_opaque"]:
-        if rc.get("decl") or rc.get("link") or rc.get("pair") or rc.get("xref") or rc.get("vote"):
-            o.line(f"OPAQUE MACRO: internals encrypted; interface recovered from evidence: {rc.get('decl', 0)} declared variables + "
+        if rc.get("decl") or rc.get("link") or rc.get("pair") or rc.get("xref") or rc.get("vote") or rc.get("print"):
+            o.line(f"OPAQUE MACRO: internals encrypted; interface recovered from evidence: {rc.get('print', 0)} from the printed sheets + "
+                   f"{rc.get('decl', 0)} declared variables + "
                    f"{rc.get('link', 0)} L: links + {rc.get('pair', 0)} same-number pairing + {rc.get('vote', 0)} 2oo3-voter inference + "
                    f"{rc.get('xref', 0)} verified cross-reference rows "
-                   f"(list may be incomplete; directions R = recovered, L = from link, T = hand-verified; pairing and voter rows are inferred)")
+                   f"(directions G = drawn side of the printed sheet, R = recovered, L = from link, T = hand-verified; "
+                   f"the sheets show only wired pins, and pairing and voter rows are inferred)")
         elif r.get("catalogue"):
             o.line("OPAQUE MACRO: interface encrypted; no wiring visible. Library catalogue for this type (names + usage only):")
             o.rows(r["catalogue"], lambda c: f"{c['pin']:<24s} {c['usage']}")
@@ -470,6 +472,8 @@ def _print_check(o, r):
     o.line(f"  corpus: {', '.join(r['scanned']) or '(nothing scanned)'}"
            f"   pin rows={c['rows']}  compared={c['compared']}  agree={c['agree']}"
            f" ({100.0 * c['agree'] / max(1, c['compared']):.2f}%)")
+    if c.get("promoted"):
+        o.line(f"  pins already promoted into the index from these drawings (origin print): {c['promoted']}")
     o.line(f"  blocks drawn={r['blocks_drawn']}   opaque blocks with no indexed pin={r['opaque_zero_pin']}"
            f" of which drawn={r['opaque_zero_pin_drawn']}")
     o.line()
@@ -480,7 +484,7 @@ def _print_check(o, r):
             ("wire_conflict", "WIRE CONFLICT - both name a variable and they differ (guessed pin)"),
             ("xref_soft_conflict", "HAND TABLE (mirrored/inferred) CONTRADICTED - the drawing wins, fix the CSV line"),
             ("xml_conflict", "CONFLICT ON AN XML-STATED PIN - suspect the parser first"),
-            ("new_pin", "NEW PIN - the drawing names a pin the indexed block does not have"),
+            ("new_pin", "NEW PIN - the drawing names a pin the indexed block does not have (not promoted)"),
             ("placeholder", "PLACEHOLDER ONLY - the index has the macro's own interface variable, the drawing has the wire")):
         rows = r["sections"].get(key) or []
         o.line(f"{title}: {c.get(key, 0)}")
@@ -548,6 +552,8 @@ def _ps_index(x):
 
 def _ps_notes(x):
     n = []
+    if x.get("promoted"):
+        n.append("promoted into the index from this drawing (origin print / source G)")
     if x.get("paired"):
         n.append("pin name taken from the index " + (x["paired"] if isinstance(x["paired"], str) else "by its wire"))
     if x.get("placed"):

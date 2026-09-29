@@ -129,6 +129,8 @@ def cmd_build(a):
         log("[opaque]")
         resolve.recover_opaque_pins(conn, [c.name for c in ctrls], log)
         resolve.recover_vote_pins(conn, [c.name for c in ctrls], log)
+        log("[print]")
+        resolve.load_print(conn, [c.name for c in ctrls], log)
         resolve.load_xref(conn, HERE, [c.name for c in ctrls], log)
         resolve.refresh_mirror_kinds(conn, log)
         resolve.vote_io_directions(conn, [c.name for c in ctrls], log)
@@ -140,6 +142,7 @@ def cmd_build(a):
     if not a.no_post:
         from dcdas import resolve as _res
         dbm.set_meta(conn, "csv_sha1", json.dumps(_res.csv_fingerprints(HERE), sort_keys=True))
+        dbm.set_meta(conn, "print_sha", json.dumps(_res.print_fingerprint(), sort_keys=True))
     dbm.set_meta(conn, "schema_version", dbm.SCHEMA_VERSION)
     tcws = sorted(root.glob("*.tcw"))
     if tcws:
@@ -180,10 +183,12 @@ def cmd_xref_reload(a):
     resolve.purge_recovered(conn, names, log)
     resolve.recover_opaque_pins(conn, names, log)
     resolve.recover_vote_pins(conn, names, log)
+    resolve.load_print(conn, names, log)
     resolve.load_xref(conn, HERE, names, log)
     resolve.refresh_mirror_kinds(conn, log)
     resolve.vote_io_directions(conn, names, log)
     dbm.set_meta(conn, "csv_sha1", json.dumps(resolve.csv_fingerprints(HERE), sort_keys=True))
+    dbm.set_meta(conn, "print_sha", json.dumps(resolve.print_fingerprint(), sort_keys=True))
     dbm.set_meta(conn, "xref_reloaded_at", now_iso())
     conn.commit()
     log(f"done in {time.time()-t0:.0f}s (index data unchanged otherwise; run export-web to publish)")
@@ -202,6 +207,12 @@ def cmd_status(a):
         rec = {}
     now = _res.csv_fingerprints(HERE)
     out["csv_stale"] = {k: (rec.get(k) != v) for k, v in now.items()}
+    # the printed-sheet corpus the index promoted pins from: re-scanned since?
+    try:
+        prec = json.loads(dbm.get_meta(conn, "print_sha") or "{}")
+    except ValueError:
+        prec = {}
+    out["print_stale"] = prec != _res.print_fingerprint()
     live = {c.name: c for c in inv.controllers(root)}
     for r in conn.execute("SELECT name,kind,minor_rev,indexed_at FROM controller ORDER BY name"):
         c = live.get(r["name"])
@@ -231,6 +242,8 @@ def cmd_status(a):
             print("STALE (xref_manual.csv changed since the index was built): run  py tools/dcdas.py xref-reload")
         else:
             print(f"STALE ({', '.join(csv_stale)} changed since the index was built): run  py tools/dcdas.py build")
+    elif out["print_stale"]:
+        print("STALE (the printed-sheet corpus changed since the index was built): run  py tools/dcdas.py xref-reload")
     else:
         print("fresh")
 

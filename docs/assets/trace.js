@@ -1,5 +1,6 @@
 /* Signal Atlas — 追蹤頁 #/t/<CTRL.NAME>?dir=up|down&hops=N
  * 前端 BFS：訊號卡 w/r → block 分片 → 該 block 其他腳位的變數 → 再載入 var 分片。
+ * 同 task 的 L: 連線雙向都走：腳位自己的 L:，以及只記在對方腳上的反向 L:（D.linkPeers；多數 L: 記在讀取端，下游要靠它）。
  * 停止條件：N:/E: 常數、加密（enc 非空且無寫入者）、不透明 userblock、深度、200 節點、循環（↺）。 */
 'use strict';
 (function () {
@@ -45,6 +46,20 @@
           out.push(Object.assign(leaf((ck === 'N' ? '常數 N: ' : '列舉 E: ') + conn, 'const'), { edge }));
         } else if (ck === 'A' || ck === 'D') {
           out.addr = (out.addr || 0) + 1; // 只有位址／device pin：沒有訊號名可追，不列（避免一個 NOT 方塊冒出 8 列）
+        }
+        // 反向 L:：多數同 task 連線只記在讀取端（輸入腳的 L:Block.Pin）→ 由輸出腳往下游要反查；往上游同理補只記在寫入端者
+        if (!only && edgeBase.blockKey) {
+          const peers = await D.linkPeers(edgeBase.blockKey, name, up, signal);
+          for (const x of peers) {
+            const lbl = (x.blk.name || x.key.slice(x.key.lastIndexOf('/') + 1)) + '.' + x.pin;
+            if (chain.has(x.key) || chain.size >= MAX_CHAIN) { out.push(Object.assign(leaf('↺ 同 task 方塊循環 ' + lbl, 'cyc', D.hrefBKey(x.key)), { edge })); continue; }
+            if (x.blk.opaque && !(x.blk.pins || []).length) { out.push(Object.assign(leaf('不透明 userblock ' + (x.blk.name || '') + ' — 無法追蹤內部', 'enc', D.hrefBKey(x.key)), { edge })); continue; }
+            const c2 = new Set(chain); c2.add(x.key);
+            const via = (edgeBase.via ? edgeBase.via + ' › ' : '') + blk.name + '.' + name + (up ? ' ← ' : ' → ') + lbl;
+            const sub = await pinsOf(x.blk, c2, { blockKey: x.key, block: x.blk.name || x.key, btype: x.blk.type, from: edgeBase.from, via, opaque: x.blk.opaque ? D.opaqueInfo(x.blk).text : null });
+            if (!sub.length) out.push(Object.assign(leaf('經 ' + lbl + '（' + (x.blk.type || '') + '）沒有' + (up ? '輸入' : '輸出') + '變數', 'muted', D.hrefBKey(x.key)), { edge }));
+            out.push(...sub);
+          }
         }
       }
       return out;
@@ -164,7 +179,8 @@
     const parts = [];
     if (e.mirror && !e.via) parts.push(D.h('span', { class: 'bd src src-T', text: e.mirror === 'O' ? '輸出腳位值' : '腳位值', title: e.mirror === 'O' ? '此變數是該方塊輸出腳的發佈值（腳位值鏡像）' : '此變數是該腳位的發佈值（腳位值鏡像）；上游 = 腳位的接線來源' }), ' ');
     if (e.via) parts.push(D.h('span', { class: 'muted small', text: '經 ' + e.via + ' ' }));
-    parts.push(D.h('a', { href: D.hrefBKey(e.blockKey), class: 'lk mono', text: e.block + (e.pin ? '.' + e.pin : ''), title: (e.path || e.blockKey) + (e.refPin ? '（' + (e.mirror ? '腳位值' : up ? '輸出' : '輸入') + '腳 ' + e.refPin + '）' : '') }));
+    const pvT = e.pin ? D.pvText(D.pvOf(e.blockKey, e.pin)) : ''; // 列印邏輯圖出處（圖面腳）
+    parts.push(D.h('a', { href: D.hrefBKey(e.blockKey), class: 'lk mono', text: e.block + (e.pin ? '.' + e.pin : ''), title: (e.path || e.blockKey) + (e.refPin ? '（' + (e.mirror ? '腳位值' : up ? '輸出' : '輸入') + '腳 ' + e.refPin + '）' : '') + (pvT ? '\n' + pvT : '') }));
     if (e.btype) parts.push(D.h('span', { class: 'ref-type', text: '[' + e.btype + ']' }));
     if (e.opaque) parts.push(D.h('span', { class: 'opq-inline muted small', title: '不透明巨集：' + e.opaque }, D.lockIcon(), ' ', e.opaque)); // 鎖頭 + 介面回推／目錄／加密
     if (e.pdir) parts.push(D.dirBadge(e.pdir), D.srcBadge(e.src), e.org ? D.orgBadge(e.org) : null);

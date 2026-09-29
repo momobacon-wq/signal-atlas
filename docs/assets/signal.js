@@ -246,7 +246,7 @@
         D.h('div', { class: 'chips wrap' }, rec.enc.map((p) => D.h('a', { href: D.hrefP(ctrl, p), class: 'chip-btn enc', text: p })))), { count: rec.enc.length, cls: 'enc' }) : null,
       rec.hid && rec.hid.length ? D.section('加密引用', D.frag(
         D.h('p', { class: 'warn-text b', text: '組態檔的 ReferencedIn 列了下列程式，但索引在程式內找不到這個訊號的任何腳位：引用在加密方塊（不透明巨集）內，看不到是哪個方塊、哪支腳。' }),
-        D.h('p', { class: 'muted small', text: '在組態工具的交互參照（Where Used）看到實際連線後，可登錄於 tools/xref_manual.csv，重建索引即顯示為「查證」腳。' }),
+        D.h('p', { class: 'muted small', text: '在組態工具的交互參照（Where Used）看到實際連線後，可登錄於 tools/xref_manual.csv，重建索引即顯示為「登錄」腳；組態工具列印的邏輯圖上看得到的腳，匯入後顯示為「圖面」腳。' }),
         D.h('div', { class: 'chips wrap' }, rec.hid.map((p) => D.h('a', { href: D.hrefP(ctrl, p), class: 'chip-btn enc', text: p })))), { count: rec.hid.length, cls: 'enc' }) : null,
     ];
     D.set(view, head, D.h('div', { class: 'secs' }, secs));

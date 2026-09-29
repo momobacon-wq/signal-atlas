@@ -32,14 +32,15 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
    `https://momobacon-wq.github.io/signal-atlas/#/v/<CTRL.NAME>`；要看圖時附 Task 圖 `#/d/<CTRL>/<Program>/<Task>?sel=<CTRL.NAME>`
    或訊號圖 `#/g/<CTRL.NAME>?up=2&down=2`（`show` 的 WRITERS 行 `CTRL/Program/Task/…` 的前三段就是 Task 圖路徑）。
 7. 誠實標示不確定：
-   - 方向是推斷值。CLI 印 `O/T` 這種「方向/來源」字母：U=介面腳 Usage、T=手冊表、人工覆寫或工具查證、M=人工登錄但只是鏡射／推論、C=常數規則、L=連線投票、H=命名慣例、R=回推（不透明巨集）、`?`=未知。來源是 L/H/R/M 時在回答裡寫「推斷」。
+   - 方向是推斷值。CLI 印 `O/T` 這種「方向/來源」字母：U=介面腳 Usage、T=手冊表、人工覆寫或工具查證、M=人工登錄但只是鏡射／推論、C=常數規則、L=連線投票、H=命名慣例、R=回推（不透明巨集）、G=列印邏輯圖（方塊左側入、右側出）、`?`=未知。來源是 L/H/R/M 時在回答裡寫「推斷」；G 是組態工具自己的圖面，不是推斷。
    - **加密 ≠ 未使用**。來源 XML 內加密的程式與巨集無法追蹤；CLI 印 `encrypted: not traceable`，照實轉述，不要編邏輯。
-     但**組態工具列印出來的邏輯圖看得到加密內容**：若 `print.sqlite` 已建立，`print-check`（全控制器）與 `print-show`（單一訊號／方塊）會列出圖上有而索引沒有的腳位與
-     方塊（引用 `<CTRL>_P.pdf p<頁> <圖號> <圖格>`）。這類證據目前**只在報告裡**，還沒寫進 `pin`，所以不要當成索引已知的事實。
+     但**組態工具列印出來的邏輯圖看得到加密內容**：不透明巨集的腳位與接線已由 `build` 的 `[print]` 階段寫進索引（origin `print`、
+     方向來源 `G`，網頁徽章「圖」，引用 `<CTRL>_P.pdf p<頁> <圖格>`）。加密**程式**本身的方塊不在索引裡（沒有 XML 方塊可掛），
+     仍只能用 `print-show` 看圖面，回答時另起一段說明。
    - CLI 印 `consumer outside checkout` 時照實說去向在 checkout 外。
    - 索引是 checkout 快照（`status` 顯示各控制器 MinorRev），不是現場控制器的即時狀態。
 
-## 列印邏輯圖（`print-scan` / `print-check` / `print-show`，唯讀證據）
+## 列印邏輯圖（`print-scan` / `print-check` / `print-show`，以及 build 的 `[print]` 升格）
 
 組態工具可把整台控制器的邏輯圖列印成 PDF。那份圖是**原廠真值**，而且畫得出 XML 看不到的東西：加密程式的方塊、
 不透明巨集的介面腳與內部。既有的 `tools/xref_manual.csv` 就是工程師逐張拍照手抄這些圖的結果。
@@ -64,6 +65,15 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
   - 方塊路徑也可給索引裡沒有的加密程式方塊（用圖上的標籤比對），或給 Program 或 `Program/Task` 容器列出圖上的所有方塊。
   - 列印檔被 gate 拒收或根本沒有時只說原因。`show` 在語料存在時會多印一行 `PRINTED SHEETS:` 指過來；語料壞掉或不存在時這行靜默略過，
     絕不讓 `show` 失敗。讀語料一律 `open_print_ro()`（唯讀 URI、不跑 DDL）。
+- **升格進索引**（`resolve.load_print`，`build` 與 `xref-reload` 都跑，位置在回推規則之後、`load_xref` 之前，所以人工登錄仍然優先）：
+  只收三類，而且腳名必須是圖上印的、或由該腳自己的接線向索引借來（刪去法命名、只靠「全控制器唯一同名」定位的列都不收）：
+  ① 不透明巨集上圖有而索引沒有的腳，接的是索引認得的變數（V）、同層方塊連線（L）或字面常數（N）——灰色預設值與無標籤短線不收（沒有關聯可加）；
+  ② 索引方向為 `?` 的腳，依圖上左右側定方向（明文腳就地改 `dir_source='G'`）；
+  ③ 推斷腳（origin 或來源 R/M/H/L/C）被圖面推翻方向、或回推腳的推斷接線被圖面推翻時，以圖面列取代。
+  **XML 明文的接線與人工查證列永不覆寫**（`xml_conflict`／`xref_*` 只列報告）；同一支腳在兩張圖上答案不同就都不動。
+  每支升格的腳在 `pin_cite` 記 PDF／頁／圖格，網頁 task 分片的 `pv` 對照表拿來做 tooltip。語料重掃後 `status` 會印 STALE，跑 `xref-reload` 即可。
+- `print-check`／`print-show` 比對的是「**不含**圖面升格列」的索引（origin `print` 排除、來源 `G` 當 `?`），避免拿圖面跟自己比；
+  `print-show` 在已升格的腳上註記 `promoted into the index from this drawing`。
 - 未標腳名的閘符號（AND/OR/NOT/LATCH/計時器）**不猜腳名**（依位置對 IN1/IN2/IN3 實測只有七成多），留空白。
 
 ## 路徑慣例

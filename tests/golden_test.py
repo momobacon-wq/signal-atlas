@@ -155,7 +155,8 @@ def main():
                                      ("IN", "I", "T", "xref", "H11.HpOTHeatExOutNearSideTemp6_AI"),
                                      ("OUT", "O", "T", "xref", "H11.ai_HpOTHeatExOutNearSideTemp6")], str([tuple(r) for r in px]))
     npair = one(conn, "SELECT count(*) FROM pin WHERE origin='pair'")
-    check("pair rows >= 1900 (~2069 recovered, 120 replaced by xref rows)", (npair or 0) >= 1900, str(npair))
+    # ~2069 recovered, 120 replaced by xref rows, ~230 by the printed sheets (the pairing is shifted by one there)
+    check("pair rows >= 1650 (~2069 recovered; the rest replaced by verified or drawn rows)", (npair or 0) >= 1650, str(npair))
     nbad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='pair' AND NOT (b.is_opaque=1 AND b.block_type='AI_INT' AND p.name IN ('IN','OUT','DEVICE_STATUS'))")
     check("pair rows only on opaque AI_INT IN/OUT/DEVICE_STATUS", nbad == 0, str(nbad))
 
@@ -210,8 +211,11 @@ def main():
     check("xref rows only on opaque blocks, dir_source T (tool) or M (mirror/infer), with a variable (or a .FIELD row, conn_kind D)", nbad == 0, str(nbad))
     gr = {r[0]: r[1] for r in conn.execute("SELECT dir_source, count(*) FROM pin WHERE origin='xref' GROUP BY 1")}
     check("xref evidence grades: T (tool-verified) 266, M (mirrored/inferred) 367 - the grade column, never all 'verified'", gr == {"T": 266, "M": 367}, str(gr))
-    hl = one(conn, """SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.path LIKE '%FNCTN_HpOTFdwtrFlw/2oo3_Basic_%' AND p.name IN ('HI_LIMIT','OUT')""")
-    check("low-side voter task HpOTFdwtrFlw (only k_PRO_..._L_SP) gets no HI_LIMIT/OUT (was wrongly bound to the low set-point)", hl == 0, str(hl))
+    hl = one(conn, """SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.path LIKE '%FNCTN_HpOTFdwtrFlw/2oo3_Basic_%' AND p.name IN ('HI_LIMIT','OUT') AND coalesce(p.origin,'')<>'print'""")
+    check("low-side voter task HpOTFdwtrFlw (only k_PRO_..._L_SP) gets no inferred HI_LIMIT/OUT (was wrongly bound to the low set-point)", hl == 0, str(hl))
+    bad = one(conn, """SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.path LIKE '%FNCTN_HpOTFdwtrFlw/2oo3_Basic_%'
+                       AND p.name='HI_LIMIT' AND p.connection LIKE '%L_SP' AND substr(p.connection, -5)='_L_SP'""")
+    check("HpOTFdwtrFlw: no HI_LIMIT on the low set-point from any source (the drawing gives only OUT)", bad == 0, str(bad))
     nl = sum(1 for r in conn.execute("SELECT connection FROM pin WHERE origin='vote' AND name='HI_LIMIT'") if __import__("re").search(r"_L{1,3}_SP$", r[0] or ""))
     check("no vote HI_LIMIT bound to a low-side set-point", nl == 0, str(nl))
 
@@ -236,7 +240,7 @@ def main():
     check("H11 HpStmTermAttOutPress 2oo3_Basic_2: HI_LIMIT <- k_PRO_HpStmTermAttOutPress_HHH_SP (tool), OUT -> PRO_HpStmTermAttOutPress3Hi",
           v2 == {"HI_LIMIT": "k_PRO_HpStmTermAttOutPress_HHH_SP", "OUT": "PRO_HpStmTermAttOutPress3Hi"}, str(v2))
     cw = {r[0]: r[1:] for r in conn.execute("""SELECT p.name, p.direction, p.connection FROM pin p JOIN block b ON b.id=p.block_id
-                         WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_CondHotWellLvl/2oo3_Basic_3'""")}
+                         WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_CondHotWellLvl/2oo3_Basic_3' AND p.origin='xref'""")}
     check("H11 CondHotWellLvl 2oo3_Basic_3: 6 xref pins, set C10MAG10 (INA confirmed in the tool, INB/INC/BQ inferred)",
           len(cw) == 6 and cw.get("INA") == ("I", "CondHotWellLvlA_C10MAG10") and cw.get("BQC") == ("I", "CondHotWellLvlC_C10MAG10_BQ"), str(sorted(cw.items()))[:300])
     nw = one(conn, "SELECT count(*) FROM pin p JOIN variable v ON v.id=p.var_id WHERE v.full_name='H11.CondHotWellLvlA_C10MAG10' AND p.direction='O' AND p.origin='xref'")
@@ -330,7 +334,7 @@ def main():
     check("H11.BlwdnTkLvlLowRedun (alarm) has a recovered writer (REDUNDANCY_STATUS_V2)", nw == 1, str(nw))
     n_decl = one(conn, "SELECT count(*) FROM pin WHERE origin='decl'")
     n_link = one(conn, "SELECT count(*) FROM pin WHERE origin='link'")
-    check("recovered pins: decl >= 1000, link >= 1400", (n_decl or 0) >= 1000 and (n_link or 0) >= 1400, f"decl={n_decl} link={n_link}")
+    check("recovered pins: decl >= 800 (the drawing corrects ~260), link >= 1400", (n_decl or 0) >= 800 and (n_link or 0) >= 1400, f"decl={n_decl} link={n_link}")
     bad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin IS NOT NULL AND b.is_opaque=0")
     check("recovered pins only on opaque blocks", bad == 0, str(bad))
     bad = one(conn, "SELECT count(*) FROM pin WHERE origin IS NOT NULL AND conn_kind IN ('V','L','P','D') AND direction='?'")
@@ -370,16 +374,8 @@ def main():
         bad = one(pconn, "SELECT count(*) FROM print_pdf WHERE gate_status='pass' AND (tz_offset_min IS NULL OR tz_offset_min % 15 <> 0)")
         check("every ingested print's build stamps differ from the index's by a whole quarter-hour",
               bad == 0, str(bad))
-        # the two known-broken files: asserted only while the scanned bytes are unchanged,
-        # so a re-export retires the check instead of failing it
-        import hashlib as _hl
-        for name, want in (("G12_P.pdf", "truncated"), ("WSC1_P.pdf", "wrong_device")):
-            row = pconn.execute("SELECT gate_status, sha256 FROM print_pdf WHERE name=?", (name,)).fetchone()
-            if not row:
-                continue
-            f = _pei.pei_dir() / name
-            if f.exists() and _pei.sha256_of(f) == row[1]:
-                check(f"print gate still refuses the unchanged {name} ({want})", row[0] == want, str(row[0]))
+        # (the two exports that were broken on 2026-09-27, a truncated G12 and a WSC1 that was
+        # another device's print, were re-exported on 2026-09-29 and now pass the properties above)
         # the keystone: the drawing must never contradict a pin the engineer verified in
         # the configuration tool. Checked across ALL controllers, by join, not per controller.
         tool = {(r[0], r[1], r[2]): (r[3], r[4]) for r in conn.execute(
@@ -414,15 +410,20 @@ def main():
             "AND pin_name IN ('IN','OUT','DEVICE_STATUS')")}
         check("H11_P p249 wires HW_ISC_RH/AI_INT_1 to RhAttOutPress (the index's 'pair' guess says RhBfrAttDrnTemp)",
               want <= got, str(sorted(got)))
-        check("print vs index H11: the report lists that mis-paired wire",
-              any(x["block"].endswith("HW_ISC_RH/AI_INT_1") for x in _q.print_check(conn, pconn, ctrl="H11", limit=200)["sections"]["wire_conflict"]),
-              str(c["wire_conflict"]))
+        # ...and the index now carries the drawing's wire on that pin, marked as drawn, cited to its page
+        got = {r[0]: r[1:] for r in conn.execute(
+            "SELECT p.name, p.connection, p.origin, p.dir_source, c.pdf, c.page FROM pin p JOIN block b ON b.id=p.block_id "
+            "LEFT JOIN pin_cite c ON c.pin_id=p.id WHERE b.ctrl='H11' AND b.path='HardwireInputs_1/HW_ISC_RH/AI_INT_1'")}
+        check("H11 HW_ISC_RH/AI_INT_1.IN in the index = RhAttOutPress_AI from the drawing (origin print, G, H11_P.pdf p249)",
+              got.get("IN") == ("RhAttOutPress_AI", "print", "G", "H11_P.pdf", 249), str(got.get("IN")))
+        check("the promoted pins are not compared with themselves: print-check no longer counts that wire at all",
+              not any(x["block"].endswith("HW_ISC_RH/AI_INT_1") for x in _q.print_check(conn, pconn, ctrl="H11", limit=500)["sections"]["wire_conflict"]))
         # ---- print-show: one signal / one block, set against the index
         pro = _pei.open_print_ro()
         ps = _q.print_show(conn, pro, "H11", "HardwireInputs_1/HW_ISC_RH/AI_INT_1")
-        got = {x["pin"]: x["verdict"] for x in ps["rows"]}
-        check("print-show H11 .../AI_INT_1: IN / OUT / DEVICE_STATUS are wire conflicts against the 'pair' guess",
-              all(got.get(p) == "wire_conflict" for p in ("IN", "OUT", "DEVICE_STATUS")), str(got))
+        got = {x["pin"]: bool(x.get("promoted")) for x in ps["rows"]}
+        check("print-show H11 .../AI_INT_1: IN / OUT / DEVICE_STATUS shown as promoted from this drawing",
+              all(got.get(p) for p in ("IN", "OUT", "DEVICE_STATUS")), str(got))
         # a MOVE prints no pin names: both drawn pins must be named from the index by their wire,
         # and so must not be listed again as 'index pins with no drawn row'
         ps = _q.print_show(conn, pro, "G11", "GeneratorBreaker/FNCTN_SerialBreaker/MOVE_3")
@@ -508,6 +509,42 @@ def main():
         # the corpus must never touch the index
         check("the print corpus is a separate DB (an index rebuild cannot lose it, and a scan cannot corrupt the index)",
               _pei.print_db_path() != dbm.db_path(), str(_pei.print_db_path()))
+
+    # ---- promotion of the printed sheets into the index (origin 'print', dir_source 'G')
+    bad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='print' AND b.is_opaque=0")
+    check("pins added from the drawing sit only on opaque macros (the XML states every plaintext pin)", bad == 0, str(bad))
+    bad = one(conn, "SELECT count(*) FROM pin WHERE dir_source='G' AND origin IS NULL AND direction NOT IN ('I','O')")
+    check("a plaintext pin whose direction the drawing settled is I or O", bad == 0, str(bad))
+    bad = one(conn, "SELECT count(*) FROM pin p WHERE (p.origin='print' OR p.dir_source='G') AND NOT EXISTS (SELECT 1 FROM pin_cite c WHERE c.pin_id=p.id)")
+    check("every promoted pin cites the page and cell it is drawn on", bad == 0, str(bad))
+    n_pr = one(conn, "SELECT count(*) FROM pin WHERE origin='print'")
+    n_g = one(conn, "SELECT count(*) FROM pin WHERE dir_source='G' AND origin IS NULL")
+    zero = one(conn, "SELECT count(*) FROM block b WHERE b.is_opaque=1 AND NOT EXISTS (SELECT 1 FROM pin p WHERE p.block_id=b.id)")
+    if _pei.print_db_path().exists():
+        check("the drawing supplies >= 20k macro pins and settles >= 4k '?' directions; opaque blocks with no pin <= 200 (3,014 before)",
+              n_pr >= 20000 and n_g >= 4000 and zero <= 200, f"print={n_pr} G={n_g} zero-pin opaque={zero}")
+        # nothing the XML states or the engineer verified is ever overridden
+        xml = {(r[0], r[1], r[2]) for r in conn.execute(
+            "SELECT b.ctrl, b.path, p.name FROM pin p JOIN block b ON b.id=p.block_id WHERE p.origin='print'")}
+        pc_all = _q.print_check(conn, _pei.open_print_ro(), limit=100000)
+        hit = [x for k in ("xml_conflict", "xref_tool_conflict") for x in pc_all["sections"][k] if (x["ctrl"], x["block"], x["pin"]) in xml]
+        check("no pin the drawing contradicts the XML / a verified row on was replaced by the drawing", not hit, str(hit[:3]))
+        check("xref (hand) rows still win: none replaced", one(conn, "SELECT count(*) FROM pin WHERE origin='xref'") == 633)
+        # the verification round's cases, each checked on the PDF
+        bad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.path LIKE '%ACTUATOR_88QB_/IO_OPT_1' AND p.origin='print'")
+        check("a drawn link into a pin the XML wires to a constant is not promoted (G11/G12 IO_OPT_1 -> 88QB1/2.IO_OPT)", bad == 0, str(bad))
+        got = {r[0]: r[1] for r in conn.execute("SELECT p.name, p.connection FROM pin p JOIN block b ON b.id=p.block_id "
+                                                 "WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_HpOTFdwtrFlw/2oo3_Basic_1' AND p.name LIKE 'BQ_'")}
+        check("an inferred field-reference row the drawing contradicts is replaced (H11 HpOTFdwtrFlw BQA <- ai_HpOTFdwtrFlwA.BQ, p2450)",
+              got.get("BQA") == "ai_HpOTFdwtrFlwA.BQ", str(got))
+        bad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.path='HardwireInputs_1/HW_ISC_LPE/AI_INT_13' AND p.origin='pair'")
+        check("once the drawing disproves a block's pairing, its other pair rows go (H11/H12 AI_INT_13.DEVICE_STATUS)", bad == 0, str(bad))
+        got = conn.execute("SELECT m.kind, p.origin, p.address FROM pin_mirror m JOIN pin p ON p.id=m.pin_id JOIN variable v ON v.id=m.var_id "
+                           "WHERE v.full_name='G11.88QB.OFF_REQ1'").fetchone()
+        check("a replaced row keeps its mirror and address (G11 88QB.OFF_REQ1: O, print, 01005E3A)",
+              got is not None and tuple(got) == ("O", "print", "01005E3A"), str(got))
+        bad = one(conn, "SELECT count(*) FROM pin_cite WHERE pin_id NOT IN (SELECT id FROM pin)")
+        check("no citation left pointing at a replaced pin", bad == 0, str(bad))
 
     # ---- quality gates
     for c in ("G11", "H11", "WSC1"):

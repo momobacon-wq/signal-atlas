@@ -10,6 +10,8 @@
   --link: #0563c1; --hover: rgba(46, 117, 182, 0.07); --sel: rgba(46, 117, 182, 0.16);
   --warn: #c00000; --warn-bg: #fff5f5; --warn-bd: #f1b0b0;
   --ok: #2e7d32; --const: #7a5c00; --const-bg: #fff6d6;
+  /* 圖面（組態工具列印的邏輯圖）：青綠色，與 accent 藍／EGD 深藍／警示紅區隔 */
+  --drawn: #0f766e; --drawn-bg: #ccfbf1; --drawn-bd: #2aa198;
   --shadow: 0 10px 30px rgba(20, 30, 50, 0.16), 0 2px 6px rgba(20, 30, 50, 0.08);
   --radius: 8px;
   color-scheme: light;
@@ -22,6 +24,7 @@
   --link: #6cb6ff; --hover: rgba(111, 168, 220, 0.08); --sel: rgba(111, 168, 220, 0.2);
   --warn: #ff8a8a; --warn-bg: #2a1616; --warn-bd: #5c2b2b;
   --ok: #7fd48a; --const: #ffd45c; --const-bg: #3a3a1c;
+  --drawn: #2dd4bf; --drawn-bg: #123b37; --drawn-bd: #1f7a70;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.4);
   color-scheme: dark;
 }
@@ -132,6 +135,9 @@ body.home .header-search { visibility: hidden; }
 .bd.cut { background: var(--surface-3); color: var(--accent-text); text-decoration: none; font-weight: 400; }
 /* 不透明巨集：回推腳徽章「推」、鎖頭圖示、介面說明行、程式庫目錄 caption（深色用同一組 token） */
 .bd.org { min-width: 0; padding: 0 3px; font-size: 10px; line-height: 1.4; background: var(--accent-soft); color: var(--accent-text); border-color: var(--accent-2); border-style: dashed; }
+.bd.org-g { background: var(--drawn-bg); color: var(--drawn); border-color: var(--drawn-bd); border-style: solid; } /* 圖面：證據，實框 */
+.bd.src-G { background: var(--drawn-bg); color: var(--drawn); border-color: var(--drawn-bd); }
+.pv-ref { font-size: 10.5px; color: var(--drawn); white-space: nowrap; }
 .bd.dir-C { background: var(--const-bg); color: var(--const); }
 .lock-ico { display: inline-block; width: 10px; height: 11px; vertical-align: -1px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; flex: none; }
 .opq-line { display: flex; align-items: center; gap: 4px; margin: 2px 0 4px; }
@@ -381,6 +387,7 @@ body.wide .foot .foot-rev, body.wide .foot .foot-row.small { display: none; }
 .dg-svg .node .lock { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-linejoin: round; pointer-events: none; }
 .dg-svg .node .bdesc.opq { fill: var(--muted); }
 .dg-svg .node .pin .org { font-size: 8px; fill: var(--accent-text); font-weight: 700; }
+.dg-svg .node .pin .org-g { fill: var(--drawn); }
 .dg-svg .node .pin { fill: var(--text); font-size: 10px; }
 .dg-svg .node .body { fill: var(--muted); font-size: 10px; }
 .dg-svg .node.comment .body { fill: var(--const); }
@@ -390,10 +397,13 @@ body.wide .foot .foot-rev, body.wide .foot .foot-row.small { display: none; }
 .dg-svg .port.dir-O { stroke: #166534; fill: #dcfce7; }
 .dg-svg .port.dir-S { stroke: var(--const); }
 .dg-svg .port.dir-q { stroke-dasharray: 2 1; }
+.dg-svg .port.src-g { stroke: var(--drawn); stroke-width: 1.8; }
 .dg-svg .port[data-var] { cursor: pointer; }
 .dg-svg .wire { fill: none; stroke: var(--muted); stroke-width: 1.4; marker-end: url(#dg-arrow); cursor: pointer; }
 .dg-svg .wire.kind-V { stroke: var(--accent-2); marker-end: url(#dg-arrow-v); }
 .dg-svg .wire.dir-q { stroke-dasharray: 3 2; }
+/* 圖面走線（任一端為 org g／來源 G）：在 .multi 之前 → 多寫入者警示仍優先；dir-q 的虛線照常疊加 */
+.dg-svg .wire.src-g { stroke: var(--drawn); stroke-width: 1.6; marker-end: url(#dg-arrow-g); }
 .dg-svg .wire.multi { stroke: var(--warn); stroke-dasharray: 5 3; marker-end: url(#dg-arrow-multi); }
 .dg-svg .wire.egd { stroke: #1e40af; stroke-dasharray: 6 3; marker-end: url(#dg-arrow-egd); }
 .dg-svg .wire:hover { stroke-width: 2.4; }
@@ -402,6 +412,7 @@ body.wide .foot .foot-rev, body.wide .foot .foot-row.small { display: none; }
 .dg-svg .mk-multi { fill: var(--warn); }
 .dg-svg .mk-egd { fill: #1e40af; }
 .dg-svg .mk-hl { fill: var(--warn); }
+.dg-svg .mk-g { fill: var(--drawn); }
 .dg-svg .wlabel { font-size: 10px; fill: var(--accent-text); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; pointer-events: auto; cursor: pointer; }
 .dg-svg .tag { cursor: default; outline: none; }
 .dg-svg .tag[data-var] { cursor: pointer; }
@@ -419,6 +430,8 @@ body.wide .foot .foot-rev, body.wide .foot .foot-row.small { display: none; }
 .dg-svg .tag text.tname { font-size: 11px; font-weight: 700; } /* full 說明卡的名稱行 */
 .dg-svg .tag.hl text.desc { fill: var(--text); }
 .dg-svg .tag .tag-ln { stroke: var(--muted); stroke-width: 1; }
+.dg-svg .tag.src-g rect { stroke: var(--drawn); stroke-width: 1.4; }
+.dg-svg .tag.src-g .tag-ln { stroke: var(--drawn); }
 .dg-svg .tag:hover rect, .dg-svg .tag:focus-visible rect { stroke: var(--accent-2); stroke-width: 1.6; }
 /* 高亮 */
 .dg-svg.has-hl .wire:not(.hl), .dg-svg.has-hl .tag:not(.hl), .dg-svg.has-hl .wlabel:not(.hl), .dg-svg.has-hl .node.var:not(.hl) { opacity: 0.22; }
@@ -474,3 +487,17 @@ body.wide .foot .foot-rev, body.wide .foot .foot-row.small { display: none; }
 .dg-side table.mini.compact td:last-child { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 /* 腳位表「說明」欄：全文、允許換行（壓過上一行 compact 的 nowrap） */
 .dg-side .dg-side-body table.mini td.pdesc-cell, .dg-side table.mini.compact td.pdesc-cell { white-space: normal; max-width: 260px; min-width: 120px; word-break: break-word; line-height: 1.35; color: var(--desc); }
+
+/* 圖例（diagram.js legendPop，#legend-pop）：畫布右上角浮動面板；窄螢幕寬度收在畫布內 */
+.dg-legend { position: absolute; right: 8px; top: 8px; z-index: 5; width: 300px; max-width: calc(100% - 16px); max-height: calc(100% - 16px); overflow: auto;
+  padding: 6px 10px 8px; font-size: 12.5px; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: var(--shadow); outline: none; cursor: auto; }
+.dg-legend-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 2px; }
+.dg-legend-close { width: 28px; height: 28px; }
+.dg-legend-list li { display: flex; align-items: center; gap: 8px; padding: 3px 0; line-height: 1.35; }
+.dg-legend-list li > span { min-width: 0; }
+.dg-svg.sw { display: inline-block; flex: none; width: 40px; height: 14px; background: transparent; }
+.dg-svg.sw .wire { marker-end: none; cursor: default; stroke-width: 2; }
+.dg-svg.sw .lg-box { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 4 3; }
+.dg-legend-badges { margin: 6px 0 2px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.dg-legend-foot { margin: 4px 0 0; }
+@media print { .dg-legend { display: none !important; } }

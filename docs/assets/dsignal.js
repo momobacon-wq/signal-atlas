@@ -1,7 +1,7 @@
 /* Signal Atlas — 訊號圖 #/g/<CTRL.NAME>?up=N&down=N（plan §五）
  * 鏡射 trace.js 的 BFS（pinsOf / expand）成一張圖：變數 pill（v:<full>）、方塊（b:<key>，多次觸及＝同一節點、腳位取聯集）、
  * 葉節點（現場 I/O、EGD、加密、常數、無寫入者…文案同 trace.js）；邊以 from>to 去重；EGD 邊虛線藍；多寫入者變數入邊 .multi；
- * L: 鏈沿同 task 方塊延伸（≤12、不算跳數）；上限 200 節點（未展開者 .capped）、深度截止（.cut）。交給 D.dg（diagram.js）排版／渲染／互動。
+ * L: 鏈沿同 task 方塊延伸（≤12、不算跳數）——含反向 L:（D.linkPeers：連線只記在對方腳上時，由輸出腳往下游找讀取端、由輸入腳往上游找寫入端）；上限 200 節點（未展開者 .capped）、深度截止（.cut）。交給 D.dg（diagram.js）排版／渲染／互動。
  * 雙擊變數：從該變數再展一層（依其所在側；根節點雙向），整圖重排但保留 viewBox 與選取，新節點 .new。
  * 說明：變數節點 desc 取自訊號卡 d.desc（已展開者；截止／上限節點在 fillDesc 補抓自身卡片，EGD 副本亦用自身卡片）；
  * 方塊腳位 desc 取 tuple 第 11 欄；graph.varDesc 供側欄腳位表；?desc=off|brief|full（0|1|2）/ localStorage 由 D.dg.descPref 解析（三段密度）；?pin=cut|wrap|full（0|1|2）腳位名顯示由 D.dg.pinPref 解析。 */
@@ -136,9 +136,29 @@
       } else if (ck === 'N' || ck === 'E') {
         blockPort(S, bn, name, up ? 'L' : 'R', t).inline = stripK(conn);
       }
-      // 無變數的 A／D：只有位址／device 的腳不畫（同 trace.js）
+      // 無變數的 A／D：只有位址／device 的腳不畫（同 trace.js）——但仍要看有沒有別的方塊用 L: 指到它（下）
+      // 反向 L:：多數同 task 連線只記在讀取端（輸入腳的 L:Block.Pin），由輸出腳往下游時要反查；往上游同理補「只記在寫入端」的少數
+      if (!only) await linkPeersOf(S, bn, name, t, dir, chain, out, from);
     }
     return out;
+  }
+  /** (bn, name) 腳位的反向 L: 夥伴：同 task 分片內 L 指向此腳的腳位（D.linkPeers）→ 方塊節點＋L 邊，再照常走該方塊的另一側 */
+  async function linkPeersOf(S, bn, name, t, dir, chain, out, from) {
+    const up = dir === 'up';
+    const peers = await D.linkPeers(bn.key, name, up, S.signal);
+    if (!peers.length) return;
+    const port = blockPort(S, bn, name, up ? 'L' : 'R', t);
+    for (const x of peers) {
+      if (S.signal.aborted) throw abortErr();
+      if (chain.has(x.key) || chain.size >= MAX_CHAIN) { leaf(S, port.id, dir, '↺ 同 task 方塊循環 ' + x.key.slice(x.key.lastIndexOf('/') + 1) + '.' + x.pin, 'cyc', D.hrefBKey(x.key)); continue; }
+      const tn = blockNode(S, x.key, x.blk);
+      if (!tn) continue; // 上限
+      const tp = blockPort(S, tn, x.pin, up ? 'R' : 'L', x.t);
+      if (up) addEdge(S, tp.id, port.id, 'L'); else addEdge(S, port.id, tp.id, 'L');
+      if (x.blk.opaque && opaqueStop(S, tn, x.blk, dir, up ? 'L' : 'R')) continue;
+      const c2 = new Set(chain); c2.add(x.key);
+      await pinsOf(S, tn, x.blk, dir, c2, out, null, from);
+    }
   }
 
   /** 腳位值鏡像（d.m，kind I）的上游：由鏡像腳位的接線來源接到本變數的入腳，邊標「腳位值 <pin>」——

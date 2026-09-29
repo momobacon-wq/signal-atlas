@@ -32,7 +32,8 @@ docs/data/                     export-web 的輸出（下）
   `meta.json` 404 = 未加密的本機測試匯出（`export-web --no-encrypt`），載入器退回直接抓 `.json`；此類產物不得 push。
 - 通則：JSON 緊湊（`separators=(',',':')`, `ensure_ascii=False`）；**任何檔案不得含本機絕對路徑**（產生器逐檔 regex 自檢，命中即中止）；
   檔案位置一律是相對 checkout 根的路徑（`G11/_LubeOil.xml`）；每檔目標 ≤ 1 MB（超過只警告）；磁碟總量 > 700 MB 中止。
-- 方向字母（`dir`）：`I`/`O`/`S`(state/const)/`?`；來源字母（`src`）：`U` 介面腳 Usage、`T` 手冊表/人工覆寫、`C` 常數規則、`L` 連線投票、`H` 命名慣例、`-` 無。
+- 方向字母（`dir`）：`I`/`O`/`S`(state/const)/`?`；來源字母（`src`）：`U` 介面腳 Usage、`T` 手冊表/人工覆寫、`M` 人工登錄（鏡射或推論）、`C` 常數規則、`L` 連線投票、`H` 命名慣例、`R` 回推、
+  `G` 圖面（組態工具列印的邏輯圖：方塊左側 = 輸入、右側 = 輸出；是證據不是推斷，前端徽章實框、標「圖面」）、`-` 無。推斷字母 = `L`/`H`/`R`/`M`（虛框）。
 - 連線種類（`conn_kind`）：`V` 變數、`L` 同 task 內 `L:Block.Pin`、`P` 外層巨集介面腳 `L:Pin`、`D` 欄位參照 `Var.FIELD`（找不到同名變數時才用；警報子變數建入索引後只剩少數 `*Crctd.BQ`）、`N` 常數/RUNG 方程式、`E` 列舉、`A` 只有位址、`-` 空。
 
 ## `manifest.json`
@@ -42,7 +43,7 @@ docs/data/                     export-web 的輸出（下）
  "source":{"toolbox_version":"V07.10.07C","indexed_at":"2026-09-19T15:00:00+08:00","controllers_minor_rev":{"G11":"2026-08-10T08:05:01"}},
  "controllers":[{"name":"G11","kind":"controller","redundancy":"Triple","product_version":"V07.03.02C","n_vars":53561,"n_blocks":31417,"n_pins":223570,"n_programs":132,"n_encrypted":20,"n_io":11900,"n_tasks":1018}],
  "shards":{"var":4096,"task":4096,"screen":256},
- "dir_legend":{"U":"介面腳 Usage","T":"手冊表/人工覆寫/工具查證","M":"人工登錄：鏡射或推論（未在工具確認）","C":"常數規則","L":"連線投票","H":"命名慣例","R":"回推（不透明巨集）","?":"未知"},
+ "dir_legend":{"U":"介面腳 Usage","T":"手冊表/人工覆寫/工具查證","M":"人工登錄：鏡射或推論（未在工具確認）","C":"常數規則","L":"連線投票","H":"命名慣例","R":"回推（不透明巨集）","G":"圖面（列印邏輯圖）","?":"未知"},
  "opaque":{"n":5082,"recovered":792}, "lib_iface":{"AI_INT":[["Enable","I"],["IN","I"],["DEVICE_STATUS","O"],["OUT","O"]], …},
  "flags":{"1":"has_writer","2":"has_io","4":"has_egd","8":"has_hmi","16":"has_alarm","32":"const","64":"egd_copy","128":"in_encrypted","256":"alarm_sub"},
  "encrypted_programs":[["S1","TurbineATSMod"]],
@@ -101,15 +102,19 @@ task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 
 - `b` 的鍵順序 = 原始 XML 文件順序，第一筆是 task 根（`kind:"task"`，其 `pins` 為介面腳）；巢狀 UserBlock 內的方塊同在此 entry（同 task）。
 - 方塊記錄欄位同前（`ctrl program path name type kind ver opaque desc drg pid device hmi attrs pins line file`），新增可選 `lay`（`BlockLayoutData`，同層的 1-based 繪圖順序，含 UserBlock；缺值省略）。空欄位/空陣列/0 一律省略。
 - 腳位 tuple 第 11 欄 `desc` = 腳位自身的描述（`Pin@Description` 第一行；無則 `null`），例如產生器方塊 `L4TTRP_OVR.IN1` = "Generator LCI Trip"。
-- 腳位 tuple 第 12 欄 `org` = 腳位來源：`null` = XML 明文；`"d"` = **回推自宣告在該腳位的變數**；`"l"` = **回推自鄰近方塊的 `L:` 連線**；`"p"` = **同編號配對**（不透明 `AI_INT_k` 的 `IN` 接同層 `AI_k` 的 `{Device}` 輸出或 `FF_AI_k` 的 `OUT` 變數；`AI_k` 配對再依命名補 `OUT`→`ai_<stem>`、`DEVICE_STATUS`→`<stem>_DS`，且該變數的 `ReferencedIn` 須含此程式而程式內無可見引用；命名推斷、方向 I/O／`R`）；`"v"` = **三取二表決推斷**（不透明 `2oo3_Basic`，task `FNCTN_<stem>`：`INA/INB/INC` 接程式內只在加密方塊引用的 `(ai_)<stem>[_Alt]{A,B,C}[Crctd]` 變數、`BQA/BQB/BQC` 接 `<輸入>.BQ` 警報子變數或 `<輸入>_BQ` 變數（程式內加密引用者優先；皆無時才是無變數的 `conn_kind D` 欄位列）、`HYST` 接唯一的 `k_…<stem>…_HYST`；task 內只有一顆表決器時再補 `HI_LIMIT` ← 唯一的 `k_…_SP`、`OUT` → 唯一無寫入者的 `PRO_<stem>*Hi|Lo`；一顆實例經工具確認、其餘為推斷，方向來源 `R`）；`"x"` = **人工登錄**（`tools/xref_manual.csv`；`grade` 欄 tool = 使用者在組態工具的交互參照或邏輯圖看到 → 方向來源 `T`；mirror／infer = 從另一台控制器鏡射或依規律推論 → 方向來源 `M`，徽章同樣「登錄」但來源字母不同）。只出現在不透明巨集
+- 腳位 tuple 第 12 欄 `org` = 腳位來源：`null` = XML 明文；`"d"` = **回推自宣告在該腳位的變數**；`"l"` = **回推自鄰近方塊的 `L:` 連線**；`"p"` = **同編號配對**（不透明 `AI_INT_k` 的 `IN` 接同層 `AI_k` 的 `{Device}` 輸出或 `FF_AI_k` 的 `OUT` 變數；`AI_k` 配對再依命名補 `OUT`→`ai_<stem>`、`DEVICE_STATUS`→`<stem>_DS`，且該變數的 `ReferencedIn` 須含此程式而程式內無可見引用；命名推斷、方向 I/O／`R`）；`"v"` = **三取二表決推斷**（不透明 `2oo3_Basic`，task `FNCTN_<stem>`：`INA/INB/INC` 接程式內只在加密方塊引用的 `(ai_)<stem>[_Alt]{A,B,C}[Crctd]` 變數、`BQA/BQB/BQC` 接 `<輸入>.BQ` 警報子變數或 `<輸入>_BQ` 變數（程式內加密引用者優先；皆無時才是無變數的 `conn_kind D` 欄位列）、`HYST` 接唯一的 `k_…<stem>…_HYST`；task 內只有一顆表決器時再補 `HI_LIMIT` ← 唯一的 `k_…_SP`、`OUT` → 唯一無寫入者的 `PRO_<stem>*Hi|Lo`；一顆實例經工具確認、其餘為推斷，方向來源 `R`）；`"x"` = **人工登錄**（`tools/xref_manual.csv`；`grade` 欄 tool = 使用者在組態工具的交互參照或邏輯圖看到 → 方向來源 `T`；mirror／infer = 從另一台控制器鏡射或依規律推論 → 方向來源 `M`，徽章同樣「登錄」但來源字母不同）；`"g"` = **圖面**（腳位列取自組態工具**列印的邏輯圖**：XML 隱藏、圖面畫在不透明巨集上的腳，或被圖面更正的推斷列；
+  是權威證據而非推斷，方向通常為 `G`（左側入、右側出），前端徽章「圖」、圖面色；出處見 entry 的 `pv`）。只出現在不透明巨集
   （`opaque:1`，整個 UserBlock 含介面腳都加密）上：索引把「`Variables.xml` 宣告位置 = 該方塊.腳位」的變數與「`L:Block.Pin` 指向該方塊」的連線還原成腳位列，
   方向以證據決定（宣告變數：可調常數→I；位址＝某輸出腳／另一變數→I 並接該來源（後者同時登記為鏡像 `m`）；有讀取者／警報／HMI 且無其他寫入者→O；否則 `?`；
   連線：與 referrer 相反）。方向來源字母 `R`（回推）或 `L`。**清單只有證據看得到的部分，可能不完整**；宣告變數也可能是巨集內部變數。
-  這類方塊的記錄多 `rc:[nDecl,nLink,nPair,nXref,nVote]`（舊資料可能只有兩～四欄）。沒有回推腳位的不透明方塊若型別在 `manifest.lib_iface` 中，前端顯示「目錄介面」（只有腳位名與 Usage 方向 I/O/C/S，無接線）；
+  這類方塊的記錄多 `rc:[nDecl,nLink,nPair,nXref,nVote,nPrint]`（第 6 欄 = org `g` 圖面腳數；舊資料可能只有兩～五欄）。前端說明行：只有推斷欄 →「介面回推 N 腳（可能不完整）」；
+  `nPrint>0` →「圖面 N 腳＋回推 M 腳」（圖面腳不算「可能不完整」的推斷，但圖面只畫該頁有接線的腳，tooltip 保留此提醒）。沒有回推腳位的不透明方塊若型別在 `manifest.lib_iface` 中，前端顯示「目錄介面」（只有腳位名與 Usage 方向 I/O/C/S，無接線）；
   否則顯示「介面加密，無可見腳位」。`vu` 也涵蓋回推腳位參照的變數。
 - `conn_kind='A'` 且 `var_full_name` 非空 = **宣告在腳位上的變數**（腳位沒有 `Connection`，但組態工具把它發佈成全域變數，例如 PID 的 `HpBypToCrhPressCv.CVO`）；索引以「名稱 `Block.Pin` → 宣告位置 → 同位址唯一」三層規則連結。前端把它當作變數腳位（可走線、可標籤、可追蹤），
   但只在該變數「有人用」時顯示：`vu[full] = [nW, nR, flags]`（全索引中對該變數的輸出腳數、輸入腳數、外部旗標 2=I/O 4=EGD（有其他控制器消費）8=HMI 16=警報），
   顯示條件 = `nW+nR > 1` 或 `flags≠0` 或 (PID 家族的關鍵腳 PV/SP/CVO/CV/CVI/AUTO/RSP/OUT)；「全腳位」開關可全顯。`vu` 只列 task 內有此類腳位的變數。
+- `pv`（選用）= 列印邏輯圖出處：`{"<blockKey>#<pin>": [pdf, page, cell]}`，每支 org `g` 或方向來源 `G` 的腳一筆，blockKey 同 `b` 的鍵，
+  例 `"G11|FFBInputs_7HA03/FF_IN_S18/AI_INT_12#IN": ["G11_P.pdf", 163, "G16"]`。前端在腳位 tooltip、側欄／方塊頁「來源」欄顯示 `圖面 G11_P.pdf p163 G16`。
 - `vd` = 該 task 所有腳位參照到的變數的描述（第一行；無描述者不列），供圖上標籤與腳位旁顯示說明；變數完整描述仍以訊號卡為準。
 - 單一方塊 = `task` entry 的 `b[key]`；前端 `D.block(key)` 先算 `D.taskKeyOf(key)`（路徑前兩段）再查。加密程式的 task 沒有 entry（前端以 `program/<CTRL>.json` 的 `enc` 解釋）。
 - 尺寸：6,261 個 entry，明文 p50 9 KB、p95 61 KB；兩個 MIS 資料表 task 約 2 MB（前端以規模分級處理）。
@@ -130,9 +135,10 @@ task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 
 ## 方塊圖規則（`diagram.js` / `dtask.js` / `dsignal.js`）
 
 - 原始組態工具的圖面座標不可得（`DiagramXML` 為專有壓縮格式），用 dagre 自動排版；`lay`（缺值則文件順序）決定同層排序與「頁」的閱讀順序；孤立方塊依連通群組分別排版再依序打包成欄。
-- 走線只畫資料裡確定的關係：同 task 內 `L:` 接線（消費端指向來源）、同 task 內一寫（≤2）多讀（≤4）的變數；其他變數以腳位旁的 xref 標籤呈現（左入右出），點標籤高亮同名所有端點；`P` 介面腳標籤 `⟨pin⟩`；`N/E` 常數為腳位行內文字；`A/D` 預設隱藏。
+- 走線只畫資料裡確定的關係：同 task 內 `L:` 接線（消費端指向來源）、同 task 內一寫（≤2）多讀（≤扇出上限）的變數——扇出上限由工具列「扇出」循環 4 / 8 / 全部（`?fan=4|8|all` 只影響本次；偏好存 `localStorage atlas.dg.fan`；預設 8），只因上限而改用標籤的變數數寫在狀態列（「N 個變數超過扇出上限改用標籤」）；其他變數以腳位旁的 xref 標籤呈現（左入右出），點標籤高亮同名所有端點；`P` 介面腳標籤 `⟨pin⟩`；`N/E` 常數為腳位行內文字；`A/D` 預設隱藏。
 - 方向來自索引的推斷值（腳位徽章顯示來源字母）；`?` 方向腳以虛線/灰色；多寫入者變數走線為紅色虛線；不透明 UserBlock 斜紋框、不可展開。
-- 不透明巨集：回推腳位（`org` 非空）顯示規則同「宣告在腳位」的變數腳（有夥伴／有人用／`?pins=1` 才畫），腳位名旁標「推」；有 `rc` 的方塊副標「介面回推 N 腳（可能不完整）」；
+- 圖面（org `g` 或方向來源 `G`）：port、腳位標籤與任一端為圖面腳的走線（`L:` 與同變數走線）用圖面色（青綠，class `src-g`，自有箭頭；多寫入者紅色仍優先）；腳位名旁徽章「圖」（回推「推」、人工登錄「錄」）；腳位 `<title>` 與側欄／方塊頁「來源」欄附 `圖面 <pdf> p<page> <cell>`（`pv`）。Task 圖中 org `g` 且 `conn_kind` 為 V/L/N/E 的腳一律顯示（不受 `vu`／夥伴條件限制）。工具列「圖例」開浮動面板（`#legend-pop`）說明線型、斜紋框與徽章。
+- 不透明巨集：回推腳位（`org` 非空）顯示規則同「宣告在腳位」的變數腳（有夥伴／有人用／`?pins=1` 才畫），腳位名旁標「推」；有 `rc` 的方塊副標「介面回推 N 腳（可能不完整）」（有圖面腳時為「圖面 N 腳＋回推 M 腳」）；
   沒有回推腳但 `lib_iface` 有型別 → 側欄／方塊頁列「目錄介面」；都沒有 → 框內「介面加密，無可見腳位」。訊號圖／追蹤圖遇到有回推腳位的不透明方塊照常經由其腳位擴展，只有無腳位者才是「無法追蹤內部」葉。
 - 規模：Task 圖 ≤300 方塊全畫，301–1000 依連通群組分頁，>1000 先篩選；訊號圖由 BFS 的 200 節點上限保護。
 - 說明顯示三段密度（工具列「說明」循環 完整 / 關 / 精簡；`?desc=full|brief|off`（或 `2|1|0`）；偏好存 `localStorage atlas.dg.desc`，預設完整）：
@@ -144,6 +150,7 @@ task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 
   方塊名／型別行同樣依方塊寬像素截尾（節點 `<title>` 含全名）；型別行只放型別，訊號圖方塊的 Program/Task 路徑另起副標行、在 `/`／`_` 邊界換行最多 2 行（撐寬方塊至多 170px）。
 - 版面：圖面高度 = 視窗高 − 頁首 − 8px（`100dvh` 優先）；狀態列（分片／節點／連線／時間）浮在畫布左下角、不佔高度、超長截斷（完整文字在 `title`）；圖面頁（`body.wide`）的頁尾只留第一行小字，MinorRev 表與注意事項只在其他頁面顯示。
 追蹤在前端 BFS：由訊號卡的 `w`/`r` 取 ref → 載入 `block/` 分片取該 block 其他腳 → 再載入相連變數的 `var/` 分片；ref 第 8 欄 `kind='t'`（task／巨集介面腳）時不走該 task 的全部腳位，只走 task 分片內 `conn_kind P` 指向該介面腳的內部腳（`D.innerPins`），沒有就畫「內部驅動者在加密方塊」葉節點；
+同 task 的 `L:` 連線雙向都走：腳位自己的 `L:`，以及只記在對方腳上的反向 `L:`（`D.linkPeers`：同 task 分片內 `conn_kind L` 且 `tgt_block_key`/`tgt_pin` 指向本腳者；下游由輸出腳找方向非 `O` 的讀取端——多數 `L:` 記在讀取端的輸入腳上——上游由輸入腳找方向 `O` 的寫入端），訊號圖與追蹤頁相同，仍受 12 連鎖與 200 節點上限；
 預設深度 3、節點上限 200、記憶體快取分片、顯示載入進度、可中止；加密邊界標「加密 — 無法追蹤」；`?` 方向的腳不追。
 
 ## 對帳（`tools/verify_web.py docs`）

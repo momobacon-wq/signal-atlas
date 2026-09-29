@@ -270,14 +270,26 @@ def main(docs):
         key = f"{b[0]}|{b[1]}"
         ent = task_entry(tkey_of(b[0], b[1]))
         blkj = ent["b"].get(key) if ent else None
-        want = [conn.execute("SELECT count(*) FROM pin WHERE block_id=? AND origin=?", (bid, o)).fetchone()[0] for o in ("decl", "link", "pair", "xref", "vote")]
+        want = [conn.execute("SELECT count(*) FROM pin WHERE block_id=? AND origin=?", (bid, o)).fetchone()[0] for o in ("decl", "link", "pair", "xref", "vote", "print")]
         got_org = sorted(p[11] for p in (blkj or {}).get("pins", []) if p[11])
-        want_org = sorted({"decl": "d", "link": "l", "pair": "p", "xref": "x", "vote": "v"}[r[0]] for r in conn.execute("SELECT origin FROM pin WHERE block_id=? AND origin IS NOT NULL", (bid,)))
+        want_org = sorted({"decl": "d", "link": "l", "pair": "p", "xref": "x", "vote": "v", "print": "g"}[r[0]] for r in conn.execute("SELECT origin FROM pin WHERE block_id=? AND origin IS NOT NULL", (bid,)))
         if blkj is None or not blkj.get("opaque") or blkj.get("rc") != want or got_org != want_org:
             obad += 1
             if obad <= 5:
                 err(f"opaque block {key}: rc {(blkj or {}).get('rc')} vs {want}, origins {len(got_org)} vs {len(want_org)}")
     (ok if not obad else err)(f"sampled {min(10, len(orows))} opaque blocks with recovered pins, {obad} mismatches")
+    # ---- pins promoted from the printed sheets: the task's pv map cites where each is drawn
+    pbad = 0
+    prows = conn.execute("SELECT b.ctrl, b.path, p.name, c.pdf, c.page, c.cell FROM pin_cite c JOIN pin p ON p.id=c.pin_id AND (p.origin='print' OR p.dir_source='G') "
+                         "JOIN block b ON b.id=p.block_id").fetchall()
+    for ctrl_, path_, pin_, pdf_, page_, cell_ in random.sample(prows, min(20, len(prows))):
+        ent = task_entry(tkey_of(ctrl_, path_))
+        got = ((ent or {}).get("pv") or {}).get(f"{ctrl_}|{path_}#{pin_}")
+        if got != [pdf_, page_, cell_]:
+            pbad += 1
+            if pbad <= 5:
+                err(f"printed-sheet cite {ctrl_}|{path_}#{pin_}: {got} vs {[pdf_, page_, cell_]}")
+    (ok if not pbad else err)(f"sampled {min(20, len(prows))} of {len(prows)} pins promoted from the printed sheets, {pbad} cite mismatches")
     li = man.get("lib_iface", {})
     (ok if li and "AI_INT" in li else err)(f"manifest lib_iface: {len(li)} types")
     # ---- tasks: sample 30 task entries (root first, document order, counts)

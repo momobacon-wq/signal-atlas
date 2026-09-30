@@ -1034,6 +1034,8 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
 .wire.src-g{stroke:var(--drawn);stroke-width:1.6;marker-end:url(#dg-arrow-g)}
 .wire.multi{stroke:var(--warn);stroke-dasharray:5 3;marker-end:url(#dg-arrow-multi)}
 .wire.egd{stroke:#1e40af;stroke-dasharray:6 3;marker-end:url(#dg-arrow-egd)}
+.wire.hid{stroke-dasharray:2 3}
+.node.leaf.hid .box{fill:none;stroke:var(--muted);stroke-dasharray:3 2}.node.leaf.hid .name{fill:var(--muted);font-style:italic}
 .mk{fill:var(--muted)}.mk-v{fill:var(--accent-2)}.mk-multi{fill:var(--warn)}.mk-egd{fill:#1e40af}.mk-hl{fill:var(--warn)}.mk-g{fill:var(--drawn)}
 .wlabel{font-size:10px;fill:var(--accent-text);paint-order:stroke;stroke:var(--bg);stroke-width:3px;stroke-linejoin:round}
 .tag rect{fill:var(--surface-2);stroke:var(--border-strong)}

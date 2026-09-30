@@ -3,6 +3,8 @@
  * 葉節點（現場 I/O、EGD、加密、常數、無寫入者…文案同 trace.js）；邊以 from>to 去重；EGD 邊虛線藍；多寫入者變數入邊 .multi；
  * L: 鏈沿同 task 方塊延伸（≤12、不算跳數）——含反向 L:（D.linkPeers：連線只記在對方腳上時，由輸出腳往下游找讀取端、由輸入腳往上游找寫入端）；上限 200 節點（未展開者 .capped）、深度截止（.cut）。交給 D.dg（diagram.js）排版／渲染／互動。
  * 雙擊變數：從該變數再展一層（依其所在側；根節點雙向），整圖重排但保留 viewBox 與選取，新節點 .new。
+ * 隱藏分支（只是檢視，S 不動）：方塊／變數側欄「隱藏此分支」把節點加入隱藏集合，applyHidden 只畫仍與根連通的部分，被切斷的腳位接「⋯ 已隱藏」葉（h:<port><|>，同一腳上下游各一；.hid 虛線；點＝還原清單、雙擊＝還原）；
+ *   「只看此路徑」＝ focusIds 把根↔該節點有向路徑上各節點的其他非葉鄰居加入隱藏（該節點後面那一支保留；根不當中繼，自鎖迴路不算路徑）；工具列「已隱藏 N」列全部可還原。集合依根訊號記在分頁內（HIDDEN），改跳數／展開後照樣套用。
  * 說明：變數節點 desc 取自訊號卡 d.desc（已展開者；截止／上限節點在 fillDesc 補抓自身卡片，EGD 副本亦用自身卡片）；
  * 方塊腳位 desc 取 tuple 第 11 欄；graph.varDesc 供側欄腳位表；?desc=off|brief|full（0|1|2）/ localStorage 由 D.dg.descPref 解析（三段密度）；?pin=cut|wrap|full（0|1|2）腳位名顯示由 D.dg.pinPref 解析。 */
 'use strict';
@@ -346,6 +348,116 @@
     return { nodes: S.nodes, edges: S.edges, tags: S.tags, meta: { title: '訊號圖 ' + S.full, warn: [] }, varDesc };
   }
 
+  /* ------------------------------------------------------------------ 隱藏分支（只是檢視；BFS 狀態 S 不動） */
+  // 分頁內記住：根訊號 full → Map<nodeId, 顯示名>。跳數步進會重建 S，但節點 id 是決定性的（v:／b:／l:），照樣套用
+  const HIDDEN = new Map();
+  const hiddenOf = (full) => { let m = HIDDEN.get(full); if (!m) { m = new Map(); HIDDEN.set(full, m); } return m; };
+  const nodeLabel = (n) => (!n ? '' : n.kind === 'var' ? n.varFull : n.kind === 'leaf' ? n.label : (n.name || n.id) + (n.sub ? '（' + n.sub + '）' : ''));
+  function portOwners(nodes) {
+    const m = new Map();
+    for (const n of nodes.values()) for (const p of n.left.concat(n.right)) m.set(p.id, n.id);
+    return m;
+  }
+  function adjacency(g, owner) {
+    const fwd = new Map(), bwd = new Map(), und = new Map();
+    const push = (m, a, b) => { let l = m.get(a); if (!l) m.set(a, (l = [])); l.push(b); };
+    for (const e of g.edges) {
+      const a = owner.get(e.from), b = owner.get(e.to);
+      if (!a || !b || a === b) continue;
+      push(fwd, a, b); push(bwd, b, a); push(und, a, b); push(und, b, a);
+    }
+    return { fwd, bwd, und };
+  }
+  /** 由 start 沿 m 走得到的節點；skip 內的不走、不收；stop 內的收進來但不再往外走 */
+  function reach(start, m, skip, stop) {
+    const v = new Set([start]), q = [start];
+    while (q.length) {
+      const x = q.pop();
+      if (x !== start && stop && stop.has(x)) continue;
+      for (const y of m.get(x) || []) if (!v.has(y) && !(skip && skip.has(y))) { v.add(y); q.push(y); }
+    }
+    return v;
+  }
+  /** 套用隱藏：可見 = 拿掉隱藏節點後仍與根節點連通（無向）的部分——被隱藏節點後面只靠它連到根的整支一起消失，另有路徑連到根的共用節點留著。
+   *  每個被切斷的可見腳位（依方向分開：同一腳往上游、往下游各一個）接一個「⋯ 已隱藏」葉（h:<portId><|>，cls hid，hidStub = 被隱藏的相鄰節點 id），
+   *  列印／匯出 SVG 也看得出這裡有東西被藏起來，不會被讀成「此腳沒有接線」；被切的線若是多寫入者／EGD，標記線保留 multi／egd 樣式。
+   *  回傳新的 Graph（S.nodes／S.edges 不動）；hidStat = { hidden: 圖中被隱藏的節點數（根除外）, removed: 因此不畫的節點數, gone: 不畫的節點 id } */
+  function applyHidden(g, rootId, hid) {
+    if (!hid.size) { g.hidStat = { hidden: 0, removed: 0, gone: new Set() }; return g; }
+    const owner = portOwners(g.nodes);
+    const { und } = adjacency(g, owner);
+    const vis = reach(rootId, und, hid);
+    const nodes = new Map(), gone = new Set();
+    for (const [id, n] of g.nodes) if (vis.has(id)) nodes.set(id, n); else gone.add(id);
+    const edges = [];
+    const cut = new Map(); // 可見腳位＋方向 → { port, out: 可見端是線的起點, ids: Set(被隱藏的相鄰節點), multi, egd／n: EGD 線數／總線數 }
+    for (const e of g.edges) {
+      const a = owner.get(e.from), b = owner.get(e.to);
+      const va = vis.has(a), vb = vis.has(b);
+      if (va && vb) { edges.push(e); continue; }
+      if (va === vb) continue;
+      const port = va ? e.from : e.to;
+      const key = port + (va ? '>' : '<');
+      let c = cut.get(key);
+      if (!c) cut.set(key, (c = { port, out: va, ids: new Set(), multi: false, egd: 0, n: 0 }));
+      c.ids.add(va ? b : a); // 可見節點的鄰居若不可見，必定就是被隱藏的節點本身
+      c.n++;
+      if (e.multi) c.multi = true;
+      if (e.kind === 'EGD') c.egd++;
+    }
+    for (const [key, c] of cut) {
+      const ids = Array.from(c.ids);
+      const names = ids.map((id) => nodeLabel(g.nodes.get(id)));
+      const id = 'h:' + key;
+      const label = '⋯ 已隱藏' + (ids.length === 1 ? '：' + names[0] : ' ' + ids.length + ' 個');
+      const anchor = g.nodes.get(owner.get(c.port));
+      const n = { id, kind: 'leaf', name: label, label, cls: 'hid', leafCls: 'hid', hidStub: ids, desc: '已隱藏（點一下列出，可逐一還原）：\n' + names.join('\n'),
+        ord: (anchor && anchor.ord != null ? anchor.ord : 1e6) + 0.5, left: [], right: [], body: [] };
+      const p = { id: id + '#p', pin: 'p', dir: c.out ? 'I' : 'O' };
+      (c.out ? n.left : n.right).push(p);
+      nodes.set(id, n);
+      const allEgd = c.egd === c.n;
+      const style = { kind: allEgd ? 'EGD' : 'IO', cls: 'hid', multi: c.multi || undefined, label: allEgd ? 'EGD' : undefined };
+      edges.push(Object.assign(c.out ? { id: c.port + '>' + p.id, from: c.port, to: p.id } : { id: p.id + '>' + c.port, from: p.id, to: c.port }, style));
+    }
+    let hidden = 0;
+    for (const id of hid) if (id !== rootId && g.nodes.has(id)) hidden++;
+    return { nodes, edges, tags: g.tags, meta: g.meta, varDesc: g.varDesc, hidStat: { hidden, removed: gone.size, gone } };
+  }
+  /** 只看此路徑：保留 X 與根節點之間（沿箭頭方向；根當成純起點／終點，不經由根繞回自鎖迴路）的節點，把這些節點其他的非葉鄰居加入隱藏；
+   *  X 後面那一支（不經過其他路徑節點就連得到 X 的部分）保留。hid = 已隱藏的（不經過、也不重複加入）。
+   *  回傳要加入隱藏的 id；X 不在根的任何上下游有向路徑上 → null */
+  function focusIds(g, rootId, xId, hid) {
+    if (xId === rootId) return null;
+    const skip = hid && hid.size ? hid : null;
+    const owner = portOwners(g.nodes);
+    const { fwd, bwd, und } = adjacency(g, owner);
+    const R = new Set([rootId]);
+    const skipX = new Set(skip || []); skipX.add(xId); // X 也當純端點：由根往回走不穿過 X（X 自己的自鎖迴路不算路徑，算 X 那一支）
+    const keep = new Set();
+    const xf = reach(xId, fwd, skip, R), xb = reach(xId, bwd, skip, R);
+    const isUp = xf.has(rootId), isDown = xb.has(rootId);
+    if (isUp) { const rb = reach(rootId, bwd, skipX); rb.add(xId); for (const id of xf) if (rb.has(id)) keep.add(id); } // X 在上游
+    if (isDown) { const rf = reach(rootId, fwd, skipX); rf.add(xId); for (const id of xb) if (rf.has(id)) keep.add(id); } // X 在下游
+    if (!keep.size) return null;
+    const others = new Set(keep); others.delete(xId);
+    if (skip) for (const id of skip) others.add(id);
+    // X 後面那一支：沿遠離根的方向走（上游 X 往更上游、下游 X 往更下游），不經過其他路徑節點；無向走法會繞回根的其他讀取／寫入者而什麼都藏不掉
+    const branch = new Set([xId]);
+    if (isUp) for (const id of reach(xId, bwd, others)) branch.add(id);
+    if (isDown) for (const id of reach(xId, fwd, others)) branch.add(id);
+    const add = new Set();
+    for (const k of keep) {
+      if (k === xId) continue;
+      for (const y of und.get(k) || []) {
+        if (keep.has(y) || branch.has(y) || (skip && skip.has(y))) continue;
+        const n = g.nodes.get(y);
+        if (n && n.kind !== 'leaf') add.add(y); // 葉（I/O、EGD、加密…）是路徑節點本身的說明，留著
+      }
+    }
+    return Array.from(add);
+  }
+
   /* ------------------------------------------------------------------ 頁面 */
   D.page('g', async ({ route, view, signal, alive }) => {
     const full = route.segs.join('/');
@@ -355,6 +467,83 @@
     D.setTitle('訊號圖 ' + full);
     const crumbs = [D.link('#/', '搜尋'), ' › ', D.link(D.hrefV(full), full, 'lk mono'), ' › 訊號圖'];
     let S = null, inst = null;
+    const hid = hiddenOf(full);
+    let stat = { hidden: 0, removed: 0, gone: new Set() }, lastFetched = 0, lastBfs = 0, listEl = null; // listEl = 側欄開著的「全部」隱藏清單
+    const drawn = (id) => !!(inst && inst.graph && inst.graph.nodes.has(id)); // 目前畫面上有這個節點
+    const gone = (id) => hid.has(id) || stat.gone.has(id); // 被隱藏或在隱藏的分支內（展開途中剛加入、尚未重畫的節點兩者皆否）
+    /** 目前要畫的圖 = finalize(S) 再套用隱藏（不能叫 view：會蓋掉頁面參數 view） */
+    function viewGraph(newIds) {
+      const g = applyHidden(finalize(S, newIds), S.root.id, new Set(hid.keys()));
+      stat = g.hidStat;
+      return g;
+    }
+    function redraw() {
+      if (!S || !inst || !inst.graph) return;
+      const tm = inst.setGraph(viewGraph(null), { layout: LAYOUT }); // 隱藏／還原後圖形大改 → 重新適應視窗
+      statusLine(lastFetched, lastBfs, tm);
+      syncHideBtn();
+    }
+    /** 隱藏：ids 加入隱藏（根節點、不在圖中、已隱藏的略過）；關掉側欄（選取的節點可能已不在圖上）；what(k) = 提示開頭（k = 實際新增數） */
+    function hideIds(ids, what) {
+      ids = ids.filter((id) => id !== S.root.id && S.nodes.has(id) && !hid.has(id));
+      if (!ids.length) { D.toast('沒有可隱藏的節點'); return; }
+      const before = stat.removed;
+      for (const id of ids) hid.set(id, nodeLabel(S.nodes.get(id)));
+      inst.clear();
+      redraw();
+      const gone = stat.removed - before;
+      D.toast((what ? what(ids.length) : '已隱藏 ' + ids.length + ' 個節點') + (gone > 0 ? '，畫面少了 ' + gone + ' 個節點' : '') + '；工具列「已隱藏」可還原');
+    }
+    function restoreIds(ids) {
+      let k = 0;
+      for (const id of ids) if (hid.delete(id)) k++;
+      if (!k) return;
+      const listOpen = !!(listEl && inst.side.classList.contains('open') && inst.sideBody.contains(listEl));
+      inst.clear();
+      redraw();
+      if (listOpen && hid.size) showHiddenList();
+      D.toast('已還原 ' + k + ' 個');
+    }
+    /** 側欄：隱藏清單（ids 省略 = 全部；stub = 某個「⋯ 已隱藏」標記的那幾個）；每列還原，另有全部還原 */
+    function showHiddenList(ids, stub) {
+      const list = ids || Array.from(hid.keys());
+      const rows = list.map((id) => {
+        const inGraph = S && S.nodes.has(id);
+        return D.h('li', null,
+          D.h('button', { type: 'button', class: 'btn sm', text: '還原', onclick: () => restoreIds([id]) }), ' ',
+          D.h('span', { class: 'mono', text: hid.get(id) || nodeLabel(S && S.nodes.get(id)) || id, title: id }),
+          inGraph ? null : D.h('span', { class: 'muted small', text: '（目前跳數下不在圖中）' }));
+      });
+      const ul = D.h('ul', { class: 'plain dg-hidden' }, rows);
+      const body = D.frag(
+        D.h('p', { class: 'muted small', text: stub ? '這個腳位接到下列已隱藏的節點（以及只靠它們連到本訊號的那一支）。' : '隱藏只影響這個分頁的顯示；改跳數、雙擊展開後仍套用。' }),
+        D.h('div', { class: 'dg-side-actions' }, D.h('button', { type: 'button', class: 'btn sm', text: stub ? '全部還原（這裡）' : '全部還原', onclick: () => restoreIds(list) })),
+        ul);
+      inst.showSide(D.h('span', { class: 'b', text: (stub ? '這裡已隱藏 ' : '已隱藏 ') + list.length + ' 個' }), body);
+      listEl = stub ? null : ul;
+    }
+    /** 側欄動作：隱藏此分支／只看此路徑（根節點、葉與隱藏標記沒有——葉只接一個腳位，藏起來也只是換成標記） */
+    function hideActions(n) {
+      if (!S || !n || n.root || n.hidStub || n.kind === 'leaf' || !S.nodes.has(n.id)) return null;
+      const name = nodeLabel(n);
+      return D.frag(
+        D.h('button', { type: 'button', class: 'btn sm', text: '隱藏此分支', title: '把這個節點和只經由它連到本訊號的上下游一起藏起來（可還原）',
+          onclick: () => hideIds([n.id], () => '已隱藏 ' + D.dg.trunc(name, 40)) }),
+        D.h('button', { type: 'button', class: 'btn sm', text: '只看此路徑', title: '只留下本訊號到這個節點之間的路徑，以及這個節點後面那一支；其他分支隱藏（可還原）',
+          onclick: () => {
+            const ids = focusIds({ nodes: S.nodes, edges: S.edges }, S.root.id, n.id, new Set(hid.keys()));
+            if (!ids) { D.toast('這個節點不在本訊號沿箭頭方向的上下游路徑上'); return; }
+            if (!ids.length) { D.toast('沒有其他分支可隱藏'); return; }
+            hideIds(ids, (k) => '只看到 ' + D.dg.trunc(name, 40) + ' 的路徑：隱藏 ' + k + ' 個分支');
+          } }));
+    }
+    const hideBtn = D.dg.tool('hide', '已隱藏 0', () => (S && hid.size ? showHiddenList() : null), { cls: 'txt-only', title: '已隱藏的分支：逐一或全部還原' });
+    function syncHideBtn() {
+      hideBtn.style.display = S && hid.size ? '' : 'none'; // 建圖完成前不顯示（清單要對照目前的圖）
+      const lb = '已隱藏 ' + hid.size;
+      hideBtn.querySelector('.tb-txt').textContent = lb;
+      hideBtn.setAttribute('aria-label', lb);
+    }
 
     /** 雙擊變數：再展一層（依其所在側；根節點雙向）；受 200 上限；保留 viewBox 與選取；新節點 .new */
     async function expandNode(varId) {
@@ -374,20 +563,23 @@
       } catch (e) { if (e && e.name === 'AbortError') return; throw e; }
       if (!alive()) return;
       const newIds = new Set(Array.from(S.nodes.keys()).filter((id) => !before.has(id)));
-      const g = finalize(S, newIds);
+      const g = viewGraph(newIds);
       const bfsMs = performance.now() - t0;
       await D.yieldMain();
       if (!alive()) return;
       const tm = inst.setGraph(g, { keepViewport: true, layout: LAYOUT });
       statusLine(D.fetchCount - f0, bfsMs, tm);
+      syncHideBtn();
       if (S.st.capped) D.toast('已達 ' + MAX_NODES + ' 節點上限');
       else D.toast(newIds.size ? '新增 ' + newIds.size + ' 個節點' : '沒有新的節點');
     }
     function statusLine(fetched, bfsMs, tm) {
+      lastFetched = fetched; lastBfs = bfsMs;
       const st = S.st;
       const parts = ['抓取 ' + fetched + ' 個分片', '節點 ' + D.int(st.count) + '（變數 ' + st.vars + ' · 方塊 ' + st.blocks + ' · 葉 ' + st.leaves + '）', '連線 ' + S.edges.length, 'BFS ' + Math.round(bfsMs) + ' ms'];
       if (tm) parts.push('排版 ' + Math.round(tm.layout) + ' ms');
-      if (st.capped) parts.push('已達 ' + MAX_NODES + ' 節點上限');
+      if (stat.hidden) parts.push('隱藏 ' + stat.hidden + ' 個（畫面少 ' + stat.removed + ' 個節點）');
+      if (st.capped) parts.push('已達 ' + MAX_NODES + ' 節點上限' + (stat.hidden ? '（隱藏的節點仍佔名額）' : ''));
       inst.status(parts.join(' · '));
     }
 
@@ -395,10 +587,25 @@
       crumbs, title: full, fileName: 'signal_' + full,
       descMode: D.dg.descPref(q),
       pinMode: D.dg.pinPref(q),
-      varHint: '雙擊變數 pill（或按「展開」）：從該變數再展開一層——上游側展寫入者、下游側展讀取者，根節點雙向。',
-      onDblVar: (v) => { expandNode('v:' + v).catch((e) => console.warn(e)); },
-      varActions: (v) => (S && S.nodes.has('v:' + v) ? D.h('button', { type: 'button', class: 'btn sm', text: '展開', title: '從此變數再展開一層', onclick: () => expandNode('v:' + v).catch((e) => console.warn(e)) }) : null),
-      nodeActions: (n) => ((n.kind === 'block' || n.kind === 'ub') && n.program && n.task ? D.link(D.hrefD(n.ctrl, n.program, n.task, { b: n.key }), '開啟 Task 邏輯圖', 'btn sm') : null),
+      varHint: '雙擊變數 pill（或按「展開」）：從該變數再展開一層——上游側展寫入者、下游側展讀取者，根節點雙向。「隱藏此分支」把用不到的上下游藏起來；點虛線「⋯ 已隱藏」標記可逐一還原。',
+      onDblVar: (v) => { if (drawn('v:' + v)) expandNode('v:' + v).catch((e) => console.warn(e)); else if (gone('v:' + v)) D.toast('此變數已隱藏；工具列「已隱藏」可還原'); },
+      // 已隱藏（或在隱藏分支內，例如從可見方塊的腳位點到）的變數：不給展開／隱藏，只給還原
+      varActions: (v) => (!S || !S.nodes.has('v:' + v) ? null
+        : gone('v:' + v) ? D.h('button', { type: 'button', class: 'btn sm', text: '還原', title: '此變數已隱藏（或在隱藏的分支內）',
+          onclick: () => (hid.has('v:' + v) ? restoreIds(['v:' + v]) : showHiddenList()) })
+        : !drawn('v:' + v) ? null
+        : D.frag(
+          D.h('button', { type: 'button', class: 'btn sm', text: '展開', title: '從此變數再展開一層', onclick: () => expandNode('v:' + v).catch((e) => console.warn(e)) }),
+          hideActions(S.nodes.get('v:' + v)))),
+      nodeActions: (n) => D.frag(
+        (n.kind === 'block' || n.kind === 'ub') && n.program && n.task ? D.link(D.hrefD(n.ctrl, n.program, n.task, { b: n.key }), '開啟 Task 邏輯圖', 'btn sm') : null,
+        hideActions(n)),
+      // 點選：「⋯ 已隱藏」標記 → 那幾個節點的還原清單；其餘照預設面板
+      onSelect: (n, it) => {
+        if (n.hidStub) { showHiddenList(n.hidStub, true); return; }
+        it.showSide(D.h('span', { class: 'mono b', text: n.name || n.id }), D.dg.blockPanel(n, it));
+      },
+      onDblNode: (n, it) => { if (n.hidStub) restoreIds(n.hidStub); else it.select(n.id); },
     });
     // 工具列：上游／下游跳數步進（改寫 hash，可分享）
     const stepper = (label, key) => {
@@ -413,6 +620,8 @@
     inst.addTool(stepper('上游', 'up'));
     inst.addTool(stepper('下游', 'down'));
     inst.addTool(D.dg.tool('pins', '追蹤', null, { href: D.hrefT(full, up >= down ? 'up' : 'down', Math.max(1, up, down)), title: '文字樹狀追蹤' }));
+    inst.addTool(hideBtn);
+    syncHideBtn();
     inst.setLoading('載入排版引擎與訊號卡…');
 
     const f0 = D.fetchCount;
@@ -441,12 +650,14 @@
       inst.status('無此訊號');
       return;
     }
-    const g = finalize(S, null);
+    const g = viewGraph(null);
     inst.setLoading('排版 ' + S.st.count + ' 個節點…');
     await D.yieldMain();
     if (!alive()) return;
     const tm = inst.setGraph(g, { layout: LAYOUT });
     statusLine(D.fetchCount - f0, S.bfsMs, tm);
+    syncHideBtn();
+    if (stat.hidden) D.toast('沿用這個分頁先前的隱藏：' + stat.hidden + ' 個（工具列「已隱藏」可還原）');
     if (S.root.desc) inst.setTitle(full + ' — ' + D.dg.trunc(S.root.desc.split('\n')[0], 60));
     if (S.st.capped) D.toast('已達 ' + MAX_NODES + ' 節點上限，部分分支未展開');
     // 同 task 方塊 hover 同色高亮（.tk-hl）
@@ -466,7 +677,10 @@
     inst.canvas.addEventListener('pointerleave', () => setTk(null));
     inst.expandNode = expandNode;
     inst.signalState = S;
+    inst.hidden = hid;
+    inst.hideIds = hideIds;
+    inst.restoreIds = restoreIds;
   });
 
-  D.dsignal = { MAX_NODES, MAX_CHAIN, buildSignalGraph };
+  D.dsignal = { MAX_NODES, MAX_CHAIN, buildSignalGraph, applyHidden, focusIds, HIDDEN };
 })();

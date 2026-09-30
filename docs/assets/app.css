@@ -345,6 +345,8 @@ body.wide .foot .foot-rev, body.wide .foot .foot-row.small { display: none; }
 .dg-side-body table.mini { font-size: 11.5px; }
 .dg-side-body table.mini td { padding: 3px 5px; white-space: nowrap; word-break: normal; }
 .dg-endpoints li { padding: 1px 0; }
+.dg-hidden li { padding: 2px 0; }
+.dg-hidden .mono { overflow-wrap: anywhere; }
 .lk-btn { background: none; border: 0; padding: 0; color: var(--link); cursor: pointer; text-align: left; }
 .lk-btn:hover { text-decoration: underline; }
 .dg-hint { margin: 8px 0 0; }
@@ -376,6 +378,9 @@ body.wide .foot .foot-rev, body.wide .foot .foot-row.small { display: none; }
 .dg-svg .node.leaf.const .name { fill: var(--const); }
 .dg-svg .node.leaf.io .box { fill: #dcfce7; stroke: #86efac; }
 .dg-svg .node.leaf.io .name { fill: #166534; }
+/* 訊號圖「⋯ 已隱藏」標記（dsignal.js applyHidden）：虛線空心框＋虛線，列印／匯出同樣看得出這裡有分支被藏起來 */
+.dg-svg .node.leaf.hid .box { fill: var(--bg); stroke: var(--muted); stroke-dasharray: 3 2; } /* 實心底色才點得到（fill:none 只有虛線框可點） */
+.dg-svg .node.leaf.hid .name { fill: var(--muted); font-style: italic; }
 .dg-svg .node.comment .box { fill: var(--const-bg); stroke: var(--const); stroke-opacity: 0.5; }
 .dg-svg .node .name { font-weight: 700; fill: var(--text); }
 .dg-svg .node .type, .dg-svg .node .flag { font-size: 9.5px; fill: var(--muted); }
@@ -406,6 +411,7 @@ body.wide .foot .foot-rev, body.wide .foot .foot-row.small { display: none; }
 .dg-svg .wire.src-g { stroke: var(--drawn); stroke-width: 1.6; marker-end: url(#dg-arrow-g); }
 .dg-svg .wire.multi { stroke: var(--warn); stroke-dasharray: 5 3; marker-end: url(#dg-arrow-multi); }
 .dg-svg .wire.egd { stroke: #1e40af; stroke-dasharray: 6 3; marker-end: url(#dg-arrow-egd); }
+.dg-svg .wire.hid { stroke-dasharray: 2 3; }
 .dg-svg .wire:hover { stroke-width: 2.4; }
 .dg-svg .mk { fill: var(--muted); }
 .dg-svg .mk-v { fill: var(--accent-2); }

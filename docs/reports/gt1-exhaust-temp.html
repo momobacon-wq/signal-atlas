@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://script.google.com https://script.googleusercontent.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Signal Atlas — 報告</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<meta name="atlas-report" content="gt1-exhaust-temp">
+<script src="../assets/boot.js"></script>
+<meta name="ams-auth-config" content="../auth-config.json" data-site="Signal Atlas">
+<script src="../assets/auth.js"></script>
+<link rel="stylesheet" href="../assets/app.css" data-site-css>
+<script src="../assets/report.js"></script>
+</head>
+<body>
+<div class="auth-gate key-gate" role="dialog" aria-modal="true" aria-labelledby="rep-title">
+  <form id="rep-form" class="auth-card key-card" autocomplete="on" novalidate hidden>
+    <div class="auth-brand"><span class="brand-mark" aria-hidden="true">SA</span>
+      <div><h1 id="rep-title">輸入密語</h1><p class="auth-sub">這份報告已加密，輸入密語後才會在你的裝置上解密顯示。</p></div></div>
+    <label class="auth-field"><span>密語</span><input id="rep-pass" name="passphrase" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" required placeholder="密語"></label>
+    <label class="key-remember"><input id="rep-remember" type="checkbox" checked> 記住此裝置（金鑰存在此瀏覽器，不再詢問）</label>
+    <button class="btn primary auth-btn" type="submit">解鎖</button>
+    <p class="auth-foot">密語請向站台管理者索取</p>
+  </form>
+  <div id="rep-status" class="auth-msg" role="status" aria-live="polite">載入中…</div>
+  <noscript><p>此網頁需要啟用 JavaScript。</p></noscript>
+</div>
+</body>
+</html>

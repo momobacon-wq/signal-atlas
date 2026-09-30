@@ -689,24 +689,12 @@ def gate(path: Path, expect_ctrl: str, idx_conn, sample=8):
     if row is None:
         out["gate_note"] = "controller %s is not in the index" % expect_ctrl
         return out
-    pmaj, pmin = _parse_stamp(out["print_major"]), _parse_stamp(out["print_minor"])
-    imaj, imin = _parse_stamp(row[0]), _parse_stamp(row[1])
-    if not all((pmaj, pmin, imaj, imin)):
+    off, note = revision_offset(out["print_major"], out["print_minor"], row[0], row[1])
+    if off is None:
         out["gate_status"] = "revision_mismatch"
-        out["gate_note"] = "cannot compare revisions (printed %r/%r, indexed %r/%r)" % (
-            out["print_major"], out["print_minor"], row[0], row[1])
+        out["gate_note"] = note
         return out
-    dmaj = (pmaj - imaj).total_seconds()
-    dmin = (pmin - imin).total_seconds()
-    # the print stamps local time and the index keeps the build's own stamp, so the
-    # two must differ by ONE constant whole-quarter-hour offset. Anything else means
-    # the drawing is of a different build than the checkout the index was made from.
-    if abs(dmaj - dmin) > 60 or dmaj % 900 != 0 or not (-12 * 3600 <= dmaj <= 14 * 3600):
-        out["gate_status"] = "revision_mismatch"
-        out["gate_note"] = ("printed build %s / %s vs indexed %s / %s (offset %.0f s / %.0f s)"
-                            % (out["print_major"], out["print_minor"], row[0], row[1], dmaj, dmin))
-        return out
-    out["tz_offset_min"] = int(dmaj // 60)
+    out["tz_offset_min"] = off
 
     want = dbm.get_meta(idx_conn, "toolbox_version")
     if want and out["tool_version"] and out["tool_version"] != want:
@@ -716,6 +704,22 @@ def gate(path: Path, expect_ctrl: str, idx_conn, sample=8):
 
     out["gate_status"] = "pass"
     return out
+
+
+def revision_offset(print_major, print_minor, idx_major, idx_minor):
+    """-> (offset in minutes, None) when the printed build stamps are the indexed build's, else (None, reason).
+    The print stamps local time and the index keeps the build's own stamp, so the two must differ by ONE constant
+    whole-quarter-hour offset. Anything else means the drawing is of a different build than the indexed checkout."""
+    pmaj, pmin = _parse_stamp(print_major), _parse_stamp(print_minor)
+    imaj, imin = _parse_stamp(idx_major), _parse_stamp(idx_minor)
+    if not all((pmaj, pmin, imaj, imin)):
+        return None, "cannot compare revisions (printed %r/%r, indexed %r/%r)" % (print_major, print_minor, idx_major, idx_minor)
+    dmaj = (pmaj - imaj).total_seconds()
+    dmin = (pmin - imin).total_seconds()
+    if abs(dmaj - dmin) > 60 or dmaj % 900 != 0 or not (-12 * 3600 <= dmaj <= 14 * 3600):
+        return None, ("printed build %s / %s vs indexed %s / %s (offset %.0f s / %.0f s)"
+                      % (print_major, print_minor, idx_major, idx_minor, dmaj, dmin))
+    return int(dmaj // 60), None
 
 
 def gate_all(idx_conn, pdf_dir: Path = None, ctrls=None):
@@ -787,6 +791,9 @@ def scan(idx_conn, pconn, ctrls=None, pdf_dir: Path = None, pages=None, log=prin
     the index. Re-running replaces a file's rows (keyed on the file name)."""
     import fitz
     pdf_dir = pdf_dir or pei_dir()
+    if not pdf_dir.exists():
+        raise SystemExit(f"printed reports not found: {pdf_dir} "
+                         f"(set DCDAS_PEI or \"pei_dir\" in {dbm.config_path()})")
     known = [r[0] for r in idx_conn.execute("SELECT name FROM controller ORDER BY name")]
     files = []
     for c in known:

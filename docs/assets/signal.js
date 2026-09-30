@@ -116,9 +116,11 @@
             ' ', D.mono(x.board || ''), ' ', D.mono(x.point || ''), x.tag ? D.frag(' ', D.tag(x.tag)) : null))));
       } else if (rec.egd && rec.egd.src) {
         const s = rec.egd.src;
-        note = 'EGD 來自 ' + s.ctrl;
-        body.push(D.h('p', null, 'EGD 來自 ', D.h('a', { href: D.hrefV(s.ctrl + '.' + s.var), class: 'lk mono b', text: s.ctrl + '.' + s.var }),
+        const si = D.egdSrcInfo(s);
+        note = si.lead + s.ctrl;
+        body.push(D.h('p', null, si.lead, D.egdSrcNode(s, 'b'),
           '（exchange ', D.mono(D.val(s.ex)), '，voffs ', D.mono(D.val(s.voffs)), '，比對 ', D.mono(D.val(s.match)), '）'));
+        if (!si.isCtrl) body.push(D.h('p', { class: 'muted small', text: s.ctrl + ' 不是索引內的控制器（' + D.nodeLabel(s.ctrl) + '），只登錄名稱，沒有訊號卡可連；上游追到這裡為止。' }));
       } else if (rec.enc && rec.enc.length) {
         note = '可能在加密程式內';
         body.push(D.h('p', { class: 'warn-text' }, '找不到寫入者；此訊號出現在加密程式 ', rec.enc.map((p, i) => D.frag(i ? '、' : null, D.mono(p))), ' 內 — 可能在加密程式內（不可追蹤）。'));
@@ -138,12 +140,12 @@
 
   function egdSection(egd, full) {
     if (!egd) return null;
-    const p = egd.p || [], c = egd.c || [];
+    const p = egd.p || [], c = D.egdCons(egd);
     const body = [];
     if (p.length) {
       body.push(D.h('h4', { text: '本站送出（produced）' }),
         D.table(['EGD 頁', 'Exchange', 'voffs'], p.map((x) => [D.mono(D.val(x.page)), D.mono(D.val(x.ex)), D.mono(D.val(x.voffs))])));
-      if (!c.length) body.push(D.h('p', { class: 'warn-text', text: 'consumer outside checkout — 有送出但站內找不到消費者（接收端控制器不在匯出範圍內）。' }));
+      if (!c.length) body.push(D.h('p', { class: 'muted small', text: D.EGD_NO_CONS + '。' }));
     }
     if (c.length) {
       body.push(D.h('h4', { text: '消費者（其他控制器）' }),
@@ -152,7 +154,7 @@
     if (egd.src) {
       const s = egd.src;
       body.push(D.h('h4', { text: '來源（本訊號是 EGD 副本）' }),
-        D.h('p', null, D.h('a', { href: D.hrefV(s.ctrl + '.' + s.var), class: 'lk mono b', text: s.ctrl + '.' + s.var }), '  exchange ', D.mono(D.val(s.ex)), '  voffs ', D.mono(D.val(s.voffs)), '  比對 ', D.mono(D.val(s.match))));
+        D.h('p', null, D.egdSrcNode(s, 'b'), '  exchange ', D.mono(D.val(s.ex)), '  voffs ', D.mono(D.val(s.voffs)), '  比對 ', D.mono(D.val(s.match))));
     }
     if (!body.length) return null;
     return D.section('跨控制器 EGD', body, { count: p.length + c.length + (egd.src ? 1 : 0) });

@@ -12,8 +12,12 @@ XML namespace http://geindustrial.com/EGD.
   Consumer-side variable is named '<Producer>.<Name>' with DeviceName=<Producer> (parse_vars fills variable).
 
 Per controller (idempotent): delete its egd_exchange (+ egd_produced via exchange_pk) rows and its egd_consumed rows,
-re-insert, UPDATE controller.egd_producer_id. egd.xml is read ONLY when a ProducedData Exchange lacks Page (none of
-the 15 controllers in the current checkout do).
+re-insert, UPDATE controller.egd_producer_id. egd.xml is read ONLY when a ProducedData Exchange lacks Page (no
+controller in the current checkout does).
+Nodes (inventory.nodes: HMI workstations, servers, external devices; no Variables.xml): ProducedData only, so a
+controller consuming from a node binds to a named producer point (var_id NULL: nodes have no variables). Their
+ConsumedData is never opened (each HMI server subscribes to ~200k points: 3M+ rows that would list every workstation
+as a consumer of every signal), and their ProducerId (an encoded adapter address) is not read.
 producer_var_id and match_method are computed in a final pass over ALL egd_consumed rows at the end of run(), since a
 consumer's ConsumedData is usually parsed before (or without) its producers' ProducedData.
 """
@@ -59,7 +63,7 @@ def _clear(el):
 
 
 # ------------------------------------------------------------------------------------------------ ProducedData
-def parse_produced(conn, ctrl: str, path: Path, vidx: dict) -> dict:
+def parse_produced(conn, ctrl: str, path: Path, vidx: dict, read_producer_id: bool = True) -> dict:
     """Returns {'exchanges', 'vars', 'unresolved', 'producer_id', 'missing_page': [exchange_id,...]}."""
     st = {"exchanges": 0, "vars": 0, "unresolved": 0, "producer_id": None, "missing_page": []}
     b = Batch(conn, INSERT_PRODUCED, 5000)
@@ -78,7 +82,7 @@ def parse_produced(conn, ctrl: str, path: Path, vidx: dict) -> dict:
                                                      _i(a.get("SigMajor"))))
                 ex_pk = cur.lastrowid
                 st["exchanges"] += 1
-            elif tag == T_PRODUCER:
+            elif tag == T_PRODUCER and read_producer_id:
                 st["producer_id"] = el.get("ProducerId")
             continue
         # end events
@@ -207,19 +211,41 @@ def finalize(conn, log=print) -> dict:
         rows.append((m, cid))
     conn.executemany("UPDATE egd_consumed SET match_method=? WHERE id=?", rows)
     conn.commit()
-    known = {r[0] for r in conn.execute("SELECT name FROM controller")}
+    known = {r[0] for r in conn.execute("SELECT name FROM controller UNION SELECT name FROM node")}
     ext = [r[0] for r in conn.execute("SELECT DISTINCT producer_ctrl FROM egd_consumed ORDER BY 1") if r[0] not in known]
     n_pv = conn.execute("SELECT count(*) FROM egd_consumed WHERE producer_var_id IS NOT NULL").fetchone()[0]
     log(f"  match   {len(rows):7d} rows  both={counts['both']} name={counts['name']} voffs={counts['voffs']} "
         f"none={counts['none']}  producer_var_id={n_pv}  {time.time()-t0:5.1f}s")
     if ext:
-        log(f"  producers without a controller folder: {' '.join(ext)}")
+        log(f"  producers without a folder in the checkout: {' '.join(ext)}")
     counts["external_producers"] = ext
     return counts
 
 
 # -------------------------------------------------------------------------------------------------------- run
-def run(conn, root: Path, ctrls: Iterable[Controller], log=print) -> dict:
+def run_nodes(conn, nodes, log=print) -> dict:
+    """ProducedData of the non-controller nodes (see the module doc); ConsumedData / egd.xml / ProducerId untouched."""
+    stats = {}
+    for n in nodes:
+        t0 = time.time()
+        conn.execute("DELETE FROM egd_produced WHERE exchange_pk IN (SELECT id FROM egd_exchange WHERE producer_ctrl=?)",
+                     (n.name,))
+        conn.execute("DELETE FROM egd_exchange WHERE producer_ctrl=?", (n.name,))
+        conn.execute("DELETE FROM egd_consumed WHERE consumer_ctrl=?", (n.name,))
+        p = n.folder / "ProducedData.xml"
+        if not p.exists():
+            continue
+        ps = parse_produced(conn, n.name, p, {}, read_producer_id=False)
+        conn.execute("UPDATE node SET n_exchanges=?, n_vars=? WHERE name=?", (ps["exchanges"], ps["vars"], n.name))
+        conn.commit()
+        stats[n.name] = {"exchanges": ps["exchanges"], "produced": ps["vars"]}
+        miss = f"  ({len(ps['missing_page'])} exchange(s) without Page)" if ps["missing_page"] else ""
+        log(f"  egd  {n.name:7s} ex {ps['exchanges']:3d} prod {ps['vars']:6d}  node ({n.kind}): no variables, "
+            f"consumption not indexed{miss}  {time.time()-t0:5.1f}s")
+    return stats
+
+
+def run(conn, root: Path, ctrls: Iterable[Controller], log=print, nodes=()) -> dict:
     stats = {}
     for c in ctrls:
         t0 = time.time()
@@ -257,14 +283,15 @@ def run(conn, root: Path, ctrls: Iterable[Controller], log=print) -> dict:
         log(f"  egd  {c.name:7s} ex {ps['exchanges']:3d} prod {ps['vars']:6d} (novar {ps['unresolved']:5d})  "
             f"cons {cs['vars']:5d} from {len(cs['producers']):2d} producers (nolocal {cs['unresolved_local']:3d})  "
             f"{time.time()-t0:5.1f}s")
+    stats["_nodes"] = run_nodes(conn, nodes, log)
     stats["_match"] = finalize(conn, log)
     # RequiredProducer names seen in this run (incl. those with zero BoundVar) that have no controller folder
     seen = set()
     for s in stats.values():
         seen.update(s.get("producers", {}))
-    known = {r[0] for r in conn.execute("SELECT name FROM controller")}
+    known = {r[0] for r in conn.execute("SELECT name FROM controller UNION SELECT name FROM node")}
     ext = sorted(seen - known)
     if ext:
-        log(f"  RequiredProducer names without a controller folder (this run): {' '.join(ext)}")
+        log(f"  RequiredProducer names without a folder in the checkout (this run): {' '.join(ext)}")
     stats["_match"]["required_producers_external"] = ext
     return stats

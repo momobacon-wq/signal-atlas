@@ -297,7 +297,7 @@
         else if (m && m.src && m.src.k === 'V' && m.src.var) D.go(D.hrefV(m.src.var)); // 腳位值鏡像：跳到腳位的接線來源
         else if (m && m.src && (m.src.k === 'L' || m.src.k === 'P') && m.src.block) D.go(D.hrefBKey(m.src.block));
         else if (m && Array.isArray(m.pin) && m.pin.length >= 5) D.go(D.hrefB(m.pin[0], m.pin[2]));
-        else if (rec.egd && rec.egd.src) D.go(D.hrefV(rec.egd.src.ctrl + '.' + rec.egd.src.var));
+        else if (rec.egd && rec.egd.src) { const si = D.egdSrcInfo(rec.egd.src); if (si.isCtrl) D.go(D.hrefV(si.full)); else D.toast(si.text); }
         else if (rec.enc && rec.enc.length) D.toast('加密 — 無法追蹤（' + rec.enc.join('、') + '）');
         else if (rec.d && rec.d.const) D.toast('常數（無寫入者）');
         else D.toast('無寫入者（可能為 HMI／外部寫入或方向未推斷）');
@@ -305,7 +305,7 @@
       }
     } else if (groups.size === 1) { const tk = groups.keys().next().value; const [c, pt] = tk.split('|'); const [pg, tk2] = pt.split('/'); D.go(D.hrefD(c, pg, tk2, { sel: varFull })); return; }
     else if (!groups.size) {
-      const cons = (rec.egd && rec.egd.c) || [];
+      const cons = D.egdCons(rec.egd);
       if (cons.length) D.toast('EGD 消費者：' + cons.map((c) => c.ctrl + '.' + c.local).join('、'));
       else if ((rec.io || []).some((x) => x.dir === 'O')) D.toast('現場 I/O 輸出');
       else D.toast(refs.length ? '讀取者都在本 task 內' : '無讀取者');

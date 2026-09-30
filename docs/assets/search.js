@@ -67,13 +67,14 @@
   }
   const FILTERS = [[1, '有寫入者'], [2, 'I/O'], [4, 'EGD'], [8, 'HMI'], [16, '警報'], [32, '常數'], [128, '加密']];
 
+  /** manifest n_io 為 0 的控制器（例如驅動器）不給 I/O 連結；舊 manifest 缺欄時照舊顯示 */
+  const hasIO = (c) => { const m = D.ctrlMap.get(c); return !m || m.n_io == null || Number(m.n_io) > 0; };
   function browseRow() {
-    const rows = D.ctrls.map((c) => [D.mono(c), D.link(D.hrefP(c), '程式'), D.link(D.hrefIO(c), 'I/O'), D.link(D.hrefA(c), '警報')]);
     return D.h('details', { class: 'sec browse' },
       D.h('summary', null, D.h('span', { class: 'sec-title', text: '瀏覽' }), D.h('span', { class: 'sec-note', text: '程式 / Task / 方塊、I/O 機櫃、警報清單、HMI 畫面' })),
       D.h('div', { class: 'sec-body' },
         D.h('p', null, D.link('#/s', 'HMI 畫面清單（screens.json）', 'btn sm')),
-        D.h('div', { class: 'browse-grid' }, D.ctrls.map((c) => D.h('div', { class: 'browse-cell' }, D.mono(c, 'b'), ' ', D.link(D.hrefP(c), '程式'), ' · ', D.link(D.hrefIO(c), 'I/O'), ' · ', D.link(D.hrefA(c), '警報'))))));
+        D.h('div', { class: 'browse-grid' }, D.ctrls.map((c) => D.h('div', { class: 'browse-cell' }, D.mono(c, 'b'), ' ', D.link(D.hrefP(c), '程式'), hasIO(c) ? D.frag(' · ', D.link(D.hrefIO(c), 'I/O')) : null, ' · ', D.link(D.hrefA(c), '警報'))))));
   }
 
   D.page('', async ({ route, view, alive }) => {

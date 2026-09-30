@@ -10,7 +10,7 @@ Pipeline (`tools/dcdas.py build`): vars → logic → lib → io → egd → hmi
 Each stage module exposes `run(conn, root, ctrls, log)` (`ctrls` = list of `inventory.Controller`; project-wide stages
 take `run(conn, root, log)`). A stage must be idempotent for its scope: delete the rows it owns for that controller,
 then insert. Use `db.Batch` for bulk inserts, commit per controller/file, print one line per controller with count + time.
-Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 min.
+Full build of 19 controllers (+66 registered nodes) takes ~60 s (~25 min when the checkout sits on a cloud-streamed drive that has not cached it yet); `export-web` ~45 s; `verify_web` ~1 min.
 
 ## Facts about the XML (verified)
 
@@ -96,9 +96,12 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
   `resolve.vote_io_directions` from the logic (only readers -> I, only ordinary-block writers -> O, source `V`; both or
   neither stays `?`). `io` / `show` print `[direction by logic vote]` for `V`.
 * HMI navigation points (`parse_hmi.nav_full_point`): exact full name (`resolved_via` full), unit prefix + name
-  (prefix), `CTRL.<alias>` when the KKS alias is unique in that controller (alias, ~2.2k points); points whose first
-  segment is no indexed controller are marked `external` and the node is listed in `external_node` (also EGD producers
-  the consumers bind to that are not in the checkout). SFC `*_Array` pins of TRANSITION_CONTROL /
+  (prefix), `CTRL.<alias>` when the KKS alias is unique in that controller (alias, ~2.2k points). A point whose first
+  segment is an indexed controller or a registered node keeps its name (a node's point is that node's own produced EGD
+  point, even when the CSV lists it under a controller's UnitPrefix; the same point under two units is one row).
+  Unresolved points of a registered node (any number) or of another non-controller name (>= 5 points) are marked
+  `external` and the name is listed in `external_node` (also EGD producers the consumers bind to that are not indexed
+  controllers; `node` tells a registered node from a name with no folder). SFC `*_Array` pins of TRANSITION_CONTROL /
   SFC_CONTROL_INTERFACE / TRANSITION_ACTIVATION_CONTROL are shared state (`S`) via `tools/pin_dir_overrides.csv`.
 * Trace / signal diagram: a writer or reader that is a task/userblock interface pin is followed only through the inner
   `L:<pin>` pins (`_inner_pins`, web `D.innerPins`); when none is visible the branch ends with "inner driver not
@@ -123,6 +126,16 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
   SigMajor, Page, ...) → `TransferAddress`, `BoundVar`(Name, DType, Address, Writable, VOffs). Consumer-side variable
   is named `<Producer>.<Name>` with `DeviceName=<Producer>`. Match producer var by name AND by (producer,
   ExchangeId, VOffs) → `match_method`.
+* Devices (`inventory`): the PI class token of `Device.xml` (between the last `.` and the first `,`) decides. The four
+  controller classes (suffix `VIeDevice` → controller, `VIeSDevice` → safety, `EX2100*` → exciter, `LS2100*` → drive)
+  are indexed; every other class (workstation, thin client, VM, virtualization server, field agent, network switch,
+  time server, external device) is a NODE: one `node` row (name, kind hmi/server/network/external/other, class token),
+  nothing else read from its `Device.xml` (the bodies hold addresses, host names, SNMP secrets, personnel fields).
+  An unknown class is a node unless the folder has logic/variables (then a controller, with a WARN). Nodes' EGD:
+  `ProducedData.xml` only (`parse_egd.run_nodes`; `var_id` NULL, no variables; ProducerId not read — it is an encoded
+  adapter address); their `ConsumedData.xml` is never opened (each HMI server subscribes to ~200k points: 3M+ rows).
+  The ledger tracks a node's `Device.xml` and `ProducedData.xml` only. A drive program name may hold `\` (`LS21eC\SEQ_1`);
+  its file is `_LS21eC~SEQ_1.xml` — always use `program.file_path`.
 * HMI: `HmiScreens/navigation/tp_actPt_navPointSearchDbStd.csv` (utf-8-sig, no header, rows
   `FullPoint,UnitPrefix,Screen`; some FullPoint rows lack a prefix → prepend UnitPrefix; duplicates exist);
   `HmiScreens/navigation/CIMNavigationMenuItemsStd.csv` (header `Block Name,Menu Item Name,Sub Menu Item Name,
@@ -134,14 +147,15 @@ Full build of 15 controllers takes ~35 s; `export-web` ~45 s; `verify_web` ~1 mi
 * Library folders (`<dir>/Library.xml` exists): `_*.xml` PI `GeCss.Config.Blockware.UserBlockLibrary`; may contain
   `ProgramDef`/`UserBlock` definitions with `Pin Usage=…`; `Program@LocalHelpFile="X.mht"` in controller programs
   points at `<library dir>/X.mht`. Do NOT index library internals (instances are expanded in the controllers).
-* Golden numbers (see `tests/golden_test.py`): variable 319,081; G11 blocks 31,417 / tasks 1,018 / encrypted 20;
-  S1 encrypted 88/92; WSC1 encrypted 10; hmi navcsv 17,323 after dedup; format_spec 3,060.
+* Golden numbers (see `tests/golden_test.py`): variable 325,064 + 10,532 alarm sub-variables = 335,596; controllers 19
+  (controller 11 / safety 3 / exciter 3 / drive 2), nodes 66; G11 blocks 31,417 / tasks 1,018 / encrypted 20;
+  S1 encrypted 88/92; WSC1 encrypted 10; hmi navcsv 17,321 after dedup; format_spec 3,069; egd_consumed 3,132.
 
 ## Testing a stage in isolation
 
 ```
 set DCDAS_DB=%TEMP%\dcdas_test_<stage>.sqlite
-py tools\dcdas.py build --vars --no-post          # 8 s, fills variable (319,081 rows)
+py tools\dcdas.py build --vars --no-post          # 8 s, fills variable (335,596 rows)
 py tools\dcdas.py build --<stage> --no-post --ctrl WSC1 BOPE1     # then your stage on small controllers
 ```
 Use `sqlite3` in Python to inspect. Never write to the default DB from a stage test. `export-web --no-encrypt` produces

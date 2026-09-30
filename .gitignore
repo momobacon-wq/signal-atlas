@@ -10,3 +10,6 @@ tools/auth/mock_log.jsonl
 tools/auth/mock_server.out
 tools/verify_report.*
 _scratch/
+
+# local scratch dumps (plaintext logic): never publish
+tmpx/

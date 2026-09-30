@@ -1160,7 +1160,7 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
       const w = rec.w || [], rd = rec.r || [];
       D.set(info, D.h('div', null, d.desc ? D.h('div', { text: d.desc }) : null,
         D.h('div', { class: 'muted small' }, D.mono(D.val(d.dt)), ' · 寫入者 ', D.int(w.length), ' · 讀取者 ', D.int(rd.length), ' ', D.flagIcons(d.flags)),
-        !w.length && rec.egd && rec.egd.src ? D.h('div', { class: 'small' }, 'EGD 來自 ', D.h('a', { href: D.hrefV(rec.egd.src.ctrl + '.' + rec.egd.src.var), class: 'lk mono', text: rec.egd.src.ctrl + '.' + rec.egd.src.var })) : null,
+        !w.length && rec.egd && rec.egd.src ? D.h('div', { class: 'small' }, D.egdSrcInfo(rec.egd.src).lead, D.egdSrcNode(rec.egd.src)) : null,
         !w.length && rec.enc && rec.enc.length ? D.h('div', { class: 'warn-text small', text: '加密 — 無法追蹤（' + rec.enc.join('、') + '）' }) : null));
       inst.lastCard = { varFull, rec };
       if (opts.onCard) opts.onCard(varFull, rec, box, inst, ctx);

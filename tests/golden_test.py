@@ -29,8 +29,23 @@ def main():
     conn = sqlite3.connect(f"file:{dbm.db_path().as_posix()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     # ---- counts
-    check("variable total 329601 (319081 + 10520 alarm sub-variables)", one(conn, "SELECT count(*) FROM variable WHERE is_program_local=0") == 329601,
+    check("variable total 335596 (325064 + 10532 alarm sub-variables; 19 controllers)", one(conn, "SELECT count(*) FROM variable WHERE is_program_local=0") == 335596,
           str(one(conn, "SELECT count(*) FROM variable WHERE is_program_local=0")))
+    # ---- devices: four controller classes are indexed, every other Device.xml folder is a registered node only
+    kinds = {r[0]: r[1] for r in conn.execute("SELECT kind, count(*) FROM controller GROUP BY kind")}
+    check("controllers 19: controller 11 / safety 3 / exciter 3 / drive 2", kinds == {"controller": 11, "safety": 3, "exciter": 3, "drive": 2}, str(kinds))
+    nk = {r[0]: r[1] for r in conn.execute("SELECT kind, count(*) FROM node GROUP BY kind")}
+    check("nodes 66: hmi 30 / network 24 / server 11 / external 1 (registry only)", nk == {"hmi": 30, "network": 24, "server": 11, "external": 1}, str(nk))
+    leak = one(conn, """SELECT (SELECT count(*) FROM node WHERE name IN (SELECT name FROM controller))
+                             + (SELECT count(*) FROM variable WHERE ctrl IN (SELECT name FROM node))
+                             + (SELECT count(*) FROM program WHERE ctrl IN (SELECT name FROM node))
+                             + (SELECT count(*) FROM egd_consumed WHERE consumer_ctrl NOT IN (SELECT name FROM controller))
+                             + (SELECT count(*) FROM source_file WHERE ctrl IN (SELECT name FROM node) AND kind NOT IN ('device','egd_produced'))""")
+    check("no node is a controller, has variables/programs/consumed EGD, or has other files in the ledger", leak == 0, str(leak))
+    npid = one(conn, "SELECT count(*) FROM node WHERE n_exchanges IS NOT NULL") , one(conn, "SELECT count(*) FROM egd_exchange WHERE producer_ctrl IN (SELECT name FROM node)")
+    check("node ProducedData parsed (17 nodes with exchanges, >= 30 exchanges)", npid[0] >= 17 and npid[1] >= 30, str(npid))
+    nprog = one(conn, "SELECT count(*) FROM program WHERE file_path <> ctrl || '/_' || name || '.xml'")
+    check("program.file_path differs from <ctrl>/_<program>.xml only for the 2 drive programs with a '\' in the name", nprog == 2, str(nprog))
     g11_blocks = one(conn, "SELECT count(*) FROM block WHERE ctrl='G11' AND kind='block'")
     check("G11 blocks 31417", g11_blocks == 31417, str(g11_blocks))
     g11_tasks = one(conn, "SELECT count(*) FROM task t JOIN program p ON p.id=t.program_id WHERE p.ctrl='G11'")
@@ -42,9 +57,9 @@ def main():
     wsc = one(conn, "SELECT count(*) FROM program WHERE ctrl='WSC1' AND encrypted=1")
     check("WSC1 encrypted 10", wsc == 10, str(wsc))
     nav = one(conn, "SELECT count(*) FROM hmi_point WHERE source='navcsv'")
-    check("hmi_point navcsv 17323 (17738 csv rows - 415 duplicates)", nav == 17323, str(nav))
+    check("hmi_point navcsv 17321 (17738 csv rows - 417 duplicates; a node point listed under two units is one row)", nav == 17321, str(nav))
     fsn = one(conn, "SELECT count(*) FROM format_spec")
-    check("format_spec ~3060", fsn is not None and 3000 <= fsn <= 3100, str(fsn))
+    check("format_spec ~3069", fsn is not None and 3000 <= fsn <= 3100, str(fsn))
     wf = one(conn, "SELECT count(DISTINCT watch_file) FROM watch")
     check("watch files >= 100 (171 incl. empty stubs)", (wf or 0) >= 100, str(wf))
 
@@ -283,8 +298,14 @@ def main():
     check("field-reference pins (conn_kind D) <= 60 (1,556 before the sub-variables were indexed; 54 '.BQ' of *Crctd inputs remain)", (nd or 0) <= 60, str(nd))
     nbq = one(conn, "SELECT count(*) FROM pin WHERE origin='vote' AND name LIKE 'BQ_' AND conn_kind='V'")
     check("vote BQ rows linked to a variable >= 250 (261 of 315)", (nbq or 0) >= 250, str(nbq))
-    ne = one(conn, "SELECT count(*) FROM egd_produced WHERE var_id IS NULL")
-    check("every EGD produced point resolves to a variable (5,308 HMI-page '.H/.BQ' points were unresolved before)", ne == 0, str(ne))
+    ne = one(conn, "SELECT count(*) FROM egd_produced p JOIN egd_exchange x ON x.id=p.exchange_pk WHERE p.var_id IS NULL AND x.producer_ctrl IN (SELECT name FROM controller)")
+    check("every EGD point a controller produces resolves to a variable (5,308 HMI-page '.H/.BQ' points were unresolved before)", ne == 0, str(ne))
+    nn = one(conn, "SELECT count(*) FROM egd_produced p JOIN egd_exchange x ON x.id=p.exchange_pk WHERE x.producer_ctrl IN (SELECT name FROM node) AND p.var_id IS NULL")
+    check("node-produced EGD points are named but have no variable (8917)", nn == 8917, str(nn))
+    ec = one(conn, "SELECT count(*) FROM egd_consumed"), one(conn, "SELECT count(*) FROM egd_consumed WHERE match_method='none'")
+    check("egd_consumed 3132 rows (controllers only; node subscriptions not indexed), none unmatched", ec == (3132, 0), str(ec))
+    npv = one(conn, "SELECT count(*) FROM egd_consumed WHERE producer_var_id IS NULL AND producer_ctrl NOT IN (SELECT name FROM node)")
+    check("a consumed point without a producer variable always comes from a registered node", npv == 0, str(npv))
 
     # ---- batch 2: SFC array pins, I/O direction vote, HMI alias resolution + external nodes, tracer without task fan-out
     nsfc = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE p.direction='?' AND b.block_type IN ('TRANSITION_CONTROL','SFC_CONTROL_INTERFACE','TRANSITION_ACTIVATION_CONTROL') AND substr(p.name, -6)='_Array'")
@@ -296,10 +317,13 @@ def main():
     bad = one(conn, "SELECT count(*) FROM io_point WHERE (direction='?' AND dir_source<>'-') OR (direction<>'?' AND dir_source NOT IN ('N','P','X','V'))")
     check("io_point.dir_source consistent with direction", bad == 0, str(bad))
     via = {r[0]: r[1] for r in conn.execute("SELECT coalesce(resolved_via,'-'), count(*) FROM hmi_point WHERE source='navcsv' GROUP BY 1")}
-    check("HMI nav points: >= 2000 resolved through a unique KKS alias, >= 500 marked external, <= 1800 unresolved (4376 unresolved before)",
-          via.get("alias", 0) >= 2000 and via.get("external", 0) >= 500 and via.get("-", 0) <= 1800, str(via))
+    check("HMI nav points: >= 2000 resolved through a unique KKS alias, >= 1400 marked external (node points), <= 700 unresolved (4376 unresolved before)",
+          via.get("alias", 0) >= 2000 and via.get("external", 0) >= 1400 and via.get("-", 0) <= 700, str(via))
     ext = {r[0] for r in conn.execute("SELECT name FROM external_node")}
-    check("external nodes include the HMI concentrator and the gateway/AGC producers", {"EMAP1SVR", "GTWY1SVR", "AGC1"} <= ext, str(sorted(ext)))
+    nodes = {r[0] for r in conn.execute("SELECT name FROM node")}
+    ctl = {r[0] for r in conn.execute("SELECT name FROM controller")}
+    check("external nodes: the HMI concentrator and the gateway (and one more), all registered nodes, no controller",
+          {"EMAP1SVR", "GTWY1SVR"} <= ext and ext <= nodes and not (ext & ctl) and len(ext) == 3, str(len(ext)))
     from dcdas import query as _q2
     tr = _q2.trace(conn, "H11.CondHotWellLvlA_C10MAG10", up=2)
     txt = chr(10).join(l if isinstance(l, str) else str(l) for l in tr.get("up_lines", []))
@@ -346,9 +370,15 @@ def main():
     lint = _q.lint(conn, limit=3)
     check("lint lists the cross-program double write G11.HRB_NOx_Corrected first (pattern plain)",
           lint["multi_writer"] and lint["multi_writer"][0]["full_name"] == "G11.HRB_NOx_Corrected" and lint["multi_writer"][0]["pattern"] == "plain", str([m["full_name"] for m in lint["multi_writer"]]))
-    sig = {(x["consumer_ctrl"], x["producer_ctrl"], x["exchange_id"]): (x["c_sig"], x["p_sig"], x["c_len"], x["p_len"]) for x in lint["egd_signature"]}
-    check("EGD consumed signature != producer: exactly G11<-E11 exch 3 (sig 5/6, len 12/44) and SAMP1<-H11 exch 23 (len 587/592)",
-          sig == {("G11", "E11", 3): (5, 6, 12, 44), ("SAMP1", "H11", 23): (81, 81, 587, 592)}, str(sig))
+    sig = {(x["consumer_ctrl"], x["producer_ctrl"], x["exchange_id"]): (x["c_sig"], x["p_sig"], x["c_len"], x["p_len"])
+           for x in _q.lint(conn, limit=1000)["egd_signature"]}
+    pairs = {(a, b) for a, b, _ in sig}
+    check("EGD consumed signature != producer: G11<-E11 exch 3 (sig 5/6, len 12/44), SAMP1<-H11 exch 23 (len 587/592), S1<-X1 exch 3 "
+          "(len 16/48) and the two drives against E11/E12/G11/G12 (27 exchanges; consumers are controllers only)",
+          sig.get(("G11", "E11", 3)) == (5, 6, 12, 44) and sig.get(("SAMP1", "H11", 23)) == (81, 81, 587, 592)
+          and sig.get(("S1", "X1", 3)) == (4, 4, 16, 48) and len(sig) == 27
+          and pairs == {("G11", "E11"), ("SAMP1", "H11"), ("S1", "X1")} | {(d, p) for d in ("L11", "L12") for p in ("E11", "E12", "G11", "G12")},
+          f"{len(sig)} {sorted(pairs)}")
     ns = one(conn, "SELECT count(*) FROM egd_consumed WHERE sig_major IS NULL")
     check("every egd_consumed row carries the consumer's exchange signature", ns == 0, str(ns))
     hid = _q.show(conn, "BOPE1.C10BBA30QA310RDY3.OUT_VAL")

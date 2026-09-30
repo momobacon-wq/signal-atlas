@@ -67,8 +67,9 @@
   D.yieldMain = () => new Promise((r) => setTimeout(r, 0));
 
   /* ------------------------------------------------------------------ hash 編碼 */
-  // 路徑片段只跳脫會破壞 hash 解析的字元（% ? # & 空白），訊號名保持可讀
-  D.enc = (s) => String(s).replace(/[%?#& ]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  // 路徑片段只跳脫會破壞 hash 解析的字元（% ? # & 空白），訊號名保持可讀；反斜線（程式名 Lib\Prog）也跳脫成 %5C，
+  // 避免瀏覽器把 hash 內的 \ 改寫或與路徑分隔混淆。D.dec（decodeURIComponent）還原。
+  D.enc = (s) => String(s).replace(/[%?#& \\]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
   D.dec = (s) => { try { return decodeURIComponent(s); } catch (e) { return s; } };
   D.hrefV = (full) => '#/v/' + D.enc(full);
   D.hrefT = (full, dir, hops) => '#/t/' + D.enc(full) + '?dir=' + (dir || 'up') + '&hops=' + (hops || 3);
@@ -209,8 +210,45 @@
     D.man = man;
     D.v = man.build ? '?v=' + man.build : D.v;
     D.ctrls = (man.controllers || []).map((c) => c.name);
+    D.ctrlMap = new Map((man.controllers || []).map((c) => [c.name, c]));
+    D.nodes = new Map((man.nodes || []).map((n) => [n.name, n])); // 非控制器節點（只登錄名稱；無訊號卡／程式／I/O／警報）
     return man;
   };
+
+  /* ------------------------------------------------------------------ 控制器種類 / 非控制器節點 / EGD 對象 */
+  D.KIND = { controller: '控制器', safety: '安全', exciter: '勵磁', drive: '驅動' };
+  D.NODE_KIND = { hmi: 'HMI／工作站節點', server: '伺服器節點', network: '網路節點', external: '外部節點', other: '節點' };
+  D.ctrls = [];
+  D.ctrlMap = new Map();
+  D.nodes = new Map();
+  D.isCtrl = (name) => D.ctrlMap.has(name);
+  /** 名稱 → 節點種類（manifest.nodes）；不是節點 → null */
+  D.nodeKind = (name) => { const n = D.nodes.get(name); return n ? n.kind || 'other' : null; };
+  /** 非控制器名稱的說明：節點 → 種類標籤；兩份清單都沒有 → '不在索引內' */
+  D.nodeLabel = (name) => { const k = D.nodeKind(name); return k ? D.NODE_KIND[k] || D.NODE_KIND.other : '不在索引內'; };
+  /** 程式原始檔（相對 checkout 根）：manifest.prog_files 例外表，否則 <ctrl>/_<program>.xml */
+  D.progFile = (ctrl, program) => (((D.man && D.man.prog_files) || {})[ctrl] || {})[program] || ctrl + '/_' + program + '.xml';
+  /** egd.c 只取索引內控制器的消費者（防呆：節點的訂閱不索引，也沒有訊號卡可連） */
+  D.egdCons = (egd) => ((egd && egd.c) || []).filter((x) => x && D.ctrlMap.has(x.ctrl));
+  /** egd.src → {isCtrl, full, lead, text}：來源是索引內控制器才有訊號卡可連；節點 → text = 'EGD 來自節點 X（HMI／工作站節點，無訊號卡）'；
+   *  兩份清單都沒有的名稱 → 'EGD 來自 X（不在索引內，無訊號卡）'。lead = 連結／文字前的引導詞 */
+  D.egdSrcInfo = function (s) {
+    if (!s) return null;
+    const full = s.ctrl + '.' + s.var;
+    if (D.ctrlMap.has(s.ctrl)) return { isCtrl: true, full, lead: 'EGD 來自 ', text: 'EGD 來自 ' + full };
+    // lead is followed by the full point name (X.var), so it must not read as 'node X.var'
+    const text = (D.nodeKind(s.ctrl) ? 'EGD 來自節點 ' : 'EGD 來自 ') + s.ctrl + '（' + D.nodeLabel(s.ctrl) + '，無訊號卡）';
+    return { isCtrl: false, full, lead: 'EGD 來自 ', text };
+  };
+  /** egd.src 的顯示：控制器 → 訊號卡連結；節點 → 等寬文字 + 種類標籤（不連結） */
+  D.egdSrcNode = function (s, cls) {
+    const si = D.egdSrcInfo(s);
+    if (!si) return null;
+    if (si.isCtrl) return D.h('a', { href: D.hrefV(si.full), class: 'lk mono' + (cls ? ' ' + cls : ''), text: si.full });
+    return D.frag(D.mono(si.full, cls), ' ', D.tag(D.nodeLabel(s.ctrl) + '，無訊號卡', 'muted'));
+  };
+  /** EGD 送出但沒有控制器消費者（muted 說明，不是警告） */
+  D.EGD_NO_CONS = 'EGD 送出，沒有控制器消費者（HMI／工作站節點的訂閱未索引）';
 
   /* ------------------------------------------------------------------ 密語 → 金鑰（PBKDF2-HMAC-SHA-256 → AES-256-GCM） */
   async function verifyKey(key) {
@@ -514,7 +552,7 @@
   D.refRow = function (ref, dir, opt) {
     opt = opt || {};
     const [ctrl, program, path, btype, pin, src, line] = ref;
-    const file = ctrl + '/_' + program + '.xml';
+    const file = D.progFile(ctrl, program);
     // block_path 已以 Program 開頭（Program/Task/…/Block）；舊格式（Task 開頭）才補上 Program
     const shown = String(path || '').startsWith(program + '/') || path === program ? path : program + '/' + path;
     return D.h('div', { class: 'ref' },
@@ -602,10 +640,21 @@
         D.h('span', null, D.int(D.ctrls.length) + ' 個控制器 · ' + D.int((D.man.controllers || []).reduce((a, c) => a + (c.n_vars || 0), 0)) + ' 個訊號')),
       D.h('details', { class: 'foot-rev' }, D.h('summary', { text: '各控制器 MinorRev（匯出快照，不是現場即時狀態）' }),
         D.table(['控制器', '種類', '冗餘', '版本', 'MinorRev', '訊號', '方塊', '程式', '加密', 'I/O'],
-          (D.man.controllers || []).map((c) => [c.name, c.kind, c.redundancy, c.product_version, revs[c.name] || '—', D.int(c.n_vars), D.int(c.n_blocks), D.int(c.n_programs), D.int(c.n_encrypted), D.int(c.n_io)]))),
+          (D.man.controllers || []).map((c) => [c.name, D.KIND[c.kind] || c.kind, c.redundancy, c.product_version, revs[c.name] || '—', D.int(c.n_vars), D.int(c.n_blocks), D.int(c.n_programs), D.int(c.n_encrypted), D.int(c.n_io)]))),
+      nodesLine(),
       D.h('div', { class: 'foot-row muted small' },
         D.h('span', null, '腳位方向為推斷值（U/T/M/C/L/H/R/G，? 未知；G = 列印邏輯圖）；加密程式只索引宣告與 EGD；本站為匯出快照。'),
         (D.man.related || []).map((r) => D.h('a', { class: 'lk', href: r.href, target: '_blank', rel: 'noopener', text: r.label }))));
+  }
+
+  /** 頁尾：非控制器節點只列各種類數量（名稱不列；它們沒有訊號卡） */
+  function nodesLine() {
+    if (!D.nodes.size) return null;
+    const cnt = new Map();
+    for (const n of D.nodes.values()) { const k = D.NODE_KIND[n.kind] ? n.kind : 'other'; cnt.set(k, (cnt.get(k) || 0) + 1); }
+    const parts = Object.keys(D.NODE_KIND).filter((k) => cnt.has(k)).map((k) => D.NODE_KIND[k] + ' ' + D.int(cnt.get(k)));
+    return D.h('details', { class: 'foot-rev' }, D.h('summary', { text: '另有 ' + D.int(D.nodes.size) + ' 個非控制器節點（只登錄名稱）' }),
+      D.h('p', { class: 'muted small' }, parts.join('、') + '。這些節點沒有訊號、程式、I/O 或警報；部分節點送出 EGD 給控制器，訊號卡的 EGD 來源會標出節點名稱與種類。'));
   }
 
   /* ------------------------------------------------------------------ 啟動 */

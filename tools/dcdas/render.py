@@ -326,21 +326,27 @@ def _io(o, r):
 
 
 def _egd_ctrl(o, r):
-    o.head(f"EGD {r['ctrl']} producer_id {_s(r['producer_id'])}" + (f"  page={r['page']}" if r.get("page") else ""))
+    if r.get("node"):
+        o.head(f"EGD {r['ctrl']} ({r['node']} node: produced points only, no variables; its subscriptions are not indexed)"
+               + (f"  page={r['page']}" if r.get("page") else ""))
+    else:
+        o.head(f"EGD {r['ctrl']} producer_id {_s(r['producer_id'])}" + (f"  page={r['page']}" if r.get("page") else ""))
     o.line("PAGES")
     o.rows(r["pages"], lambda p: f"{_s(p['page']):<12s} exchanges {p['n_exchanges']:>3d}  vars {p['n_vars']:>6d}")
     o.line(f"EXCHANGES ({len(r['exchanges'])})")
     o.rows(r["exchanges"], lambda x: f"exch {x['exchange_id']:>3d} page {_s(x['page']):<10s} period {x['period_ms']:g}ms len {_s(x['data_length'])} "
-           f"vars {x['n_vars']}" + (f" (novar {x['n_novar']})" if x["n_novar"] else "")
-           + f" consumers {x['consumers'] or 'none in checkout'}" + (f" ({x['n_consumed']} bindings)" if x["n_consumed"] else "")
+           f"vars {x['n_vars']}" + (f" (novar {x['n_novar']})" if x["n_novar"] and not r.get("node") else "")
+           + f" consumers {x['consumers'] or 'no controller'}" + (f" ({x['n_consumed']} bindings)" if x["n_consumed"] else "")
            + ("  [DCS export page]" if x["dcs_export"] else ""))
     if r.get("variables") or r.get("page"):
         o.line(f"VARIABLES on page {r['page']} ({len(r['variables'])}{'+' if r.get('variables_more') else ''})")
         o.rows(r["variables"], lambda v: f"exch {v['exchange_id']:>3d} voffs {v['voffs']:>5d} {v['var_name']:<34s} {_s(v['dtype']):<6s} "
-               + (f"{_cut(v['description'], 60)}" if v["var_id"] else "[no variable row]"),
+               + (f"{_cut(v['description'], 60)}" if v["var_id"] else ("" if r.get("node") else "[no variable row]")),
                total=len(r["variables"]) + r.get("variables_more", 0))
     o.line("CONSUMED (by producer)")
-    if not r["consumed"]:
+    if r.get("node"):
+        o.line("  not indexed (a node's subscriptions are not parsed)")
+    elif not r["consumed"]:
         o.line("  none")
     o.rows(r["consumed"], lambda c: f"from {c['producer_ctrl']:<10s} vars {c['n']:>5d} exchanges {c['n_exchanges']:>2d}  match both={c['n_both']} name={c['n_name']} voffs={c['n_voffs']} none={c['n_none']}"
            + (f"  [{c['producer_status']}]" if c["n_ext"] == c["n"] else ""))

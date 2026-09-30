@@ -103,21 +103,24 @@
       const mirrorIn = m && m.kind === 'I' ? m : null;
       if (mirrorIn) await mirrorUp(node, mirrorIn, kids);
       if (!up) { // EGD 消費者一律算下游（即使站內也有讀取者）
-        for (const c of (rec.egd && rec.egd.c) || []) kids.push({ kind: 'var', full: c.ctrl + '.' + c.local, edge: { egd: 'EGD → ' + c.ctrl }, children: [] });
+        for (const c of D.egdCons(rec.egd)) kids.push({ kind: 'var', full: c.ctrl + '.' + c.local, edge: { egd: 'EGD → ' + c.ctrl }, children: [] });
       }
       if (!refs.length && !mirrorIn) {
         if (up) {
           const ioIn = (rec.io || []).filter((x) => x.dir === 'I');
           if (ioIn.length) kids.push(...ioIn.map((x) => leaf('現場 I/O 輸入：' + (x.module || '') + ' ' + (x.board || '') + ' ' + (x.point || '') + (x.tag ? ' ' + x.tag : ''), 'io', D.hrefIO(x.ctrl, x.module))));
-          else if (rec.egd && rec.egd.src) kids.push({ kind: 'var', full: rec.egd.src.ctrl + '.' + rec.egd.src.var, edge: { egd: 'EGD 來自 ' + rec.egd.src.ctrl }, children: [] });
+          else if (rec.egd && rec.egd.src) { // 來源是節點（非控制器）→ 葉節點，不當成變數去抓不存在的訊號卡
+            const si = D.egdSrcInfo(rec.egd.src);
+            kids.push(si.isCtrl ? { kind: 'var', full: si.full, edge: { egd: 'EGD 來自 ' + rec.egd.src.ctrl }, children: [] } : leaf(si.text + '：' + si.full, 'muted'));
+          }
           else if (rec.enc && rec.enc.length) kids.push(leaf('加密 — 無法追蹤（' + rec.enc.join('、') + '）', 'enc'));
           else if (node.isConst) kids.push(leaf('常數（無寫入者）', 'const'));
           else kids.push(leaf((rec.u && rec.u.length) ? '無寫入者；有 ' + rec.u.length + ' 個方向未知的腳' : '無寫入者', 'muted', D.hrefV(node.full)));
         } else {
-          const cons = (rec.egd && rec.egd.c) || [];
+          const cons = D.egdCons(rec.egd);
           const ioOut = (rec.io || []).filter((x) => x.dir === 'O');
           if (ioOut.length) kids.push(...ioOut.map((x) => leaf('現場 I/O 輸出：' + (x.module || '') + ' ' + (x.point || '') + (x.tag ? ' ' + x.tag : ''), 'io', D.hrefIO(x.ctrl, x.module))));
-          if (rec.egd && rec.egd.p && rec.egd.p.length && !cons.length) kids.push(leaf('EGD 送出但 consumer outside checkout', 'warn'));
+          if (rec.egd && rec.egd.p && rec.egd.p.length && !cons.length) kids.push(leaf(D.EGD_NO_CONS, 'muted'));
           if (!kids.length) kids.push(leaf(rec.enc && rec.enc.length ? '無讀取者；出現在加密程式（' + rec.enc.join('、') + '）— 無法追蹤' : '無讀取者', rec.enc && rec.enc.length ? 'enc' : 'muted', D.hrefV(node.full)));
         }
       }

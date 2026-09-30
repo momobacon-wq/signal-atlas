@@ -62,15 +62,23 @@ def cmd_build(a):
     conn = dbm.open_build(path)
     t0 = time.time()
     all_ctrls = inv.controllers(root)
+    nodes = inv.nodes(root)
     ctrls = [c for c in all_ctrls if not a.ctrl or c.name in a.ctrl]
     if a.ctrl and len(ctrls) != len(a.ctrl):
-        raise SystemExit(f"unknown controller(s): {set(a.ctrl) - {c.name for c in ctrls}}")
+        bad = set(a.ctrl) - {c.name for c in ctrls}
+        nn = bad & {n.name for n in nodes}
+        raise SystemExit(f"unknown controller(s): {bad}" + (f" ({', '.join(sorted(nn))}: not a controller; nodes are "
+                                                               f"refreshed by a full build)" if nn else ""))
     stages = [s for s in ("vars", "logic", "lib", "io", "egd", "hmi") if getattr(a, s)]
     if not stages:
         stages = ["vars", "logic", "lib", "io", "egd", "hmi"]
     log(f"source : {root}")
     log(f"db     : {path}")
     log(f"ctrls  : {' '.join(c.name for c in ctrls)}")
+    if not a.ctrl:
+        from collections import Counter as _C
+        log(f"nodes  : {len(nodes)} ({', '.join(f'{k} {v}' for k, v in sorted(_C(n.kind for n in nodes).items()))}) "
+            f"- registry + produced EGD only")
     log(f"stages : {' '.join(stages)}{'' if a.no_post else ' + post (resolve, direction, fts)'}")
 
     for c in ctrls:
@@ -78,6 +86,12 @@ def cmd_build(a):
                      "coherency,redundancy,platform,indexed_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                      (c.name, c.kind, c.product_version, c.major_rev, c.minor_rev, c.last_mod, c.coherency,
                       c.redundancy, c.platform, now_iso()))
+    if not a.ctrl:                      # upsert: the EGD counters are filled by the egd stage and survive other stages
+        keep = {n.name for n in nodes}
+        conn.executemany("DELETE FROM node WHERE name=?", [(r[0],) for r in conn.execute("SELECT name FROM node") if r[0] not in keep])
+        conn.executemany("INSERT INTO node(name,kind,device_class,indexed_at) VALUES(?,?,?,?) ON CONFLICT(name) DO UPDATE "
+                         "SET kind=excluded.kind, device_class=excluded.device_class, indexed_at=excluded.indexed_at",
+                         [(n.name, n.kind, n.device_class, now_iso()) for n in nodes])
     conn.commit()
 
     if "vars" in stages:
@@ -99,7 +113,7 @@ def cmd_build(a):
     if "egd" in stages:
         from dcdas import parse_egd
         log("[egd]")
-        parse_egd.run(conn, root, ctrls, log)
+        parse_egd.run(conn, root, ctrls, log, nodes=() if a.ctrl else nodes)
     if "hmi" in stages and not a.ctrl:
         from dcdas import parse_hmi
         log("[hmi]")
@@ -126,14 +140,19 @@ def cmd_build(a):
         resolve.run(conn, root, ctrls, log)
         log("[direction]")
         direction.run(conn, HERE, log)
+        # direction.run recomputes EVERY pin, so the passes that restore recovered / drawn / verified rows must cover
+        # every indexed controller, not only a --ctrl subset (as xref-reload does)
+        post = [r[0] for r in conn.execute("SELECT name FROM controller ORDER BY name")] if a.ctrl else [c.name for c in ctrls]
+        if a.ctrl:
+            resolve.purge_recovered(conn, post, log)
         log("[opaque]")
-        resolve.recover_opaque_pins(conn, [c.name for c in ctrls], log)
-        resolve.recover_vote_pins(conn, [c.name for c in ctrls], log)
+        resolve.recover_opaque_pins(conn, post, log)
+        resolve.recover_vote_pins(conn, post, log)
         log("[print]")
-        resolve.load_print(conn, [c.name for c in ctrls], log)
-        resolve.load_xref(conn, HERE, [c.name for c in ctrls], log)
+        resolve.load_print(conn, post, log)
+        resolve.load_xref(conn, HERE, post, log)
         resolve.refresh_mirror_kinds(conn, log)
-        resolve.vote_io_directions(conn, [c.name for c in ctrls], log)
+        resolve.vote_io_directions(conn, post, log)
         log("[fts]")
         resolve.rebuild_fts(conn, log)
 
@@ -149,7 +168,7 @@ def cmd_build(a):
         dbm.set_meta(conn, "toolbox_version", inv.head_info(tcws[0])["version"])
     conn.commit()
     log("[summary]")
-    for t in ("controller", "program", "task", "block", "pin", "variable", "io_point", "egd_produced",
+    for t in ("controller", "node", "program", "task", "block", "pin", "variable", "io_point", "egd_produced",
               "egd_consumed", "hmi_point", "watch"):
         try:
             n = conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
@@ -213,12 +232,20 @@ def cmd_status(a):
     except ValueError:
         prec = {}
     out["print_stale"] = prec != _res.print_fingerprint()
+    out["schema"] = dbm.get_meta(conn, "schema_version")
     live = {c.name: c for c in inv.controllers(root)}
+    seen = set()
     for r in conn.execute("SELECT name,kind,minor_rev,indexed_at FROM controller ORDER BY name"):
         c = live.get(r["name"])
+        seen.add(r["name"])
         out["controllers"].append({"name": r["name"], "kind": r["kind"], "indexed_minor_rev": r["minor_rev"],
                                    "current_minor_rev": c.minor_rev if c else None,
                                    "changed": bool(c and c.minor_rev != r["minor_rev"])})
+    for n in sorted(set(live) - seen):          # in the checkout, not in the index
+        out["controllers"].append({"name": n, "kind": live[n].kind, "indexed_minor_rev": None,
+                                   "current_minor_rev": live[n].minor_rev, "changed": True, "not_indexed": True})
+    from collections import Counter as _C
+    out["nodes"] = dict(_C(n.kind for n in inv.nodes(root)))
     st = inv.stale_files(conn, root)
     out["stale"] = {k: len(v) for k, v in st.items()}
     out["stale_examples"] = {k: v[:8] for k, v in st.items()}
@@ -228,14 +255,19 @@ def cmd_status(a):
     print(f"db: {out['db']}")
     print(f"built_at: {out['built_at']}   toolbox: {out['toolbox_version']}")
     for c in out["controllers"]:
-        flag = "CHANGED" if c["changed"] else "ok"
-        print(f"  {c['name']:7s} {c['kind']:8s} indexed {c['indexed_minor_rev']}  now {c['current_minor_rev']}  {flag}")
+        flag = "NOT INDEXED" if c.get("not_indexed") else ("CHANGED" if c["changed"] else "ok")
+        print(f"  {c['name']:13s} {c['kind']:10s} indexed {c['indexed_minor_rev']}  now {c['current_minor_rev']}  {flag}")
+    if out["nodes"]:
+        print(f"nodes: {sum(out['nodes'].values())} ({', '.join(f'{k} {v}' for k, v in sorted(out['nodes'].items()))}) "
+              f"- registry only, their ProducedData tracked")
     print(f"files: new={out['stale']['new']} changed={out['stale']['changed']} missing={out['stale']['missing']}")
     for k in ("new", "changed", "missing"):
         for p in out["stale_examples"][k]:
             print(f"  {k}: {p}")
     csv_stale = [k for k, v in out["csv_stale"].items() if v]
-    if any(out["stale"].values()) or any(c["changed"] for c in out["controllers"]):
+    if out["schema"] != dbm.SCHEMA_VERSION:
+        print(f"STALE (index schema {out['schema']} != {dbm.SCHEMA_VERSION}): run  py tools/dcdas.py build")
+    elif any(out["stale"].values()) or any(c["changed"] for c in out["controllers"]):
         print("STALE: run  py tools/dcdas.py build")
     elif csv_stale:
         if csv_stale == ["xref_manual.csv"]:

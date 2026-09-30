@@ -656,9 +656,11 @@ def vote_io_directions(conn, ctrl_names, log=print):
 
 
 def build_external_nodes(conn, log=print):
-    """Nodes named by the checkout but absent from it: EGD producers the consumers bind to, and the first segment of HMI
-    navigation points that is no indexed controller (a data concentrator, a gateway, a controller not checked out).
-    hmi_point.resolved_via='external' marks their points so 'unresolved' counts only real gaps."""
+    """Names the checkout refers to that are no indexed controller: EGD producers the consumers bind to, and the first
+    segment of unresolved HMI navigation points. They are registered nodes of the checkout (a data concentrator, a
+    gateway, an HMI server: no variables, see the node table) or names with no folder at all; `node` tells which.
+    hmi_point.resolved_via='external' marks their points so 'unresolved' counts only real gaps. A registered node's
+    points are marked whatever their number; another name needs >= 5 points (a stray typo is a gap, not a node)."""
     conn.execute("DELETE FROM external_node")
     conn.execute("""INSERT INTO external_node(name, kind, n)
                     SELECT producer_ctrl, 'egd_producer', count(*) FROM egd_consumed
@@ -667,7 +669,7 @@ def build_external_nodes(conn, log=print):
                     SELECT substr(full_point, 1, instr(full_point, '.')-1), 'hmi_prefix', count(*) FROM hmi_point
                     WHERE var_id IS NULL AND source='navcsv' AND instr(full_point, '.')>1
                       AND substr(full_point, 1, instr(full_point, '.')-1) NOT IN (SELECT name FROM controller)
-                    GROUP BY 1 HAVING count(*) >= 5""")
+                    GROUP BY 1 HAVING count(*) >= 5 OR substr(full_point, 1, instr(full_point, '.')-1) IN (SELECT name FROM node)""")
     cur = conn.execute("""UPDATE hmi_point SET resolved_via='external' WHERE var_id IS NULL AND source='navcsv' AND instr(full_point, '.')>1
                           AND substr(full_point, 1, instr(full_point, '.')-1) IN (SELECT name FROM external_node WHERE kind='hmi_prefix')""")
     conn.commit()
@@ -791,7 +793,18 @@ def load_print(conn, ctrl_names, log=print):
         conn.commit()
         return tot
     pconn.row_factory = None
-    printed = {r[0] for r in pconn.execute("SELECT ctrl FROM print_pdf WHERE gate_status='pass'")}
+    printed = set()
+    # the corpus was gated against the index it was scanned with; a later snapshot may carry another build of the
+    # controller, and a drawing of another build must not be promoted (same offset rule as the gate)
+    for c, pmaj, pmin in pconn.execute("SELECT ctrl, print_major, print_minor FROM print_pdf WHERE gate_status='pass'"):
+        row = conn.execute("SELECT major_rev, minor_rev FROM controller WHERE name=?", (c,)).fetchone()
+        if row is None:
+            continue
+        off, why = parse_pei.revision_offset(pmaj, pmin, row[0], row[1])
+        if off is None:
+            log(f"  print corpus for {c} is of another build ({why}): not promoted; re-run print-gate / print-scan")
+            continue
+        printed.add(c)
     next_id = (conn.execute("SELECT coalesce(max(id),0) FROM pin").fetchone()[0] or 0) + 1
     for ctrl in names:
         if ctrl not in printed:

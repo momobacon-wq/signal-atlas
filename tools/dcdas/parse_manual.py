@@ -509,8 +509,11 @@ def checkout_block_types(root: Path) -> Tuple[Counter, Dict[str, Counter]]:
     for d in sorted(Path(root).iterdir()):
         if not d.is_dir() or not (d / "Device.xml").exists():
             continue
+        files = glob.glob(str(d / "_*.xml"))
+        if not files:                      # a node (workstation, switch, ...): no logic
+            continue
         c = Counter()
-        for f in glob.glob(str(d / "_*.xml")):
+        for f in files:
             with open(f, "rb") as fh:
                 data = fh.read()
             for m in _BT_RE.finditer(data):

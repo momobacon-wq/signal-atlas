@@ -12,7 +12,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = "12"
+SCHEMA_VERSION = "13"
 
 
 def local_dir() -> Path:
@@ -65,6 +65,12 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS controller(
   name TEXT PRIMARY KEY, kind TEXT, product_version TEXT, major_rev TEXT, minor_rev TEXT,
   last_mod TEXT, coherency TEXT, redundancy TEXT, platform TEXT, egd_producer_id TEXT, indexed_at TEXT);
+-- Device.xml folders that are not controllers (HMI workstations, servers, network devices, external devices):
+-- registered by name and class token only. Their files carry addresses, host names and secrets: never read those.
+-- Only their ProducedData is parsed (egd_exchange / egd_produced, no variables); their ConsumedData is not.
+CREATE TABLE IF NOT EXISTS node(
+  name TEXT PRIMARY KEY, kind TEXT CHECK(kind IN ('hmi','server','network','external','other')), device_class TEXT,
+  n_exchanges INTEGER, n_vars INTEGER, indexed_at TEXT);
 CREATE TABLE IF NOT EXISTS source_file(
   path TEXT PRIMARY KEY, ctrl TEXT, kind TEXT, size INTEGER, mtime REAL, sha1 TEXT, coherency TEXT,
   encrypted INTEGER, n_blocks INTEGER, n_zk INTEGER, parsed_at TEXT);

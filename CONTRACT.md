@@ -42,6 +42,8 @@ docs/data/                     export-web 的輸出（下）
 {"build":"a1b2c3d4e5","site":"Signal Atlas",
  "source":{"toolbox_version":"V07.10.07C","indexed_at":"2026-09-19T15:00:00+08:00","controllers_minor_rev":{"G11":"2026-08-10T08:05:01"}},
  "controllers":[{"name":"G11","kind":"controller","redundancy":"Triple","product_version":"V07.03.02C","n_vars":53561,"n_blocks":31417,"n_pins":223570,"n_programs":132,"n_encrypted":20,"n_io":11900,"n_tasks":1018}],
+ "nodes":[{"name":"HMI1","kind":"hmi"}],
+ "prog_files":{"L1":{"LibA\\Seq_1":"L1/_LibA~Seq_1.xml"}},
  "shards":{"var":4096,"task":4096,"screen":256},
  "dir_legend":{"U":"介面腳 Usage","T":"手冊表/人工覆寫/工具查證","M":"人工登錄：鏡射或推論（未在工具確認）","C":"常數規則","L":"連線投票","H":"命名慣例","R":"回推（不透明巨集）","G":"圖面（列印邏輯圖）","?":"未知"},
  "opaque":{"n":5082,"recovered":792}, "lib_iface":{"AI_INT":[["Enable","I"],["IN","I"],["DEVICE_STATUS","O"],["OUT","O"]], …},
@@ -51,6 +53,16 @@ docs/data/                     export-web 的輸出（下）
  "related":[{"label":"…","href":"…"}],
  "files":{"names":["names/G11.json"]}}
 ```
+
+- `controllers` = **只列索引內的控制器**（DB `controller` 表；同一份清單決定 names/program/io/alarm 檔）。`kind` ∈ `controller`（一般控制器）｜`safety`（安全）｜`exciter`（勵磁）｜`drive`（驅動器）；
+  前端標籤 `D.KIND`，未知值原樣顯示。`n_io` 為 0 的控制器（例如驅動器），首頁瀏覽不給 I/O 連結。沒有任何變數的控制器可以沒有 `names/<CTRL>.json`。
+- `nodes` = **非控制器節點**登錄（DB `node` 表）：`[{"name","kind"}]`，`kind` ∈ `hmi`（HMI／工作站、精簡型終端）｜`server`（伺服器／虛擬機）｜`network`（交換器、時間同步等網路設備）｜`external`（外部資料集中器等）｜`other`。
+  **只有名稱與種類**（不含位址、主機名或其他欄位）；節點沒有變數、程式、I/O、警報、訊號卡，**永遠不會有** `names/`、`program/`、`io/`、`alarm/` 檔；名稱與 `controllers` 不重疊。
+  部分節點送出 EGD 給控制器，所以訊號卡的 `egd.src.ctrl` 可能是節點名；節點的 ConsumedData（HMI 訂閱）刻意**不索引**。前端頁尾只列各種類數量，不列名稱。
+- `prog_files`（選用）= `{ctrl: {program: file}}`，**只列**原始檔不是 `<ctrl>/_<program>.xml` 的程式（例：程式庫程式 `LibA\Seq_1` → `L1/_LibA~Seq_1.xml`）。
+  前端 `D.progFile(ctrl, program)` = 查此表，否則 `<ctrl>/_<program>.xml`；方塊記錄的 `file` 欄已是正確檔名（= DB `program.file_path`）。
+- 程式名與方塊路徑可含反斜線（`LibA\Seq_1/Task/…`）；`/` 仍是唯一的路徑分隔。hash 路由的路徑片段以 `D.enc` 跳脫 `%`、`?`、`#`、`&`、空白與 `\`（反斜線 → `%5C`），
+  `D.dec`（`decodeURIComponent`）還原；分片鍵（`CTRL|Program/Task`、`CTRL.NAME` 的 sha1）一律用原字串（含反斜線），不跳脫。
 
 ## `names/<CTRL>.json` — 搜尋索引（每控制器一檔，前端依選取懶載入；「全部」逐檔載入並顯示進度）
 
@@ -68,7 +80,7 @@ docs/data/                     export-web 的輸出（下）
   "u":[[...]],                                                       // 方向未知的腳
   "w_more":0,"r_more":0,                                             // 超過 400 筆時的剩餘數
   "io":[{"ctrl","module","cabinet","board","hw","pos","point","tag","dir","type","lo","hi","kind","screws":[[name,no,cable,wire]]}],
-  "egd":{"p":[{"page","ex","voffs"}],"c":[{"ctrl","local","ex","voffs","match","page"}],"src":{"ctrl","var","ex","voffs","match"}},
+  "egd":{"p":[{"page","ex","voffs"}],"c":[{"ctrl","local","ex","voffs","match","page"}],"src":{"ctrl","var","ex","voffs","match"}}, // c 只列控制器消費者；src.ctrl 可能是節點（無訊號卡）
   "hmi":[[screen, menu_path, source]],"watch":[[ctrl, file]],"drg":[[logic_drg, p_id]],"enc":["Program"],
   "hid":["Program"],                                                // ReferencedIn 有列、索引在該程式內卻無此訊號任何腳位（含回推腳與腳位值鏡像）→ 引用在加密方塊內；空則省略
   "alm":{"id","cls","def","area","causes","action","conseq","urg"}
@@ -83,10 +95,14 @@ docs/data/                     export-web 的輸出（下）
 是 I 腳接常數（子變數 = 該常數的鏡像，`d.m` kind I）；`.H/.HH/.L/.LL/.BQ…` 旗標是 O 腳、警報本身（多發佈在 HMI EGD 頁、帶 AlarmClass）。子腳在 task 分片裡就是母
 task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 Where Used 顯示為 `程式.Task.訊號.後綴`）。names 旗標位元 16（警報）= 有 alarm id，或子變數帶 AlarmClass。
 設定值鏡像子變數的 `hid`（加密引用）不列：工具把常數的宣告程式列在它下面，不是子變數自己的隱藏引用。
-`block_path` = `Program/Task/UserBlock/.../Block`（第一段 Program、第二段 Task）；原始檔 = `<ctrl>/_<program>.xml`。
+`block_path` = `Program/Task/UserBlock/.../Block`（第一段 Program、第二段 Task；Program 可含 `\`）；原始檔 = `<ctrl>/_<program>.xml`，例外列在 `manifest.prog_files`（方塊記錄的 `file` 已是正確檔名）。
 邏輯圖號（`drg`）取自 block 本身或其所屬 task 的 `LogicDrg`/`P_ID`。HMI 畫面名不分大小寫合併（以選單的拼法為準）。
 前端「來源」判定：`w` 非空 → 邏輯寫入者；否則 `io` 有 `dir:"I"` → 「現場 I/O」；否則 `egd.src` → 「EGD 來自 …」；
-否則 `enc` 非空 → 「可能在加密程式內（不可追蹤）」；否則 `hid` 非空 → 「可能在加密方塊內」（區段「加密引用」列出程式）。`egd.p` 非空而 `egd.c` 空 → 「consumer outside checkout」。
+否則 `enc` 非空 → 「可能在加密程式內（不可追蹤）」；否則 `hid` 非空 → 「可能在加密方塊內」（區段「加密引用」列出程式）。
+`egd.c` = **只有控制器消費者**（`consumer_ctrl` 在 `manifest.controllers`；全部列出、不設上限；前端 `D.egdCons` 另以 `D.ctrls` 防呆過濾）。
+`egd.src` = `{ctrl, var, ex, voffs, match}`：`ctrl` 可能是 `manifest.nodes` 的節點，或兩份清單都沒有的名稱——這兩種情況**沒有訊號卡可連**，
+前端（訊號卡、追蹤、訊號圖、Task 圖、圖側欄）一律畫成等寬文字＋種類標籤（「EGD 來自節點 X（HMI／工作站節點，無訊號卡）」），不做 `#/v/` 連結、不當成變數節點展開。
+`egd.p` 非空而 `egd.c` 空 → 「EGD 送出，沒有控制器消費者（HMI／工作站節點的訂閱未索引）」：灰色說明，不是警告（去向可能是節點，但節點的訂閱不在索引內）。
 
 ## `task/<hhh>.json` — 一個 Task 的全部方塊（key = `CTRL|Program/Task`，shard = sha1(key) 前 3 hex；取代舊的 `block/` 分片）
 
@@ -123,7 +139,9 @@ task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 
 
 - `program`: `{"ctrl","programs":[{"name","lib","file","enc","help","n_blocks","n_tasks","tasks":[{"name","type","drg","is_task","line","blocks":[[key,name,type,kind,opaque]]}]}]}`
 - `io`: `{"ctrl","modules":[{"name","id","cabinet","red","boards":[{"name","hw","pos","points":[[name,dir,conn,tag,addr,type,lo,hi,screws,var_full_name]]}],"internal":[[name,conn,addr,var_full_name]]}]}`（不含 IP）
-- `screen`: `{"s":{"X.cim":{"menu":["Block1 / … "],"points":[[full_name, source]]}}}`；`screens.json = {"rows":[[screen, n_points, menu_path]]}`
+- `screen`: `{"s":{"X.cim":{"menu":["Block1 / … "],"points":[[full_point, source, st, card?]]}}}`；`screens.json = {"rows":[[screen, n_points, menu_path]]}`
+  點的 `st` = `1` 對到索引內變數（有訊號卡，前端連結）｜`2` 標為外部（節點的點，或不在索引內的控制器；前端文字＋節點種類標籤）｜`0` 未解析（文字＋「未解析」）。舊的兩欄列視同 `st` = 1。
+  第 4 欄 `card` 只在 `st` = 1 且卡片名稱與 `full_point` 不同時出現（畫面點以 KKS 別名或不同大小寫對到變數）：連結一律指向 `card`，否則指向 `full_point`。
 - `alarm`: `{"ctrl","rows":[[name, desc, cls, def, area, urgency]]}`
 
 ## 前端路由（hash）
@@ -155,5 +173,7 @@ task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 
 
 ## 對帳（`tools/verify_web.py docs`）
 
-以同一密語解密；names 列數 = variable 數；每張訊號卡在正確分片；抽樣 200 卡 + 300 方塊與 SQLite 逐欄相等；無絕對路徑；
+以同一密語解密；`manifest.controllers` 名稱 = DB `controller`（雙向）且 `kind` 在四種之內；`manifest.nodes` = DB `node`、與控制器不重疊、節點沒有 names/program/io/alarm 檔；
+`prog_files` = DB 中 `file_path ≠ <ctrl>/_<program>.xml` 的程式；names 列數 = variable 數（沒有變數的控制器可缺檔）；抽樣卡的 `egd.c` 只有控制器且筆數 = DB、`egd.src.ctrl` ∈ 控制器 ∪ 節點；
+抽樣方塊 `file` = `program.file_path`（含至少一個 `prog_files` 例外程式的方塊）；抽樣畫面 `st`=1 ⇔ `hmi_point.var_id` 非空；每張訊號卡在正確分片；抽樣 200 卡 + 300 方塊與 SQLite 逐欄相等；無絕對路徑；
 `manifest.build` 可重現且與 `meta.json` 一致；除 `meta.json` 外無明文 `.json`；磁碟總量；exit 0 才可 push。

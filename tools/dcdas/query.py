@@ -195,9 +195,28 @@ def _controllers(conn):
     return [r[0] for r in conn.execute("SELECT name FROM controller ORDER BY name")]
 
 
+def _node_row(conn, name):
+    """(canonical name, kind) of a registered non-controller node (case-insensitive), else None."""
+    try:
+        r = conn.execute("SELECT name, kind FROM node WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+    except sqlite3.OperationalError:        # an index built before the node registry existed
+        return None
+    return (r[0], r[1]) if r else None
+
+
+def _node_kind(conn, name):
+    """Kind of a registered non-controller node (hmi / server / network / external / other), else None."""
+    r = _node_row(conn, name)
+    return r[1] if r else None
+
+
 def _producer_status(conn, producer_ctrl):
-    """'producer outside checkout' (no controller folder) or 'producer not indexed in this DB' (folder exists,
-    but no egd_exchange rows for it - e.g. a --ctrl subset build)."""
+    """'producer is a <kind> node ...' (a registered non-controller node: its points are named, it has no variables
+    or logic), 'producer indexed', 'producer not indexed in this DB' (controller folder exists, but no egd_exchange
+    rows for it - e.g. a --ctrl subset build) or 'producer outside checkout' (no folder at all)."""
+    nk = _node_kind(conn, producer_ctrl)
+    if nk:
+        return f"producer is a {nk} node of the checkout (point named, no variables/logic)"
     if conn.execute("SELECT 1 FROM egd_exchange WHERE producer_ctrl=? LIMIT 1", (producer_ctrl,)).fetchone():
         return "producer indexed"
     if conn.execute("SELECT 1 FROM controller WHERE name=?", (producer_ctrl,)).fetchone():
@@ -389,9 +408,10 @@ def _egd_section(conn, v):
     if produced and not consumers:
         pages = sorted({p["page"] or "" for p in produced})
         if any((pg in DCS_PAGES or not pg) for pg in pages):
-            note = f"consumer outside checkout (page {','.join(pages)}; TURB_DCS/MIS = DCS export)"
+            note = (f"no controller consumer (page {','.join(pages)}; TURB_DCS/MIS = DCS export; "
+                    f"HMI/server node subscriptions are not indexed)")
         else:
-            note = f"no consumer rows in checkout (page {','.join(pages)})"
+            note = f"no controller consumer (page {','.join(pages)}; HMI/server node subscriptions are not indexed)"
     return {"produced": produced, "consumers": consumers, "source": source, "note": note}
 
 
@@ -1092,9 +1112,11 @@ def io(conn, key, ctrl=None):
 def egd(conn, key, page=None):
     key = (key or "").strip()
     ctrls = _controllers(conn)
-    if key in ctrls or key.upper() in ctrls:
-        c = key if key in ctrls else key.upper()
-        pid = (_row(conn, "SELECT egd_producer_id FROM controller WHERE name=?", (c,)) or {}).get("egd_producer_id")
+    nrow = None if (key in ctrls or key.upper() in ctrls) else _node_row(conn, key)
+    node = nrow[1] if nrow else None
+    if key in ctrls or key.upper() in ctrls or node:
+        c = nrow[0] if nrow else (key if key in ctrls else key.upper())
+        pid = None if node else (_row(conn, "SELECT egd_producer_id FROM controller WHERE name=?", (c,)) or {}).get("egd_producer_id")
         sql = """SELECT x.id, x.exchange_id, x.page, x.period_ns, x.data_length, x.sig_major,
                         (SELECT count(*) FROM egd_produced p WHERE p.exchange_pk=x.id) AS n_vars,
                         (SELECT count(*) FROM egd_produced p WHERE p.exchange_pk=x.id AND p.var_id IS NULL) AS n_novar,
@@ -1131,7 +1153,7 @@ def egd(conn, key, page=None):
                                       (SELECT count(*) FROM egd_produced p JOIN egd_exchange y ON y.id=p.exchange_pk
                                         WHERE y.producer_ctrl=x.producer_ctrl AND coalesce(y.page,'')=coalesce(x.page,'')) AS n_vars
                                FROM egd_exchange x WHERE producer_ctrl=? GROUP BY page ORDER BY page""", (c,))
-        return {"kind": "egd_ctrl", "ctrl": c, "producer_id": pid, "page": page, "pages": pages,
+        return {"kind": "egd_ctrl", "ctrl": c, "node": node, "producer_id": pid, "page": page, "pages": pages,
                 "exchanges": exchanges, "variables": variables[:SECTION_CAP],
                 "variables_more": max(0, len(variables) - SECTION_CAP), "consumed": consumed}
     v, err = resolve_signal(conn, key)

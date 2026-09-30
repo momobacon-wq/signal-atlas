@@ -217,7 +217,7 @@
     const mirrorIn = m && m.kind === 'I' ? m : null;
     if (mirrorIn) await mirrorUp(S, node, mirrorIn, dir, out, seen);
     if (!up) { // EGD 消費者一律算下游（即使站內也有讀取者）
-      for (const c of (rec.egd && rec.egd.c) || []) {
+      for (const c of D.egdCons(rec.egd)) {
         const vn = varNode(S, c.ctrl + '.' + c.local, dir);
         if (!vn) continue;
         addEdge(S, outP, vn.left[0].id, 'EGD', { varFull: node.varFull, label: 'EGD → ' + c.ctrl });
@@ -229,19 +229,23 @@
         const ioIn = (rec.io || []).filter((x) => x.dir === 'I');
         if (ioIn.length) for (const x of ioIn) leaf(S, inP, dir, '現場 I/O 輸入：' + (x.module || '') + ' ' + (x.board || '') + ' ' + (x.point || '') + (x.tag ? ' ' + x.tag : ''), 'io', D.hrefIO(x.ctrl, x.module));
         else if (rec.egd && rec.egd.src) {
-          const src = rec.egd.src.ctrl + '.' + rec.egd.src.var;
-          const vn = varNode(S, src, dir);
-          if (vn) { addEdge(S, vn.right[0].id, inP, 'EGD', { varFull: src, label: 'EGD ← ' + rec.egd.src.ctrl }); seen(vn); }
+          const si = D.egdSrcInfo(rec.egd.src);
+          if (!si.isCtrl) leaf(S, inP, dir, si.text + '：' + si.full, 'muted'); // 節點（非控制器）：沒有訊號卡，畫葉節點
+          else {
+            const src = si.full;
+            const vn = varNode(S, src, dir);
+            if (vn) { addEdge(S, vn.right[0].id, inP, 'EGD', { varFull: src, label: 'EGD ← ' + rec.egd.src.ctrl }); seen(vn); }
+          }
         }
         else if (rec.enc && rec.enc.length) leaf(S, inP, dir, '加密 — 無法追蹤（' + rec.enc.join('、') + '）', 'enc');
         else if (node.isConst) leaf(S, inP, dir, '常數（無寫入者）', 'const');
         else leaf(S, inP, dir, (rec.u && rec.u.length) ? '無寫入者；有 ' + rec.u.length + ' 個方向未知的腳' : '無寫入者', 'muted', D.hrefV(node.varFull));
       } else {
-        const cons = (rec.egd && rec.egd.c) || [];
+        const cons = D.egdCons(rec.egd);
         const ioOut = (rec.io || []).filter((x) => x.dir === 'O');
         let any = cons.length > 0;
         if (ioOut.length) { any = true; for (const x of ioOut) leaf(S, outP, dir, '現場 I/O 輸出：' + (x.module || '') + ' ' + (x.point || '') + (x.tag ? ' ' + x.tag : ''), 'io', D.hrefIO(x.ctrl, x.module)); }
-        if (rec.egd && rec.egd.p && rec.egd.p.length && !cons.length) { any = true; leaf(S, outP, dir, 'EGD 送出但 consumer outside checkout', 'warn'); }
+        if (rec.egd && rec.egd.p && rec.egd.p.length && !cons.length) { any = true; leaf(S, outP, dir, D.EGD_NO_CONS, 'muted'); }
         if (!any) leaf(S, outP, dir, rec.enc && rec.enc.length ? '無讀取者；出現在加密程式（' + rec.enc.join('、') + '）— 無法追蹤' : '無讀取者', rec.enc && rec.enc.length ? 'enc' : 'muted', D.hrefV(node.varFull));
       }
     }

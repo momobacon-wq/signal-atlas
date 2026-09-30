@@ -21,6 +21,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import shutil
 import time
 from collections import defaultdict
@@ -44,7 +45,9 @@ def seal(key: bytes, plain: bytes, aad: str) -> bytes:
     iv = secrets.token_bytes(12)
     return iv + AESGCM(key).encrypt(iv, plain, aad.encode("utf-8"))
 
-ABS_RE = re.compile(r'(?<![A-Za-z])[A-Za-z]:(?:\\|/)|/c/Users/|\\Users\\')
+# checked on JSON text: a drive letter (not inside a word, or right after an escaped newline/tab) followed by an
+# escaped backslash or '/'; a JSON-escaped newline after a colon ('\n:\n') is no drive
+ABS_RE = re.compile(r'(?:(?<![A-Za-z])|(?<=\\[nrtbf]))[A-Za-z]:(?:\\\\|/)|/c/Users/|\\Users\\|\\\\\\\\[A-Za-z0-9][\w.$-]*\\\\')
 MAX_REFS = 400          # writers/readers per card (rest counted in r_more / w_more)
 MAX_FILE = 1_000_000    # bytes per shard file target (soft; reported)
 VAR_SHARDS = 3          # hex digits
@@ -161,6 +164,16 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
 
     # ---------------------------------------------------------------- lookups
     prog_by_id = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT id,ctrl,name FROM program")}
+    # a program whose source file is not <ctrl>/_<program>.xml (a '\' in the name is '~' in the file name)
+    prog_file = {r[0]: r[1] for r in conn.execute("SELECT id,file_path FROM program")}
+    prog_files = defaultdict(dict)
+    for r in conn.execute("SELECT ctrl,name,file_path FROM program ORDER BY ctrl,name"):
+        if r[2] and r[2] != f"{r[0]}/_{r[1]}.xml":
+            prog_files[r[0]][r[1]] = r[2]
+    try:
+        nodes = [{"name": r[0], "kind": r[1]} for r in conn.execute("SELECT name,kind FROM node ORDER BY name")]
+    except sqlite3.OperationalError:
+        nodes = []
     log("  loading block index")
     blk = {}   # block_id -> (ctrl, program, path, block_type, kind, opaque, line)
     for r in conn.execute("SELECT id,ctrl,program_id,path,block_type,kind,is_opaque,line_no FROM block"):
@@ -226,9 +239,10 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     egd_p = defaultdict(list)
     for r in conn.execute("SELECT p.var_id,x.page,x.exchange_id,p.voffs FROM egd_produced p JOIN egd_exchange x ON x.id=p.exchange_pk WHERE p.var_id IS NOT NULL"):
         egd_p[r[0]].append({"page": r[1], "ex": r[2], "voffs": r[3]})
-    egd_c = defaultdict(list)       # producer_var_id -> consumers
-    egd_src = {}                    # local_var_id -> producer info
-    for r in conn.execute("SELECT producer_var_id,local_var_id,consumer_ctrl,producer_ctrl,var_name,exchange_id,voffs,match_method,page FROM egd_consumed"):
+    egd_c = defaultdict(list)       # producer_var_id -> consumers (indexed controllers only; nodes' subscriptions are not indexed)
+    egd_src = {}                    # local_var_id -> producer info (the producer may be a registered node: no card)
+    for r in conn.execute("SELECT producer_var_id,local_var_id,consumer_ctrl,producer_ctrl,var_name,exchange_id,voffs,match_method,page "
+                          "FROM egd_consumed WHERE consumer_ctrl IN (SELECT name FROM controller)"):
         if r[0] is not None:
             egd_c[r[0]].append({"ctrl": r[2], "local": f"{r[3]}.{r[4]}", "ex": r[5], "voffs": r[6], "match": r[7], "page": r[8]})
         if r[1] is not None:
@@ -342,10 +356,9 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         n_vars += 1
     for sh, items in shards.items():
         w.write(f"var/{sh}.json", '{"v":{' + ",".join(items) + "}}")
-    for c, rows in names.items():
-        w.write(f"names/{c}.json", _dump({"ctrl": c, "rows": rows}))
-    for c, rows in alarms.items():
-        w.write(f"alarm/{c}.json", _dump({"ctrl": c, "rows": rows}))
+    for c in cnames:                # every controller gets its files, empty or not
+        w.write(f"names/{c}.json", _dump({"ctrl": c, "rows": names.get(c, [])}))
+        w.write(f"alarm/{c}.json", _dump({"ctrl": c, "rows": alarms.get(c, [])}))
     del shards, writers, readers, unknown
     log(f"    {n_vars} variables, {time.time()-t0:.0f}s")
 
@@ -396,8 +409,10 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     var_ext = defaultdict(int)
     for r in conn.execute("SELECT DISTINCT var_id FROM io_point WHERE var_id IS NOT NULL"): var_ext[r[0]] |= 2
     # EGD counts as "used" only when another controller actually consumes it (every HMI-page variable is produced)
-    for r in conn.execute("SELECT DISTINCT producer_var_id FROM egd_consumed WHERE producer_var_id IS NOT NULL"): var_ext[r[0]] |= 4
-    for r in conn.execute("SELECT DISTINCT local_var_id FROM egd_consumed WHERE local_var_id IS NOT NULL"): var_ext[r[0]] |= 4
+    for r in conn.execute("SELECT DISTINCT producer_var_id FROM egd_consumed WHERE producer_var_id IS NOT NULL "
+                          "AND consumer_ctrl IN (SELECT name FROM controller)"): var_ext[r[0]] |= 4
+    for r in conn.execute("SELECT DISTINCT local_var_id FROM egd_consumed WHERE local_var_id IS NOT NULL "
+                          "AND consumer_ctrl IN (SELECT name FROM controller)"): var_ext[r[0]] |= 4
     for r in conn.execute("SELECT DISTINCT var_id FROM hmi_point WHERE var_id IS NOT NULL"): var_ext[r[0]] |= 8
     for r in conn.execute("SELECT id FROM variable WHERE alarm_id IS NOT NULL OR (sub_of IS NOT NULL AND alarm_class IS NOT NULL)"): var_ext[r[0]] |= 16
     attrs = defaultdict(dict)
@@ -415,7 +430,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         b = {"ctrl": ctrl, "program": prog, "path": path, "name": name, "type": btype, "kind": kind, "ver": ver,
              "opaque": opq, "desc": desc, "drg": ldrg, "pid": p_id, "device": dev, "hmi": hlo, "lay": lay,
              "attrs": attrs.get(bid, {}), "pins": pins_by_block.get(bid, []), "line": ln,
-             "file": f"{ctrl}/_{prog}.xml", "rc": rc_by_block.get(bid)}
+             "file": prog_file.get(pid) or f"{ctrl}/_{prog}.xml", "rc": rc_by_block.get(bid)}
         tkey = task_key(ctrl, path)
         task_items[tkey].append(_dump(key) + ":" + _dump(_compact(b)))
         task_n[tkey] += 1
@@ -478,9 +493,16 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     scr = defaultdict(lambda: {"menu": [], "points": []})
     for k, paths in menu.items():
         scr[canon[k]]["menu"] = paths
-    for r in conn.execute("SELECT screen,full_point,source FROM hmi_point ORDER BY screen,full_point"):
+    # point row: [full_point, source, st(, card)]  st 1 = resolved (a card exists), 2 = external (a node's / non-controller
+    # point), 0 = unresolved; card = the variable's full name when it differs from full_point (alias / case match)
+    for r in conn.execute("""SELECT h.screen,h.full_point,h.source,h.var_id,h.resolved_via,v.full_name FROM hmi_point h
+                             LEFT JOIN variable v ON v.id=h.var_id ORDER BY h.screen,h.full_point"""):
         k = (r[0] or "").lower()
-        scr[canon.setdefault(k, r[0])]["points"].append([r[1], r[2]])
+        st = 1 if r[3] is not None else (2 if r[4] == "external" else 0)
+        row = [r[1], r[2], st]
+        if st == 1 and r[5] and r[5] != r[1]:
+            row.append(r[5])
+        scr[canon.setdefault(k, r[0])]["points"].append(row)
     sshards = defaultdict(list)
     for s, d in scr.items():
         sshards[_shard(s, SCREEN_SHARDS)].append(_dump(s) + ":" + _dump(d))
@@ -518,6 +540,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
                    "controllers_minor_rev": {c["name"]: c["minor_rev"] for c in ctrls}},
         "controllers": [{"name": c["name"], "kind": c["kind"], "redundancy": c["redundancy"],
                          "product_version": c["product_version"], **counts[c["name"]]} for c in ctrls],
+        "nodes": nodes,                      # non-controller devices: registry only (no names/program/io/alarm files)
+        "prog_files": dict(prog_files),      # {ctrl: {program: file}} where the file is not <ctrl>/_<program>.xml
         "shards": {"var": 16 ** VAR_SHARDS, "task": 16 ** VAR_SHARDS, "screen": 16 ** SCREEN_SHARDS},
         "dir_legend": {"U": "介面腳 Usage", "T": "手冊表/人工覆寫/工具查證", "M": "人工登錄：鏡射或推論（未在工具確認）", "C": "常數規則", "L": "連線投票", "H": "命名慣例", "R": "回推（不透明巨集）", "G": "圖面（列印邏輯圖的左右側）", "?": "未知"},
         "opaque": {"n": n_opaque, "recovered": n_opaque_rec},
@@ -527,7 +551,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         "encrypted_programs": enc_programs,
         "block_types": btypes,
         "related": [],
-        "files": {"names": [f"names/{c}.json" for c in cnames if c in names]},
+        "files": {"names": [f"names/{c}.json" for c in cnames]},
     }
     # deterministic build hash over every data file (plaintext digests) + manifest (without build)
     man["build"] = w.build_hash(man)

@@ -10,14 +10,15 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 - checkout 根目錄：`%LOCALAPPDATA%\dcdas\config.json` 的 `src_root`（或 env `DCDAS_SRC`）
 - 索引 DB（不進 repo）：`%LOCALAPPDATA%\dcdas\index.sqlite`（env `DCDAS_DB` 可覆寫）
 - 列印圖語料 DB（不進 repo）：`%LOCALAPPDATA%\dcdas\print.sqlite`（env `DCDAS_PRINT_DB`）；來源是組態工具匯出的
-  `<CTRL>_P.pdf`，位置由 `config.json` 的 `pei_dir`（或 env `DCDAS_PEI`）指定，預設 `src_root\PEI\PEI`
+  `<CTRL>_P.pdf`，位置由 `config.json` 的 `pei_dir`（或 env `DCDAS_PEI`）指定，預設 `src_root\PEI\PEI`。換成新快照而新快照沒有
+  PEI 資料夾時，先把 `pei_dir` 明寫成舊位置，再改 `src_root`。`[print]` 升格前會再比對圖面的建置戳記與索引，別的建置不升格
 - 站台密語：`config.json` 的 `web_key_file` 指向的檔案（或 env `DCDAS_WEB_KEY`）；**絕不可進 repo**
 - CLI：`py tools\dcdas.py <cmd>`（在本 repo 根目錄執行；`--json` 全指令可用）
 - 模組契約與 XML 事實：`tools/dcdas/README_DEV.md`；網頁資料契約：`CONTRACT.md`
 
 ## 回答「訊號 X 接到哪 / X 的邏輯 / X 的來源與去向 / X 接在哪個端子」時的規則
 
-1. 先跑 `py tools\dcdas.py status`。若印出 STALE，告訴使用者索引過期並問要不要重建（`build` 約 1 分鐘），不要自己重建；
+1. 先跑 `py tools\dcdas.py status`。若印出 STALE，告訴使用者索引過期並問要不要重建（`build` 約 1 分鐘；checkout 在雲端串流磁碟且未快取時約 25 分鐘），不要自己重建；
    若只是 `xref_manual.csv` 變了，`status` 會改建議 `xref-reload`（幾秒，只重載人工登錄列與回推規則）。
 2. 用 `show <CTRL.NAME>`（裸名撞多控制器時 CLI 會列出候選，再用 `CTRL.NAME`）。找不到就 `find <片段>`（走 FTS，含別名、DeviceTag、警報文字）。
 3. 需要上下游多跳才用 `trace <CTRL.NAME> --up N --down N`（預設 `--max-lines 60`；大扇出訊號先看 show）。
@@ -37,7 +38,9 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
      但**組態工具列印出來的邏輯圖看得到加密內容**：不透明巨集的腳位與接線已由 `build` 的 `[print]` 階段寫進索引（origin `print`、
      方向來源 `G`，網頁徽章「圖」，引用 `<CTRL>_P.pdf p<頁> <圖格>`）。加密**程式**本身的方塊不在索引裡（沒有 XML 方塊可掛），
      仍只能用 `print-show` 看圖面，回答時另起一段說明。
-   - CLI 印 `consumer outside checkout` 時照實說去向在 checkout 外。
+   - CLI 印 `no controller consumer` 時照實說：沒有任何已索引控制器消費它；消費端可能是 HMI／伺服器節點（在 checkout 內但它們的
+     訂閱刻意不索引）或 DCS 匯出頁。EGD 來源印 `producer is a <kind> node` 時，來源是登錄的非控制器節點（資料集中器、閘道、
+     HMI 伺服器）：點名已知、沒有變數與邏輯，不是「checkout 外」。
    - 索引是 checkout 快照（`status` 顯示各控制器 MinorRev），不是現場控制器的即時狀態。
 
 ## 列印邏輯圖（`print-scan` / `print-check` / `print-show`，以及 build 的 `[print]` 升格）
@@ -80,7 +83,11 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 
 - block 路徑 = `CTRL/Program/Task/UserBlock/…/Block`（第一段 Program、第二段 Task），例如 `G11/LubeOil/Alarm/MOVE_21`；
   原始檔 = `<CTRL>/_<Program>.xml`。`L:` 連線指向同 task 內的 block，`L:Pin`（無點）指向外層巨集/task 的介面腳。
-- 勵磁控制器（EX2100e）的 block 型別不在手冊內，方向未知率約 15%，其餘 <4%（`coverage` 可看）。
+  程式名含 `\` 時檔名用 `~`（例 `LS21eC\SEQ_1` → `_LS21eC~SEQ_1.xml`），以 `program.file_path` 為準。
+- 勵磁控制器（EX2100e，3 台）的 block 型別不在手冊內，方向未知率約 15–16%；驅動器（LS2100e，kind `drive`）與其餘 <4%（`coverage` 可看）。
+- 控制器 = Device.xml 類別屬四種控制器類別（kind controller／safety／exciter／drive）。其餘有 Device.xml 的資料夾（HMI 工作站與
+  精簡終端、伺服器與 VM、交換器與校時、外部裝置）只登錄在 `node` 表（名稱、類別），不讀其 Device.xml 內容（位址、主機名、密碼），
+  只解析它們的 ProducedData；它們的 ConsumedData（每台 HMI 訂閱約 20 萬點）不索引。
 
 - 「宣告在腳位上的變數」：腳位沒有 `Connection`（`conn_kind A`）但被發佈成全域變數（例 PID 的 `HpBypToCrhPressCv.CVO`）；索引以
   名稱 `Block.Pin` → 宣告位置 → 同位址唯一 三層規則連結（約 16.7 萬個腳位），`show` 的寫入者行會註明 `(variable declared at this pin)`。
@@ -107,7 +114,7 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 ## 重建與部署（一般由使用者觸發）
 
 ```
-py tools\dcdas.py build [--ctrl X] [--full]     # checkout -> SQLite（全建約 1 分鐘；不帶 --ctrl 時增量）
+py tools\dcdas.py build [--ctrl X] [--full]     # checkout -> SQLite（全建約 1 分鐘，雲端磁碟未快取時約 25 分鐘；不帶 --ctrl 時增量）
 py tools\dcdas.py lint / coverage               # 多寫入者 / 方向未知比例
 py tools\dcdas.py export-web docs               # SQLite -> docs/data 加密分片 + meta + stamp
 py tools\verify_web.py docs                     # 獨立對帳（解密比對），0 錯誤才 exit 0

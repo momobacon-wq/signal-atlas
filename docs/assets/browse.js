@@ -83,8 +83,33 @@
       D.h('div', { class: 'ph' }, D.h('div', { class: 'ph-kicker' }, D.link('#/', '搜尋'), ' › ', D.link('#/s', 'HMI 畫面'), ' › 畫面'),
         D.h('h1', { class: 'ph-title mono', text: name }),
         D.h('div', { class: 'ph-sub' }, '選單路徑：', (sc.menu || []).length ? (sc.menu || []).map((m, i) => D.frag(i ? '；' : null, D.mono(m))) : '—')),
-      D.h('div', { class: 'secs' }, D.section('畫面上的訊號', pts.length ? D.table(['訊號', '來源'], pts.map((p) => [D.h('a', { href: D.hrefV(p[0]), class: 'lk mono', text: p[0] }), p[1] || '—'])) : D.empty('無'), { count: pts.length })));
+      D.h('div', { class: 'secs' }, D.section('畫面上的訊號', pts.length ? D.table(['訊號', '來源'], pts.map((p) => [screenPoint(p), p[1] || '—'])) : D.empty('無'), { count: pts.length, note: screenNote(pts) })));
   });
+
+  /** 畫面點 [full_point, source, st(, card)]：st 1（或舊資料缺欄）= 對到訊號卡 → 連結（card = 卡片名稱，與畫面點名不同時才有：
+   *  別名或大小寫對到）；2 = 非控制器節點的點；0 = 未解析 */
+  function screenPoint(p) {
+    const st = p.length > 2 && p[2] != null ? Number(p[2]) : 1;
+    if (st === 1) {
+      const card = p[3] || p[0];
+      const a = D.h('a', { href: D.hrefV(card), class: 'lk mono', text: p[0] });
+      return card === p[0] ? a : D.frag(a, ' ', D.h('span', { class: 'tag', text: '→ ' + card, title: '畫面點名以別名或不同大小寫對到這張訊號卡' }));
+    }
+    if (st === 2) {
+      const node = D.splitFull(p[0])[0];
+      const lab = D.nodeKind(node) ? D.nodeLabel(node) : '外部節點';
+      return D.frag(D.mono(p[0]), ' ', D.h('span', { class: 'tag', text: lab, title: '這個點屬於非控制器節點（只登錄名稱），沒有訊號卡' }));
+    }
+    return D.frag(D.mono(p[0], 'muted'), ' ', D.h('span', { class: 'tag', text: '未解析', title: '畫面點名稱對不到索引內任何訊號' }));
+  }
+  function screenNote(pts) {
+    let n2 = 0, n0 = 0;
+    for (const p of pts) { const st = p.length > 2 && p[2] != null ? Number(p[2]) : 1; if (st === 2) n2++; else if (st !== 1) n0++; }
+    const parts = [];
+    if (n2) parts.push('外部節點 ' + n2);
+    if (n0) parts.push('未解析 ' + n0);
+    return parts.length ? parts.join('、') : null;
+  }
 
   /* ------------------------------------------------------------------ 警報清單 */
   D.page('a', async ({ route, view }) => {

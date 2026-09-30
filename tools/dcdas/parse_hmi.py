@@ -10,12 +10,14 @@ Sources (all relative to the checkout root):
   <CTRL>/Watches/*.Watch                                   ToolConfig/ToolElements/ToolElement(Name, DataSourceName)
   <CTRL>/_<Program>.xml root attrs                         Program@LocalHelpFile -> <library dir>/X.mht (root element only)
 
-Nav CSV full_point rule: a FullPoint is kept as-is when it matches variable.full_name, when its first segment is a
-controller of the checkout, or when its first segment equals the first segment of its own UnitPrefix (EMAP1SVR rows);
-otherwise UnitPrefix is prepended (`AGC1.X` + `G11.` -> `G11.AGC1.X`, the consumer-side naming of EGD copies;
-`EKT50BF901_XQ01.bq` + `G11.` -> `G11.EKT50BF901_XQ01.bq`). When the prepended form matches a variable it wins
-(`L11.L30SS` -> `G11.L11.L30SS`). Matching is exact first, then case-insensitive (the configuration tool names are
-case-insensitive; `G11.L28fd` -> variable `G11.L28FD`); full_point keeps the CSV spelling.
+Nav CSV full_point rule: a FullPoint is kept as-is when it matches variable.full_name, when its first segment is an
+indexed controller or a registered node of the checkout (a node's point is that node's own produced EGD point, e.g.
+a data concentrator tag listed under a controller's UnitPrefix), or when its first segment equals the first segment
+of its own UnitPrefix; otherwise UnitPrefix is prepended (`EKT50BF901_XQ01.bq` + `G11.` -> `G11.EKT50BF901_XQ01.bq`).
+When the name itself does not match but the prepended form does, the prepended form wins (the consumer-side naming
+of an EGD copy, `<PRODUCER>.X` + `G11.` -> `G11.<PRODUCER>.X`, used only when the producer is not indexed).
+Matching is exact first, then case-insensitive (the configuration tool names are case-insensitive; `G11.L28fd` ->
+variable `G11.L28FD`); full_point keeps the CSV spelling.
 Stage is project-wide and idempotent: rows it owns are deleted then re-inserted, one commit per section.
 """
 import csv
@@ -28,7 +30,7 @@ from typing import Dict, Iterable, List
 from lxml import etree
 
 from .db import Batch
-from .inventory import Controller, controllers, library_folders, rel_to_root
+from .inventory import Controller, controllers, library_folders, nodes, rel_to_root
 
 NAV_CSV = Path("HmiScreens") / "navigation" / "tp_actPt_navPointSearchDbStd.csv"
 MENU_CSV = Path("HmiScreens") / "navigation" / "CIMNavigationMenuItemsStd.csv"
@@ -89,10 +91,10 @@ class FullNameIndex:
 
 
 # ------------------------------------------------------------------------------------------- hmi_point (navcsv)
-def nav_full_point(fp: str, up: str, full: FullNameIndex, ctrl_names) -> tuple:
+def nav_full_point(fp: str, up: str, full: FullNameIndex, ctrl_names, node_names=()) -> tuple:
     """-> (full_point, var_id|None, resolved_via|None). Steps: exact full name ('full'); unit prefix + name ('prefix');
     CTRL.<alias> where the alias is unique in that controller ('alias'); else unresolved (resolve.build_external_nodes
-    later marks points of nodes outside the checkout 'external')."""
+    later marks points of registered nodes and of other non-controller names 'external')."""
     vid = full.get(fp)
     if vid is not None:
         return fp, vid, "full"
@@ -106,12 +108,12 @@ def nav_full_point(fp: str, up: str, full: FullNameIndex, ctrl_names) -> tuple:
         vid = full.by_alias(first, rest)
         if vid is not None:
             return fp, vid, "alias"
-    if first in ctrl_names or (up and first == up.split(".", 1)[0]):
+    if first in ctrl_names or first in node_names or (up and first == up.split(".", 1)[0]):
         return fp, None, None
     return (pre if up else fp), None, None
 
 
-def parse_nav_csv(conn, root: Path, full: FullNameIndex, ctrl_names, log=print) -> dict:
+def parse_nav_csv(conn, root: Path, full: FullNameIndex, ctrl_names, log=print, node_names=()) -> dict:
     p = root / NAV_CSV
     st = {"csv_rows": 0, "inserted": 0, "resolved": 0, "prefixed": 0, "dup": 0, "bad": 0, "alias": 0}
     conn.execute("DELETE FROM hmi_point WHERE source='navcsv'")
@@ -129,7 +131,7 @@ def parse_nav_csv(conn, root: Path, full: FullNameIndex, ctrl_names, log=print) 
                 st["bad"] += 1
                 continue
             fp, up, screen = row[0].strip(), row[1].strip(), row[2].strip()
-            full_point, var_id, via = nav_full_point(fp, up, full, ctrl_names)
+            full_point, var_id, via = nav_full_point(fp, up, full, ctrl_names, node_names)
             if full_point != fp:
                 st["prefixed"] += 1
             if var_id is not None:
@@ -353,7 +355,7 @@ def run(conn, root: Path, log=print) -> dict:
 
     t0 = time.time()
     full = FullNameIndex(conn)
-    st = parse_nav_csv(conn, root, full, ctrl_names, log)
+    st = parse_nav_csv(conn, root, full, ctrl_names, log, {n.name for n in nodes(root)})
     del full
     stats["hmi_point_navcsv"] = st
     log(f"  hmi_point navcsv   {st['inserted']:7d}  (csv {st['csv_rows']}, dup {st['dup']}, bad {st['bad']}, "

@@ -281,6 +281,41 @@ def _ambiguous(key, cands, how="name"):
 
 
 # -------------------------------------------------------------------------------------------------- show
+def _vo_effect_sql():
+    try:
+        from . import resolve
+    except ImportError:
+        from dcdas import resolve
+    return resolve.VO_IN_EFFECT_SQL
+
+
+def _value_override(conn, ctrl, name):
+    """The tools/value_overrides.csv row recorded for one variable (value, was, date, basis, status, snap_value, reason,
+    in_effect) or None (also None on an index built before the table existed). in_effect: the variable's value really is
+    the corrected value (status applied is not enough: a --no-post build restores the snapshot values)."""
+    sel = ("SELECT o.value, o.was, o.date, o.basis, o.status, o.snap_value, {r}, (" + _vo_effect_sql() + ") "
+           "FROM value_override o LEFT JOIN variable v ON v.ctrl=o.ctrl AND v.name=o.name WHERE o.ctrl=? AND o.name=?")
+    for r_col in ("o.reason", "NULL"):      # an index created before value_override.reason existed
+        try:
+            r = conn.execute(sel.format(r=r_col), (ctrl, name)).fetchone()
+            break
+        except sqlite3.OperationalError:
+            r = None
+    else:
+        return None
+    if not r:
+        return None
+    d = dict(zip(("value", "was", "date", "basis", "status", "snap_value", "reason"), tuple(r)[:7]))
+    d["in_effect"] = bool(r[7])
+    return d
+
+
+def _corrected_note(conn, v):
+    """' (corrected; snapshot X)' when the variable's value is a manual correction in effect, else ''."""
+    vo = _value_override(conn, v["ctrl"], v["name"])
+    return f" (corrected; snapshot {vo['snap_value']})" if vo and vo["in_effect"] else ""
+
+
 def _def_section(conn, v):
     fs = None
     if v["format_spec"]:
@@ -316,6 +351,9 @@ def _def_section(conn, v):
     d["producer"] = producer
     d["display_screen"] = v["display_screen"]
     d["sub_of"] = v["sub_of"]
+    vo = _value_override(conn, v["ctrl"], v["name"])
+    if vo:
+        d["value_override"] = vo
     return d
 
 
@@ -334,7 +372,8 @@ def _alarm_subs(conn, v):
         if p and p["conn_kind"] == "V" and p["var_id"]:
             cv = _var_by_id(conn, p["var_id"])
             if cv:
-                src = {"full_name": cv["full_name"], "value": cv["value"], "const": cv["control_constant"]}
+                src = {"full_name": cv["full_name"], "value": cv["value"], "const": cv["control_constant"],
+                       "corrected": _corrected_note(conn, cv)}
         nw = _row(conn, "SELECT count(*) AS n FROM pin WHERE var_id=? AND direction='O'", (sv["id"],))["n"]
         nr = _row(conn, "SELECT count(*) AS n FROM pin WHERE var_id=? AND direction<>'O'", (sv["id"],))["n"]
         out.append({"suffix": suffix, "full_name": sv["full_name"], "datatype": sv["datatype"], "class": sv["alarm_class"],
@@ -553,7 +592,9 @@ def show(conn, signal, all_rows=False):
     elif unknown:
         source = f"unknown: {len(unknown)} pin(s) with direction '?' (see UNKNOWN-DIR)"
     elif v["control_constant"]:
-        source = f"control constant (value {v['value']})"
+        vo = _value_override(conn, v["ctrl"], v["name"])
+        source = f"control constant (value {v['value']}" + (f", corrected; snapshot {vo['snap_value']})"
+                                                             if vo and vo["in_effect"] else ")")
     else:
         source = "no writer found in checkout"
     d = _def_section(conn, v)
@@ -651,7 +692,7 @@ class _Trace:
             if encs:
                 self.emit(d + 1, f"[encrypted: not traceable] programs {', '.join(encs)}")
             if v["control_constant"]:
-                self.emit(d + 1, f"= control constant {v['value']}")
+                self.emit(d + 1, f"= control constant {v['value']}" + _corrected_note(self.conn, v))
             return
         for p in writers:
             if not self.emit(d + 1, f"<= {p['ctrl']}/{p['path']}.{p['pin']} [{p['block_type'] or p['kind']}] "
@@ -1300,7 +1341,10 @@ def diff_units(conn, a, b, what="all", limit=200):
         for n in sorted(set(ca) & set(cb)):
             out["n_constants_compared"] += 1
             if _norm_value(ca[n][0]) != _norm_value(cb[n][0]):
-                diffs.append({"name": n, "a": ca[n][0], "b": cb[n][0], "description": ca[n][1] or cb[n][1] or ""})
+                def mark(ctrl, val):   # a manual correction in effect is marked, so a unit difference is not read as configuration
+                    vrow = conn.execute("SELECT * FROM variable WHERE ctrl=? AND name=?", (ctrl, n)).fetchone()
+                    return f"{val}{_corrected_note(conn, vrow)}" if vrow else val
+                diffs.append({"name": n, "a": mark(a, ca[n][0]), "b": mark(b, cb[n][0]), "description": ca[n][1] or cb[n][1] or ""})
         out["n_constants"] = len(diffs)
         out["constants"] = diffs[:limit]
     if what in ("alarms", "all"):

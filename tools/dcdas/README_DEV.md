@@ -112,6 +112,22 @@ Full build of 19 controllers (+66 registered nodes) takes ~60 s (~25 min when th
   compares and prints STALE with the right command when a hand-maintained CSV changed. `diff-units A B [--what
   constants|alarms|all]` lists control constants and alarm set-points/delays/hysteresis that differ between two
   controllers of the same kind (`query.diff_units`, values compared by meaning).
+* Manual value corrections: `variable.snap_value` = the initial value as the snapshot states it (set by every variable
+  insert and by the vars upsert); `variable.value` = the value in use. `resolve.load_value_overrides` (build post pass and
+  `xref-reload`, right after `load_xref`; always over the whole index) first restores `value = snap_value` everywhere and
+  clears `value_override`, then reads `tools/value_overrides.csv` (`resolve.read_value_overrides`: the header must be
+  exactly `ctrl,name,value,was,date,basis`, otherwise nothing applies and `status` prints ERROR) and classifies every row
+  once per (ctrl, name) (`resolve.classify_value_overrides` / `classify_override`: applied / merged / conflict / missing
+  plus a `reason`; blank value or was, value == was, duplicate (ctrl, name) and rows of other than 6 fields are conflicts,
+  a controller that is not indexed is missing; values compare as stripped strings or, when both match a strict numeric
+  regex, as numbers) into table `value_override`; only `applied` changes `value`. A row is IN EFFECT only while
+  `resolve.VO_IN_EFFECT_SQL` holds (applied AND value = the corrected value AND value IS NOT snap_value): a `--no-post`
+  build re-inserts variables with the snapshot value but leaves `value_override` as it was. `show` prints the correction
+  on the value / source lines only when in effect (`def.value_override.in_effect` in JSON; an applied row not in effect
+  gets an `override ... NOT in effect` line), `trace` on the constant leaf, `status` prints the counts, the reasons and a
+  WARN (no `fresh`) for applied rows not in effect, export-web the card's `d.vo` (in-effect rows only; `verify_web`
+  checks the cards carrying `d.vo` in every var shard equal the in-effect set and the set of variables whose value differs
+  from the snapshot).
 * `Variables.xml` `Connection` = declaration site, never the writer. `<AlarmGlobalSubVariable>` rows are parsed like
   `<Variable>` plus `sub_of` (their `Connection` = the sub-pin `Program.Task.<var>.<SUFFIX>`).
 * `DistributedIO.Xml`: `DistributedIO` → `HardwareGroups/...` → `LanModules/LanModule`(Name, ModuleId, GroupName=cabinet,

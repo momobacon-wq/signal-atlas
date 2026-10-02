@@ -472,6 +472,171 @@ def load_xref(conn, repo_dir, ctrl_names, log=print):
     return tot
 
 
+VO_CSV = "value_overrides.csv"
+VO_HEADER = ["ctrl", "name", "value", "was", "date", "basis"]
+VO_STATUSES = ("applied", "merged", "conflict", "missing")
+# a value_override row is IN EFFECT (variable.value really is the corrected value) only when this holds, with the
+# value_override row aliased o and its variable v: a --no-post build re-inserts variables with value = snap_value but
+# leaves the value_override table as the last post pass wrote it
+VO_IN_EFFECT_SQL = "o.status='applied' AND v.value = o.value AND v.value IS NOT v.snap_value"
+_NUM_RE = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")   # ASCII digits only (no fullwidth)
+
+
+def vo_in_effect(status, value, var_value, var_snap):
+    """Python twin of VO_IN_EFFECT_SQL (status / value of the value_override row, value / snap_value of its variable)."""
+    return status == "applied" and var_value is not None and var_value == value and var_value != var_snap
+
+
+def _same_value(a, b):
+    """Two initial values are the same when equal as stripped strings, or both strictly numeric (digits, one optional
+    point, optional exponent; ASCII digits only; no '_', 'inf', 'nan') and numerically equal ('16' == '16.0')."""
+    a = "" if a is None else str(a).strip()
+    b = "" if b is None else str(b).strip()
+    if a == b:
+        return True
+    if _NUM_RE.fullmatch(a) and _NUM_RE.fullmatch(b):
+        return float(a) == float(b)
+    return False
+
+
+def classify_override(snap, was, value, exists=True):
+    """(status, reason) of one value_overrides.csv row against the snapshot value of its variable, checked in this order:
+    missing (no such variable) / conflict (blank value, blank was, value == was, or a non-numeric value for a numeric
+    snapshot / was) / applied (the
+    snapshot still holds `was`; reason None) / merged (the snapshot already holds `value`) / conflict (it holds neither)."""
+    if not exists:
+        return "missing", "no such variable"
+    value = "" if value is None else str(value).strip()
+    was = "" if was is None else str(was).strip()
+    if not value:
+        return "conflict", "blank value"
+    if not was:
+        return "conflict", "blank was"
+    if _same_value(value, was):
+        return "conflict", "value equals was"
+    # a numeric constant takes only a plain ASCII number (a typo such as 'abc', '2_4' or fullwidth digits is never applied)
+    numeric = lambda x: x is not None and bool(_NUM_RE.fullmatch(str(x).strip()))
+    if (numeric(snap) or numeric(was)) and not numeric(value):
+        return "conflict", "value is not a number"
+    if _same_value(snap, was):
+        return "applied", None
+    if _same_value(snap, value):
+        return "merged", "the snapshot already holds the corrected value (the row can be removed)"
+    return "conflict", "the snapshot holds neither was nor value"
+
+
+def override_status(snap, was, value, exists=True):
+    """The status alone of classify_override."""
+    return classify_override(snap, was, value, exists)[0]
+
+
+def read_value_overrides(repo_dir):
+    """(rows, header_error) of tools/value_overrides.csv. Blank records and records whose first cell starts with '#' are
+    skipped; the first other record must be exactly the header ctrl,name,value,was,date,basis, otherwise header_error says
+    why and rows is empty (nothing may be applied from a file whose columns are not known). Each row: the six stripped
+    fields plus 'line' (1-based record number) and 'nfields'. A missing file -> ([], None)."""
+    import csv
+    from pathlib import Path
+    pm = _pm()
+    path = pm._tools_dir(Path(repo_dir)) / VO_CSV
+    if not path.exists():
+        return [], None
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            recs = list(csv.reader(f))
+    except UnicodeDecodeError as e:
+        return [], f"{VO_CSV} is not UTF-8 ({e.reason}): save it as UTF-8 CSV"
+    rows, header = [], None
+    for i, rec in enumerate(recs, 1):
+        if not rec or not "".join(rec).strip() or rec[0].lstrip().startswith("#"):
+            continue
+        if header is None:
+            header = [c.strip() for c in rec]
+            if header != VO_HEADER:
+                return [], f"{VO_CSV} header is {','.join(header)!r} (line {i}), expected exactly {','.join(VO_HEADER)!r}"
+            continue
+        d = {h: (rec[k].strip() if k < len(rec) else "") for k, h in enumerate(VO_HEADER)}
+        d["line"], d["nfields"] = i, len(rec)
+        rows.append(d)
+    return rows, None
+
+
+def classify_value_overrides(conn, rows):
+    """One record per (ctrl, name) of the CSV rows: dict(ctrl, name, value, was, date, basis, status, reason, snap_value,
+    var_id). A duplicated (ctrl, name) -> conflict 'duplicate' (none of its rows applies; the first is recorded); a row
+    with other than 6 fields -> conflict 'malformed'; a controller that is not indexed -> missing 'unknown controller';
+    otherwise classify_override."""
+    ctrls = {r[0] for r in conn.execute("SELECT name FROM controller")}
+    by_key = {}
+    for r in rows:
+        by_key.setdefault((r["ctrl"], r["name"]), []).append(r)
+    out = []
+    for (ctrl, name), rs in by_key.items():
+        r = rs[0]
+        v = conn.execute("SELECT id, snap_value FROM variable WHERE ctrl=? AND name=?", (ctrl, name)).fetchone()
+        snap = v[1] if v else None
+        if len(rs) > 1:
+            st, why = "conflict", f"duplicate: {len(rs)} rows (lines {', '.join(str(x['line']) for x in rs)})"
+        elif r["nfields"] != len(VO_HEADER):
+            st, why = "conflict", f"malformed row: {r['nfields']} fields, expected {len(VO_HEADER)} (line {r['line']})"
+        elif ctrl not in ctrls:
+            st, why = "missing", "unknown controller"
+        else:
+            st, why = classify_override(snap, r["was"], r["value"], exists=v is not None)
+        out.append({**{h: r[h] for h in VO_HEADER}, "status": st, "reason": why, "snap_value": snap,
+                    "var_id": v[0] if v else None})
+    return out
+
+
+def _ensure_vo_reason(conn):
+    """value_override.reason was added while schema 14 was unreleased: add it to an index created without it."""
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(value_override)")]
+    if cols and "reason" not in cols:
+        conn.execute("ALTER TABLE value_override ADD COLUMN reason TEXT")
+
+
+def load_value_overrides(conn, repo_dir, log=print):
+    """tools/value_overrides.csv: initial values (control constants) changed in the field after the snapshot was taken.
+    variable.snap_value always holds the value the snapshot states; variable.value is the value in use. Steps, always
+    over the whole index (whatever controllers the build covered):
+    (a) every variable whose value differs from its snapshot value is restored (a row removed from the CSV stops applying);
+    (b) every value_override row is cleared; (c) a CSV whose header is not exactly ctrl,name,value,was,date,basis applies
+    nothing (ERROR); (d) every CSV row is classified (classify_value_overrides): applied -> variable.value = the corrected
+    value; merged -> the snapshot already holds it (the row can be deleted from the CSV); conflict -> NOT applied (the
+    snapshot holds neither value, blank value / was, value == was, duplicate or malformed row); missing -> unknown
+    controller or no such variable. Every (ctrl, name) is recorded once in value_override with the snapshot value and
+    the reason. Returns the status counts plus 'header_error'."""
+    _ensure_vo_reason(conn)
+    # (a) value and snap_value are written together by every variable insert, so any difference is a correction applied
+    # by an earlier run (also restores a variable whose snapshot value is NULL)
+    nrev = conn.execute("UPDATE variable SET value=snap_value WHERE value IS NOT snap_value").rowcount
+    # (b)
+    conn.execute("DELETE FROM value_override")
+    tot = {k: 0 for k in VO_STATUSES}
+    rows, header_error = read_value_overrides(repo_dir)
+    tot["header_error"] = header_error
+    if header_error:
+        conn.commit()
+        log(f"  ERROR value overrides: {header_error} - NOTHING applied (restored {nrev} earlier corrections)")
+        return tot
+    for x in classify_value_overrides(conn, rows):
+        ctrl, name, st, why = x["ctrl"], x["name"], x["status"], x["reason"]
+        if st == "applied":
+            conn.execute("UPDATE variable SET value=? WHERE id=?", (x["value"], x["var_id"]))
+        elif st == "merged":
+            log(f"  INFO value override {ctrl}.{name}: the snapshot already holds {x['value']} - the row can be removed from {VO_CSV}")
+        else:
+            log(f"  WARN value override {ctrl}.{name} (csv {x['was']!r} -> {x['value']!r}, snapshot {x['snap_value']!r}): "
+                f"{st}, {why} - NOT applied (check the row)")
+        conn.execute("INSERT INTO value_override(ctrl,name,value,was,date,basis,status,snap_value,reason) VALUES(?,?,?,?,?,?,?,?,?)",
+                     (ctrl, name, x["value"], x["was"], x["date"], x["basis"], st, x["snap_value"], why))
+        tot[st] += 1
+    conn.commit()
+    log(f"  value overrides: {tot['applied']} applied, {tot['merged']} merged, {tot['conflict']} conflict, "
+        f"{tot['missing']} missing (restored {nrev} earlier corrections first) from {VO_CSV}")
+    return tot
+
+
 def csv_fingerprints(repo_dir):
     """sha1 of the hand-maintained CSVs the index depends on (xref rows, direction overrides / table): stored in meta at
     build / xref-reload time so `status` can tell when the index no longer reflects them."""
@@ -480,7 +645,7 @@ def csv_fingerprints(repo_dir):
     pm = _pm()
     tools = pm._tools_dir(Path(repo_dir))
     out = {}
-    for name in (XREF_CSV, pm.OVERRIDE_CSV, pm.TABLE_CSV):
+    for name in (XREF_CSV, VO_CSV, pm.OVERRIDE_CSV, pm.TABLE_CSV):
         p = tools / name
         out[name] = hashlib.sha1(p.read_bytes()).hexdigest()[:12] if p.exists() else None
     return out

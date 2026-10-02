@@ -37,7 +37,10 @@
     rows.push(D.kv('說明', d.desc || '—'));
     rows.push(D.kv('型別', D.mono(D.val(d.dt))));
     rows.push(D.kv('位址', D.mono(D.val(d.addr))));
-    rows.push(D.kv('初始值', D.mono(D.val(d.val))));
+    if (Array.isArray(d.vo) && d.vo.length >= 3) { // 人工更正（tools/value_overrides.csv）：現場已改、快照仍是舊值
+      rows.push(D.kv('初始值', D.frag(D.mono(D.val(d.val)), ' ', D.tag('人工更正', 'warn'),
+        D.h('div', { class: 'muted small', text: '快照值 ' + D.val(d.vo[0]) + ' · ' + D.val(d.vo[1]) + ' ' + (d.vo[2] || '') }))));
+    } else rows.push(D.kv('初始值', D.mono(D.val(d.val))));
     if (!D.blank(d.egd_page)) rows.push(D.kv('EGD 頁', D.mono(d.egd_page)));
     if (!D.blank(d.alias)) rows.push(D.kv('別名（KKS）', D.mono(d.alias)));
     if (!D.blank(d.units) || !D.blank(d.lo) || !D.blank(d.hi)) rows.push(D.kv('單位 / 量程', D.frag(D.val(d.units), '  ', D.mono(D.val(d.lo) + ' – ' + D.val(d.hi)))));
@@ -193,12 +196,12 @@
     return D.section('警報說明', D.h('table', { class: 'kv' }, D.h('tbody', null, rows)), { note: a.cls || a.def || '' });
   }
 
-  /** 警報子腳（subs）：[suffix, dt, cls, dir, srcFull, srcVal, egd_page, alias] — 組態工具掛在訊號上的警報屬性 */
+  /** 警報子腳（subs）：[suffix, dt, cls, dir, srcFull, srcVal, egd_page, alias, corrected?] — 組態工具掛在訊號上的警報屬性；第 9 欄 1 = 來源值是人工更正 */
   function subsSection(subs, ctrl, full) {
     if (!subs || !subs.length) return null;
     const rows = subs.map((x) => {
-      const [suf, dt, cls, dir, src, val, egd, alias] = x;
-      const to = src ? D.frag('← ', D.h('a', { href: D.hrefV(src), class: 'lk mono', text: src }), val == null ? null : D.mono(' = ' + val, 'muted'))
+      const [suf, dt, cls, dir, src, val, egd, alias, vo] = x;
+      const to = src ? D.frag('← ', D.h('a', { href: D.hrefV(src), class: 'lk mono', text: src }), val == null ? null : D.mono(' = ' + val, 'muted'), vo ? D.frag(' ', D.tag('人工更正', 'warn')) : null)
         : (dir === 'O' ? D.h('span', { class: 'muted', text: '警報狀態（此訊號發佈）' }) : D.h('span', { class: 'muted', text: '—' }));
       return [D.h('a', { href: D.hrefV(full + '.' + suf), class: 'lk mono', text: '.' + suf }), D.mono(dt), dir ? D.dirBadge(dir) : '', cls ? D.tag(cls, cls === 'DIAG' ? '' : 'warn') : '', to, D.mono(egd || ''), D.mono(alias || '')];
     });

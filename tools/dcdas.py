@@ -151,6 +151,7 @@ def cmd_build(a):
         log("[print]")
         resolve.load_print(conn, post, log)
         resolve.load_xref(conn, HERE, post, log)
+        resolve.load_value_overrides(conn, HERE, log)
         resolve.refresh_mirror_kinds(conn, log)
         resolve.vote_io_directions(conn, post, log)
         log("[fts]")
@@ -185,7 +186,7 @@ def cmd_build(a):
 # ---------------------------------------------------------------------------------------------------- status
 def cmd_xref_reload(a):
     """Reload the hand-maintained rows without reparsing the checkout: drop every recovered/xref pin, run the recovery
-    rules, load xref_manual.csv, refresh mirror kinds and the I/O vote. Directions of plaintext pins, FTS and the file
+    rules, load xref_manual.csv and value_overrides.csv, refresh mirror kinds and the I/O vote. Directions of plaintext pins, FTS and the file
     ledger are untouched (a changed pin_dir_*.csv still needs a full build)."""
     from dcdas import resolve
     root = dbm.src_root()
@@ -204,6 +205,7 @@ def cmd_xref_reload(a):
     resolve.recover_vote_pins(conn, names, log)
     resolve.load_print(conn, names, log)
     resolve.load_xref(conn, HERE, names, log)
+    resolve.load_value_overrides(conn, HERE, log)
     resolve.refresh_mirror_kinds(conn, log)
     resolve.vote_io_directions(conn, names, log)
     dbm.set_meta(conn, "csv_sha1", json.dumps(resolve.csv_fingerprints(HERE), sort_keys=True))
@@ -233,6 +235,7 @@ def cmd_status(a):
         prec = {}
     out["print_stale"] = prec != _res.print_fingerprint()
     out["schema"] = dbm.get_meta(conn, "schema_version")
+    out["value_overrides"] = _vo_status(conn, _res)
     live = {c.name: c for c in inv.controllers(root)}
     seen = set()
     for r in conn.execute("SELECT name,kind,minor_rev,indexed_at FROM controller ORDER BY name"):
@@ -264,20 +267,93 @@ def cmd_status(a):
     for k in ("new", "changed", "missing"):
         for p in out["stale_examples"][k]:
             print(f"  {k}: {p}")
+    vo = out["value_overrides"]
+    if vo["csv_rows"] or vo["rows"] or vo["header_error"]:
+        c = vo["counts"]
+        print(f"value overrides: {c['applied']} applied, {c['merged']} merged, {c['conflict']} conflict, {c['missing']} missing"
+              + (f"  ({_res.VO_CSV} not readable: see ERROR)" if vo["header_error"] else f"  ({vo['csv_rows']} rows in {_res.VO_CSV})"))
+        if vo["header_error"]:
+            print(f"  ERROR {vo['header_error']}: NOTHING is applied until the file is fixed")
+        for x in vo["rows"]:
+            if x["status"] != "applied":
+                print(f"  {'INFO' if x['status'] == 'merged' else 'WARN'} {x['status']}: {x['ctrl']}.{x['name']} csv {x['was']!r} -> {x['value']!r}, snapshot {x['snap_value']!r}"
+                      + (f" - {x['reason']}" if x.get("reason") else ""))
+        if vo["not_in_effect"]:
+            print(f"  WARN {len(vo['not_in_effect'])} applied rows not in effect (the variable holds the snapshot value, "
+                  f"e.g. after a --no-post build): {', '.join(vo['not_in_effect'][:8])} - not in effect: run xref-reload or build")
+        if vo["stale"]:
+            print(f"  {vo['stale']}")
     csv_stale = [k for k, v in out["csv_stale"].items() if v]
     if out["schema"] != dbm.SCHEMA_VERSION:
         print(f"STALE (index schema {out['schema']} != {dbm.SCHEMA_VERSION}): run  py tools/dcdas.py build")
     elif any(out["stale"].values()) or any(c["changed"] for c in out["controllers"]):
         print("STALE: run  py tools/dcdas.py build")
     elif csv_stale:
-        if csv_stale == ["xref_manual.csv"]:
-            print("STALE (xref_manual.csv changed since the index was built): run  py tools/dcdas.py xref-reload")
+        if set(csv_stale) <= {"xref_manual.csv", _res.VO_CSV}:
+            print(f"STALE ({', '.join(csv_stale)} changed since the index was built): run  py tools/dcdas.py xref-reload")
         else:
             print(f"STALE ({', '.join(csv_stale)} changed since the index was built): run  py tools/dcdas.py build")
+    elif vo["header_error"]:
+        print(f"ERROR ({_res.VO_CSV} unreadable): fix it, then run  py tools/dcdas.py xref-reload")
+    elif vo["not_in_effect"]:
+        print(f"STALE ({len(vo['not_in_effect'])} value overrides not in effect): run  py tools/dcdas.py xref-reload or build")
+    elif vo["stale"]:
+        print(f"STALE ({_res.VO_CSV} rows differ from the index): run  py tools/dcdas.py xref-reload")
     elif out["print_stale"]:
         print("STALE (the printed-sheet corpus changed since the index was built): run  py tools/dcdas.py xref-reload")
+    elif vo.get("not_applied"):
+        print(f"fresh ({vo['not_applied']} {_res.VO_CSV} rows NOT applied: see WARN above)")
     else:
         print("fresh")
+
+
+def _vo_status(conn, res, repo_dir=None):
+    """value_overrides.csv vs the value_override table of the index: counts, rows (with reason), the header problem,
+    applied rows that are not in effect (resolve.VO_IN_EFFECT_SQL fails, e.g. after a --no-post build) and a stale hint."""
+    import sqlite3 as _sq
+    csv_rows, header_error = res.read_value_overrides(repo_dir or HERE)
+    out = {"csv_rows": len(csv_rows), "header_error": header_error, "rows": [], "counts": {k: 0 for k in res.VO_STATUSES},
+           "not_in_effect": [], "stale": None}
+    sel = ("SELECT o.ctrl,o.name,o.value,o.was,o.date,o.basis,o.status,o.snap_value,{r},v.value,v.snap_value FROM value_override o "
+           "LEFT JOIN variable v ON v.ctrl=o.ctrl AND v.name=o.name ORDER BY o.ctrl,o.name")
+    rows = None
+    for r_col in ("o.reason", "NULL"):           # an index created before value_override.reason existed
+        try:
+            rows = conn.execute(sel.format(r=r_col)).fetchall()
+            break
+        except _sq.OperationalError:
+            continue
+    if rows is None:
+        if csv_rows:
+            out["stale"] = f"the index has no value_override table: the {len(csv_rows)} CSV rows are not applied (run a build)"
+        return out
+    for r in rows:
+        r = tuple(r)
+        d = dict(zip(("ctrl", "name", "value", "was", "date", "basis", "status", "snap_value", "reason"), r[:9]))
+        d["in_effect"] = res.vo_in_effect(d["status"], d["value"], r[9], r[10])
+        out["rows"].append(d)
+        out["counts"][d["status"]] = out["counts"].get(d["status"], 0) + 1
+        if d["status"] == "applied" and not d["in_effect"]:
+            out["not_in_effect"].append(f"{d['ctrl']}.{d['name']}")
+    # the index must hold one row per CSV (ctrl, name), with the CSV's value / was where the key occurs once
+    from collections import Counter as _C
+    n_key = _C((r["ctrl"], r["name"]) for r in csv_rows)
+    want = {(r["ctrl"], r["name"]): ((r["value"], r["was"]) if n_key[(r["ctrl"], r["name"])] == 1 else None) for r in csv_rows}
+    have = {(d["ctrl"], d["name"]): (d["value"], d["was"]) for d in out["rows"]}
+    if set(have) != set(want) or any(w is not None and have[k] != w for k, w in want.items()):
+        out["stale"] = (f"the index holds {len(have)} override rows and {res.VO_CSV} {len(want)} variables, and they differ: "
+                        f"run  py tools/dcdas.py xref-reload")
+    # every variable whose value differs from its snapshot must be an override in effect (nothing else may change a value)
+    try:
+        n_diff = conn.execute("SELECT count(*) FROM variable WHERE snap_value IS NOT NULL AND value IS NOT snap_value").fetchone()[0]
+    except _sq.OperationalError:
+        n_diff = None
+    n_eff = sum(1 for d in out["rows"] if d["in_effect"])
+    if n_diff is not None and n_diff != n_eff and not out["stale"]:
+        out["stale"] = (f"{n_diff} variables differ from their snapshot value but {n_eff} overrides are in effect: "
+                        f"run  py tools/dcdas.py xref-reload")
+    out["not_applied"] = sum(1 for d in out["rows"] if d["status"] in ("conflict", "missing"))
+    return out
 
 
 # ----------------------------------------------------------------------------------------------- query cmds

@@ -9,6 +9,11 @@ render(res, args) -> str.  args is the argparse namespace (only .all is looked a
 CAP = 40
 
 
+
+def _corr(note):
+    """' (corrected; snapshot X)' -> ', corrected; snapshot X' (used inside an existing parenthesis)."""
+    return ", " + note.strip()[1:-1] if note else ""
+
 def _s(v):
     if v is None:
         return "-"
@@ -83,7 +88,18 @@ def _show(o, r):
     o.line("DEF")
     _kv(o, "desc", d["description"])
     _kv(o, "address", d["address"])
-    _kv(o, "value", d["value"])
+    vo = d.get("value_override")
+    if vo and vo.get("in_effect"):
+        _kv(o, "value", f"{d['value']}  [人工更正 {vo['date']} {vo['basis']}; snapshot {vo['snap_value']}]")
+    else:
+        _kv(o, "value", d["value"])
+        if vo and vo["status"] == "applied":    # recorded as applied, but the value is the snapshot's (--no-post build)
+            _kv(o, "override", f"applied: csv {vo['was']} -> {vo['value']} ({vo['date']} {vo['basis']}); NOT in effect "
+                f"(the value above is not the corrected value): run xref-reload or build")
+        elif vo:    # a CSV row that is not in use (merged / conflict / missing): say why
+            _kv(o, "override", f"{vo['status']}: csv {vo['was']} -> {vo['value']} ({vo['date']} {vo['basis']})"
+                + ("; the snapshot already holds it" if vo["status"] == "merged" else "; NOT applied")
+                + (f" - {vo['reason']}" if vo.get("reason") and vo["status"] != "merged" else ""))
     _kv(o, "scope", d["scope"])
     _kv(o, "egd_page", d["egd_page"])
     _kv(o, "alias", d["alias"])
@@ -192,7 +208,7 @@ def _show(o, r):
         o.line(f"ALARM SUB-PINS ({len(r['alarm_subs'])})   (alarm attributes of this signal; sub-variable = <signal>.<suffix>)")
         for x in r["alarm_subs"]:
             if x["source"]:
-                tail = f"<- {x['source']['full_name']}" + (f" (const {x['source']['value']})" if x["source"]["const"] else f" (value {_s(x['source']['value'])})")
+                tail = f"<- {x['source']['full_name']}" + (f" (const {x['source']['value']}{_corr(x['source'].get('corrected', ''))})" if x["source"]["const"] else f" (value {_s(x['source']['value'])}{_corr(x['source'].get('corrected', ''))})")
             elif x["connection"]:
                 tail = f"<- {x['connection']}"
             else:

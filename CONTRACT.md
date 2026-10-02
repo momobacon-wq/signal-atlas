@@ -90,8 +90,13 @@ docs/data/                     export-web 的輸出（下）
 "src": {"k":"V","var":full} | {"k":"L"|"P","block":key,"pin":name} | {"k":"N"|"E","text":…} | null}`；`kind I` 的源頭 = `src`（腳位的接線來源），
 `kind O` 的寫入者 = 該方塊腳。前端「來源」規則在 `w` 為空時先看 `d.m`。task entry 的 `vm` = `{mirror_full_name: pin_name}`（該 task 內有鏡像的腳位）。
 
+`d.vo`（人工更正）：`tools/value_overrides.csv` 有這個變數、而且更正**生效中**（`value_override.status = applied` 且
+`variable.value` = 登錄的新值且 ≠ `variable.snap_value`；`--no-post` build 會把值還原成快照值而不重新套用）時，`d.val` 已是更正後的值，
+`d.vo` = `[快照值, 日期, 依據]`；其他情況（沒有登錄、`merged`／`conflict`／`missing`、applied 但未生效）省略，`d.val` 就是快照值。前端「初始值」在值後加警示標籤「人工更正」，
+下面一行灰字「快照值 X · 日期 依據」。
+
 `d.sub`（警報子變數）：變數名 `<訊號>.<後綴>` 是組態工具附在 `<訊號>` 上的警報屬性（`AlarmGlobalSubVariable`）時，`d.sub` = 母訊號名（同控制器）。
-母訊號卡另有 `subs` = `[[後綴, 型別, 警報等級, 方向, 來源變數 full|null, 來源值|null, EGD 頁, 別名]]`：設定值／延時／遲滯（`.H_SP/.HH_SP/.H_T/.HYST…`）
+母訊號卡另有 `subs` = `[[後綴, 型別, 警報等級, 方向, 來源變數 full|null, 來源值|null, EGD 頁, 別名(, 1)]]`（第 9 欄只在來源值是人工更正時出現，值 1）：設定值／延時／遲滯（`.H_SP/.HH_SP/.H_T/.HYST…`）
 是 I 腳接常數（子變數 = 該常數的鏡像，`d.m` kind I）；`.H/.HH/.L/.LL/.BQ…` 旗標是 O 腳、警報本身（多發佈在 HMI EGD 頁、帶 AlarmClass）。子腳在 task 分片裡就是母
 task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 Where Used 顯示為 `程式.Task.訊號.後綴`）。names 旗標位元 16（警報）= 有 alarm id，或子變數帶 AlarmClass。
 設定值鏡像子變數的 `hid`（加密引用）不列：工具把常數的宣告程式列在它下面，不是子變數自己的隱藏引用。

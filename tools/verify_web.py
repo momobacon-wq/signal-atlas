@@ -220,6 +220,23 @@ def main(docs):
                      "AND producer_ctrl IN (SELECT name FROM controller)").fetchone()
     if r and r[0]:
         sample.append(r[0])
+    # value_overrides.csv: every variable with an override row (any status) and every variable whose value differs from
+    # its snapshot value is checked. CONTRACT: d.vo only while the row is in effect (status applied AND the variable's
+    # value is the corrected value AND differs from the snapshot value); a value may differ from the snapshot only then
+    try:
+        vo_rows = conn.execute("""SELECT v.id, v.full_name, o.status, o.value, o.snap_value, o.date, o.basis,
+                                         (o.status='applied' AND v.value = o.value AND v.value IS NOT v.snap_value)
+                                  FROM value_override o JOIN variable v ON v.ctrl=o.ctrl AND v.name=o.name""").fetchall()
+    except sqlite3.OperationalError:
+        vo_rows = []
+    vo_applied = {r[0]: r for r in vo_rows if r[7]}
+    vo_diff = {r[0]: r[1] for r in conn.execute("SELECT id, full_name FROM variable WHERE value IS NOT snap_value")}
+    (ok if set(vo_diff) == set(vo_applied) else err)(
+        f"value overrides: {len(vo_diff)} variables differ from their snapshot value, {len(vo_applied)} override rows in effect"
+        + (f"; differ e.g. {sorted(vo_diff.get(i) or vo_applied[i][1] for i in set(vo_diff) ^ set(vo_applied))[:5]}"
+           if set(vo_diff) != set(vo_applied) else ""))
+    sample.extend(r[0] for r in vo_rows)
+    sample.extend(i for i in vo_diff if i not in {r[0] for r in vo_rows})
     shard_cache = {}
     src_outside = set()
     nbad = 0
@@ -272,6 +289,17 @@ def main(docs):
             err(f"card egd.src {full}: {src_ and src_.get('ctrl')!r} vs db producers {sorted(db_src)[:3]}")
         elif src_ and src_.get("ctrl") not in ctrl_set and src_.get("ctrl") not in node_set:
             src_outside.add(src_.get("ctrl"))  # allowed by the contract (no card to link), reported below
+        if (d.get("val") or None) != (v["value"] or None):      # empty values are omitted from the card
+            nbad += 1
+            err(f"card value mismatch {full}: {d.get('val')!r} vs db {v['value']!r}")
+        if vid in vo_applied:
+            o = vo_applied[vid]
+            if d.get("val") != o[3] or d.get("vo") != [o[4], o[5], o[6]]:
+                nbad += 1
+                err(f"card value override {full}: val {d.get('val')!r} vo {d.get('vo')!r} vs corrected {o[3]!r} [{o[4]!r}, {o[5]!r}, {o[6]!r}]")
+        elif "vo" in d:
+            nbad += 1
+            err(f"card {full} carries d.vo without an applied value override")
         has_alm = bool(v["alarm_id"]) or bool(v["sub_of"] and v["alarm_class"])
         if has_alm != ("alm" in card):
             nbad += 1
@@ -288,6 +316,31 @@ def main(docs):
                 nbad += 1
                 err(f"writer ref not found {full}: {ctrl}|{path}.{pin}")
     (ok if not nbad else err)(f"sampled {len(sample)} cards, {nbad} mismatches")
+    ok(f"value overrides: {len(vo_applied)} in-effect rows were in the card sample (d.val corrected, d.vo = snapshot/date/basis), "
+       f"{len(vo_rows) - len(vo_applied)} other rows checked to carry no d.vo (mismatches are counted above)")
+    # every var shard: the cards carrying d.vo are exactly the in-effect rows; a sub row flags a corrected source value
+    # (9th field 1) exactly when its source variable is one of them
+    want_vo = {r[1] for r in vo_applied.values()}
+    got_vo, sub_bad = set(), []
+    for i in range(4096):
+        s_ = f"{i:03x}"
+        if s_ not in shard_cache:
+            try:
+                shard_cache[s_] = load(data / "var" / f"{s_}.json")["v"]
+            except FileNotFoundError:
+                shard_cache[s_] = {}
+        for full, card in shard_cache[s_].items():
+            if "vo" in (card.get("d") or {}):
+                got_vo.add(full)
+            for row in card.get("subs") or []:
+                flagged = len(row) > 8 and row[8] == 1
+                if flagged != (row[4] in want_vo if row[4] else False):
+                    sub_bad.append(f"{full}.{row[0]}")
+    (ok if got_vo == want_vo else err)(
+        f"value overrides: {len(got_vo)} cards in all var shards carry d.vo, {len(want_vo)} rows in effect"
+        + (f"; differ {sorted(got_vo ^ want_vo)[:5]}" if got_vo != want_vo else ""))
+    (ok if not sub_bad else err)(f"alarm sub rows: corrected-source flag matches the in-effect rows ({len(sub_bad)} mismatches"
+                                 + (f", e.g. {sub_bad[:3]})" if sub_bad else ")"))
     if src_outside:
         ok(f"egd.src producers in neither controllers nor nodes (allowed by the contract, no card; check the node registry): {sorted(src_outside)}")
     # ---- mirror cards: 10 variables from pin_mirror must carry d.m pointing at the right pin

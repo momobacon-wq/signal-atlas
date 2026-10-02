@@ -42,6 +42,12 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
      訂閱刻意不索引）或 DCS 匯出頁。EGD 來源印 `producer is a <kind> node` 時，來源是登錄的非控制器節點（資料集中器、閘道、
      HMI 伺服器）：點名已知、沒有變數與邏輯，不是「checkout 外」。
    - 索引是 checkout 快照（`status` 顯示各控制器 MinorRev），不是現場控制器的即時狀態。
+   - 初始值可能是**人工更正**：`show` 的 value 行印 `[人工更正 <日期> <依據>; snapshot X]` 時，現場值是更正後的值、checkout 快照仍是 X，
+     回答時兩個都說並註明依據。更正登錄在 `tools/value_overrides.csv`（`ctrl,name,value,was,date,basis`）：工程師告知快照之後現場改了某個常數時加一列
+     （`was` = 快照裡的舊值），跑 `xref-reload`（或 build）生效。只有快照仍是 `was` 時才套用（`applied`）；換新快照後快照已是新值 → `merged`，
+     `status` 會提示這列可以刪；快照兩者都不是 → `conflict`，不套用、維持快照值，要回頭跟工程師確認。空白的 value/was、重複列、
+     欄數不對也是 `conflict`（看 `reason`），控制器不在索引 → `missing`；表頭不是 `ctrl,name,value,was,date,basis` 整份不套用（status ERROR）。
+     `show` 只有在 value 行有「人工更正」標籤時才算生效；印 `override applied ... NOT in effect` 時值是快照值，先跑 `xref-reload`。
 
 ## 列印邏輯圖（`print-scan` / `print-check` / `print-show`，以及 build 的 `[print]` 升格）
 

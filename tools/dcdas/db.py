@@ -12,7 +12,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = "13"
+SCHEMA_VERSION = "14"
 
 
 def local_dir() -> Path:
@@ -119,13 +119,24 @@ CREATE TABLE IF NOT EXISTS variable(
   referenced_in TEXT, alarm_id TEXT, alarm_class TEXT, alarm_definition TEXT, plant_area TEXT,
   potential_causes TEXT, operator_action TEXT, consequence TEXT, urgency TEXT,
   normal_severity INTEGER, active_severity INTEGER, is_program_local INTEGER DEFAULT 0,
-  decl_file TEXT, decl_line INTEGER, sub_of TEXT, UNIQUE(ctrl, name));
+  decl_file TEXT, decl_line INTEGER, sub_of TEXT, snap_value TEXT, UNIQUE(ctrl, name));
 CREATE INDEX IF NOT EXISTS ix_var_name ON variable(name);
 CREATE INDEX IF NOT EXISTS ix_var_alias ON variable(alias);
 CREATE INDEX IF NOT EXISTS ix_var_device ON variable(device_name);
 CREATE INDEX IF NOT EXISTS ix_var_addr ON variable(ctrl, address);
 CREATE INDEX IF NOT EXISTS ix_var_full ON variable(full_name);
 CREATE INDEX IF NOT EXISTS ix_var_sub ON variable(ctrl, sub_of);
+-- value = initial value in use: the snapshot's (snap_value) unless tools/value_overrides.csv corrects it (a constant changed in
+-- the field after the snapshot was taken). One row per CSV variable (ctrl, name); status: applied (value replaced),
+-- merged (the snapshot already holds the new value; the CSV row can go), conflict (not applied: the snapshot holds
+-- neither old nor new value, a blank value / was, a duplicate or malformed row), missing (unknown controller or no such
+-- variable); reason says why for every status but applied / merged. A row is in effect only while status = 'applied'
+-- AND variable.value = value_override.value AND variable.value IS NOT variable.snap_value (a --no-post build restores
+-- the snapshot values without re-applying the CSV).
+CREATE TABLE IF NOT EXISTS value_override(
+  ctrl TEXT, name TEXT, value TEXT, was TEXT, date TEXT, basis TEXT,
+  status TEXT CHECK(status IN ('applied','merged','conflict','missing')), snap_value TEXT, reason TEXT,
+  PRIMARY KEY(ctrl, name));
 
 CREATE TABLE IF NOT EXISTS pin_dir(
   block_type TEXT, pin_name TEXT, direction TEXT, source TEXT,

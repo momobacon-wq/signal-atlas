@@ -24,8 +24,8 @@ INSERT_SQL = """INSERT INTO variable(
   ctrl,name,full_name,description,datatype,address,scope,value,decl_connection,decl_program,decl_task,global_prefix,
   egd_page,alias,format_spec,units,disp_low,disp_high,display_screen,control_constant,device_name,referenced_in,
   alarm_id,alarm_class,alarm_definition,plant_area,potential_causes,operator_action,consequence,urgency,
-  normal_severity,active_severity,is_program_local,decl_file,decl_line,sub_of)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  normal_severity,active_severity,is_program_local,decl_file,decl_line,sub_of,snap_value)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(ctrl,name) DO UPDATE SET
   full_name=excluded.full_name, description=excluded.description, datatype=excluded.datatype, address=excluded.address,
   scope=excluded.scope, value=excluded.value, decl_connection=excluded.decl_connection, decl_program=excluded.decl_program,
@@ -36,7 +36,7 @@ ON CONFLICT(ctrl,name) DO UPDATE SET
   alarm_definition=excluded.alarm_definition, plant_area=excluded.plant_area, potential_causes=excluded.potential_causes,
   operator_action=excluded.operator_action, consequence=excluded.consequence, urgency=excluded.urgency,
   normal_severity=excluded.normal_severity, active_severity=excluded.active_severity, is_program_local=0,
-  decl_file=excluded.decl_file, decl_line=excluded.decl_line, sub_of=excluded.sub_of"""
+  decl_file=excluded.decl_file, decl_line=excluded.decl_line, sub_of=excluded.sub_of, snap_value=excluded.snap_value"""
 
 
 def _f(v):
@@ -80,6 +80,7 @@ def row_from_attrib(ctrl: str, a, decl_file: str, line: int, is_program_local: i
         alarm_id, a.get("AlarmClass"), alarm_def, a.get("PlantArea"), a.get("PotentialCauses"),
         a.get("OperatorAction"), a.get("ConsequenceOfInaction"), a.get("OperatorUrgency"),
         _i(a.get("NormalSeverity")), _i(a.get("ActiveSeverity")), is_program_local, decl_file, line, sub_of,
+        a.get("Value"),   # snap_value: the value as the snapshot states it (value may later be corrected by value_overrides.csv)
     )
 
 

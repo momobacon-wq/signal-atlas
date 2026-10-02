@@ -289,13 +289,29 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
                              WHERE p.lib_name LIKE '{Alarm}.%'"""):
         sub_pin[(r[0], r[1])] = (r[2], r[3], r[4])
     var_val = {r[0]: r[1] for r in conn.execute("SELECT id, value FROM variable WHERE control_constant=1 OR sub_of IS NOT NULL")}
+    # tools/value_overrides.csv rows in effect: variable.value really holds the corrected value (status applied alone is not
+    # enough: a --no-post build restores the snapshot values); the card says so (d.vo)
+    try:
+        from . import resolve as _res
+    except ImportError:
+        from dcdas import resolve as _res
+    vo_applied = {}
+    try:
+        for r in conn.execute("""SELECT v.id, o.snap_value, o.date, o.basis FROM value_override o
+                                 JOIN variable v ON v.ctrl=o.ctrl AND v.name=o.name WHERE """ + _res.VO_IN_EFFECT_SQL):
+            vo_applied[r[0]] = [r[1], r[2], r[3]]
+    except sqlite3.OperationalError:
+        pass
     subs_of = defaultdict(list)
     for r in conn.execute("""SELECT ctrl, sub_of, name, datatype, alarm_class, egd_page, alias FROM variable
                              WHERE sub_of IS NOT NULL ORDER BY ctrl, name"""):
         sp = sub_pin.get((r[0], r[2]))
         src = var_name.get(sp[2]) if sp and sp[1] == "V" and sp[2] else None
-        subs_of[(r[0], r[1])].append([r[2].rsplit(".", 1)[-1], r[3] or "", r[4] or "", sp[0] if sp else "", src,
-                                      var_val.get(sp[2]) if src else None, r[5] or "", r[6] or ""])
+        row = [r[2].rsplit(".", 1)[-1], r[3] or "", r[4] or "", sp[0] if sp else "", src,
+               var_val.get(sp[2]) if src else None, r[5] or "", r[6] or ""]
+        if src and sp[2] in vo_applied:
+            row.append(1)       # the source value is a manual correction (see the source's card d.vo)
+        subs_of[(r[0], r[1])].append(row)
     for r in conn.execute("SELECT " + ",".join(cols) + " FROM variable ORDER BY ctrl,name"):
         v = dict(zip(cols, r))
         vid = v["id"]
@@ -334,6 +350,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
             "hmi": hmi.get(vid, []), "watch": watch.get(vid, []),
             "drg": sorted(drg.get(vid, ())), "enc": enc,
         }
+        if vid in vo_applied:
+            card["d"]["vo"] = vo_applied[vid]
         if v["sub_of"]:
             card["d"]["sub"] = v["sub_of"]
             if vid in mirror and mirror[vid].get("kind") == "I":

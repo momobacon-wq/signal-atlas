@@ -80,8 +80,8 @@ INSERT_LOCAL_VAR = """INSERT INTO variable(id,
   ctrl,name,full_name,description,datatype,address,scope,value,decl_connection,decl_program,decl_task,global_prefix,
   egd_page,alias,format_spec,units,disp_low,disp_high,display_screen,control_constant,device_name,referenced_in,
   alarm_id,alarm_class,alarm_definition,plant_area,potential_causes,operator_action,consequence,urgency,
-  normal_severity,active_severity,is_program_local,decl_file,decl_line,sub_of)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+  normal_severity,active_severity,is_program_local,decl_file,decl_line,sub_of,snap_value)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
 INSERT_PIN = """INSERT INTO pin(id,block_id,name,conn_kind,connection,var_id,tgt_block_id,tgt_pin,address,value,alias,
 alias_override,usage_declared,description,line_no,lib_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
 

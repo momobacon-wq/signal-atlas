@@ -1,0 +1,16 @@
+ctrl,name,value,was,date,basis
+# manual corrections of a variable's initial value (control constants changed in the field after the snapshot was taken).
+# Loaded on every build / xref-reload: value replaces the snapshot's only while the snapshot still holds `was` (status
+# applied). Once a newer snapshot already holds `value` the row is reported as merged and can be deleted; a snapshot that
+# holds neither is a conflict and the row is NOT applied. Lines starting with # are ignored.
+# The header line must stay exactly ctrl,name,value,was,date,basis (otherwise nothing is applied). A blank value or was,
+# value == was, a value that is not a plain number for a numeric constant, the same ctrl,name on two rows, or a row of
+# other than 6 fields is a conflict and is NOT applied.
+G11,K63CDHDAS3_H,24,16,2026-10-02,原廠工程部提出修正
+G11,K63CDHDAS3_HH,28,20,2026-10-02,原廠工程部提出修正
+G11,CDKHDASHXWL_H,24,16,2026-10-02,原廠工程部提出修正
+G11,CDKHDASHXWL_HH,28,20,2026-10-02,原廠工程部提出修正
+G12,K63CDHDAS3_H,24,16,2026-10-02,原廠工程部提出修正
+G12,K63CDHDAS3_HH,28,20,2026-10-02,原廠工程部提出修正
+G12,CDKHDASHXWL_H,24,16,2026-10-02,原廠工程部提出修正
+G12,CDKHDASHXWL_HH,28,20,2026-10-02,原廠工程部提出修正

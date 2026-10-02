@@ -52,6 +52,15 @@ py tools/auth/mock_server.py 8766       # 本機開 http://127.0.0.1:8766/（閘
 ```
 手冊方向表：`py tools/dcdas.py pindir-import`（從廠商 Block Library PDF 重抽 `tools/pin_dir_table.csv`）；
 人工修正寫進 `tools/pin_dir_overrides.csv`（`block_type,pin_name,direction,note`），下次 build 生效。
+
+**人工更正初始值**：快照之後現場改過的常數（初始值），登錄在 `tools/value_overrides.csv`
+（`ctrl,name,value,was,date,basis`：新值、快照裡的舊值、日期、依據），`build` 或 `xref-reload` 生效。索引同時保留快照值
+（`variable.snap_value`），每列的狀態記在 `value_override` 表：快照仍是 `was` → `applied`（改用新值，`show` 與網頁標「人工更正」並列出快照值）；
+換了新快照、快照已經是新值 → `merged`（`status` 會提示，這列可以刪掉）；快照兩者都不是 → `conflict`，**不套用**、維持快照值，
+請重新確認現場值再改這一列；`value` 或 `was` 空白、`value` = `was`、同一變數重複登錄、欄數不是 6 → 也是 `conflict`（一律不套用，
+`reason` 欄寫原因）；控制器不在索引裡或找不到變數 → `missing`。表頭必須正好是 `ctrl,name,value,was,date,basis`，否則整份不套用、
+`status` 印 ERROR。`status` 印出各狀態的列數與原因；`applied` 卻沒生效（例如跑過 `build --no-post`，值是快照值）時印 WARN、
+不印 fresh，跑 `xref-reload` 或 build 即可。
 `export-web --no-encrypt` 只供本機測試，產物不得 push。
 
 ## 給 Claude Code

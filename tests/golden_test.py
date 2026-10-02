@@ -200,8 +200,74 @@ def main():
     import json as _json
     rec = _json.loads(one(conn, "SELECT value FROM meta WHERE key='csv_sha1'") or "{}")
     check("meta csv_sha1 records the current hand-maintained CSVs (status can detect drift)", rec == _res.csv_fingerprints(Path(__file__).resolve().parents[1] / "tools"), str(rec))
+    # ---- manual value corrections (tools/value_overrides.csv): constants changed in the field after the snapshot
+    st = _res.override_status
+    check("override_status: applied / merged / conflict / missing, numeric equality ('16' == '16.0'); blank value / was "
+          "and value == was are conflicts; '1_6' / 'inf' / fullwidth digits are not numbers (as was or as value)",
+          (st("16", "16", "24"), st("16.0", "16", "24"), st(" 24 ", "16", "24"), st("20", "16", "24"), st(None, "16", "24", exists=False),
+           st(None, "", "1"), st("16", "16", ""), st("16", "16", " "), st("16", "16", "16.0"), st("abc", "abd", "x"),
+           st("16", "1_6", "24"), st("inf", "Infinity", "1"), st("1e1", "10", "24"), st("16", "\uff11\uff16", "24"),
+           st("16", "16", "abc"), st("16", "16", "2_4"), st("16", "16", "\uff12\uff14"), st("True", "True", "False"))
+          == ("applied", "applied", "merged", "conflict", "missing",
+              "conflict", "conflict", "conflict", "conflict", "conflict",
+              "conflict", "conflict", "applied", "conflict",
+              "conflict", "conflict", "conflict", "applied"))
+    # hermetic: load_value_overrides on an in-memory index with a scratch CSV (bad rows must never apply)
+    import tempfile as _tf
+    mem = sqlite3.connect(":memory:")
+    mem.executescript(dbm.DDL)
+    mem.executemany("INSERT INTO controller(name) VALUES(?)", [("ZA1",), ("ZB1",)])
+    mem.executemany("INSERT INTO variable(ctrl,name,full_name,value,snap_value) VALUES(?,?,?,?,?)",
+                    [(c, n, f"{c}.{n}", v, v) for c, n, v in
+                     (("ZA1", "K_OK", "16"), ("ZA1", "K_BLANKV", "16"), ("ZA1", "K_BLANKW", "16"), ("ZA1", "K_DUP", "16"),
+                      ("ZA1", "K_US", "16"), ("ZB1", "K_OLD", "5"), ("ZA1", "K_MERGED", "24"))])
+    mem.execute("UPDATE variable SET value='9' WHERE name='K_OLD'")       # left over from an earlier run, row gone from the CSV
+    mem.execute("INSERT INTO value_override(ctrl,name,value,was,status) VALUES('ZB1','K_OLD','9','5','applied')")
+    hdr = "ctrl,name,value,was,date,basis\n"
+    body = ("# comment\nZA1,K_OK,24,16,d,b\nZA1,K_BLANKV,,16,d,b\nZA1,K_BLANKW,24,,d,b\nZA1,K_DUP,24,16,d,b\nZA1,K_DUP,24,16,d,b\n"
+            "ZA1,K_US,24,1_6,d,b\nZZ9,K_OK,24,16,d,b\nZA1,K_NONE,24,16,d,b\nZA1,K_MERGED,24,16,d,b\n")
+    with _tf.TemporaryDirectory() as td:
+        (Path(td) / _res.VO_CSV).write_text(hdr + body, encoding="utf-8")
+        tot = _res.load_value_overrides(mem, td, log=lambda *a: None)
+        recs = {(r[0], r[1]): (r[2], r[3] or "") for r in mem.execute("SELECT ctrl, name, status, reason FROM value_override")}
+        vals = {r[0]: r[1] for r in mem.execute("SELECT full_name, value FROM variable")}
+        exp = {("ZA1", "K_OK"): "applied", ("ZA1", "K_BLANKV"): "conflict", ("ZA1", "K_BLANKW"): "conflict",
+               ("ZA1", "K_DUP"): "conflict", ("ZA1", "K_US"): "conflict", ("ZZ9", "K_OK"): "missing",
+               ("ZA1", "K_NONE"): "missing", ("ZA1", "K_MERGED"): "merged"}
+        check("load_value_overrides: every CSV row classified once (blank value/was, duplicate, '1_6', unknown controller, "
+              "missing variable never apply; an earlier correction of a row no longer in the CSV is restored and its row cleared)",
+              {k: v[0] for k, v in recs.items()} == exp and "duplicate" in recs[("ZA1", "K_DUP")][1]
+              and recs[("ZZ9", "K_OK")][1] == "unknown controller" and "blank value" == recs[("ZA1", "K_BLANKV")][1]
+              and vals == {"ZA1.K_OK": "24", "ZA1.K_BLANKV": "16", "ZA1.K_BLANKW": "16", "ZA1.K_DUP": "16", "ZA1.K_US": "16",
+                           "ZB1.K_OLD": "5", "ZA1.K_MERGED": "24"}
+              and tot["applied"] == 1 and tot["conflict"] == 4 and tot["missing"] == 2,
+              f"{sorted(recs.items())} {vals}")
+        (Path(td) / _res.VO_CSV).write_text("ctrl,name,value,was,date\n" + body, encoding="utf-8")
+        tot = _res.load_value_overrides(mem, td, log=lambda *a: None)
+        n_rec = mem.execute("SELECT count(*) FROM value_override").fetchone()[0]
+        n_diff = mem.execute("SELECT count(*) FROM variable WHERE value IS NOT snap_value").fetchone()[0]
+        check("load_value_overrides: a CSV without the exact header applies nothing (header_error, no rows, all values restored)",
+              bool(tot["header_error"]) and n_rec == 0 and n_diff == 0, f"{tot} rows {n_rec} diff {n_diff}")
+    mem.close()
+    want = {(c, n): (new, old) for c in ("G11", "G12") for n, new, old in
+            (("K63CDHDAS3_H", "24", "16"), ("K63CDHDAS3_HH", "28", "20"), ("CDKHDASHXWL_H", "24", "16"), ("CDKHDASHXWL_HH", "28", "20"))}
+    got = {(r[0], r[1]): (r[2], r[3], r[4], r[5]) for r in conn.execute(
+        """SELECT o.ctrl, o.name, o.status, v.value, v.snap_value, o.snap_value FROM value_override o
+           JOIN variable v ON v.ctrl=o.ctrl AND v.name=o.name""")}
+    check("value overrides: the 8 G11/G12 HDAS level thresholds applied (value = corrected, snap_value = snapshot)",
+          all(got.get(k) == ("applied", new, old, old) for k, (new, old) in want.items()), str(sorted(got.items()))[:300])
+    ndiff = one(conn, "SELECT count(*) FROM variable WHERE value IS NOT snap_value")
+    neff = one(conn, "SELECT count(*) FROM value_override o JOIN variable v ON v.ctrl=o.ctrl AND v.name=o.name WHERE "
+               + _res.VO_IN_EFFECT_SQL)
+    check("only in-effect overrides make value differ from snap_value, and every applied row is in effect",
+          ndiff == neff == sum(1 for x in got.values() if x[0] == "applied"), f"diff {ndiff} in effect {neff}")
     from dcdas import query as _qd
-    du = _qd.diff_units(conn, "G11", "G12", what="all", limit=5)
+    sh_ = _qd.show(conn, "G11.K63CDHDAS3_H")
+    check("show G11.K63CDHDAS3_H: value 24 with value_override (snapshot 16)",
+          sh_["def"]["value"] == "24" and (sh_["def"].get("value_override") or {}).get("snap_value") == "16"
+          and (sh_["def"].get("value_override") or {}).get("in_effect") is True
+          and "corrected; snapshot 16" in (sh_.get("source") or ""), str(sh_["def"].get("value_override")))
+    du =_qd.diff_units(conn, "G11", "G12", what="all", limit=5)
     check("diff-units G11 G12 compares > 5000 constants and reports differences", du.get("n_constants_compared", 0) > 5000 and du.get("n_constants", 0) >= 1, f"{du.get('n_constants_compared')} compared, {du.get('n_constants')} differ")
     cp = {r[0]: r[1] for r in conn.execute("""SELECT p.name, p.origin FROM pin p JOIN block b ON b.id=p.block_id
                          WHERE b.ctrl='H11' AND b.path='HRSG_Protection_1/FNCTN_Condpress/2oo3_Basic_2'""")}

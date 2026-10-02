@@ -561,6 +561,18 @@ def main():
         bad = one(pconn, "SELECT count(*) FROM print_sheet s JOIN print_pdf p ON p.id=s.pdf_id "
                          "WHERE p.name='G11_P.pdf' AND s.page=2692 AND s.block_prefix='Exciter/SW_IN'")
         check("the Software Path cell is found even with a second 'Software' word in the strip (G11 p2692)", bad == 1, str(bad))
+        check("a library-qualified program name (Lib\\Prog.Task) is a Software Path; a backslash outside the program segment is not",
+              bool(_pei.SWPATH.match(r"LibA\Seq_1.Task_1")) and not _pei.SWPATH.match(r"Prog.Task\X")
+              and not _pei.SWPATH.match(r"\Prog.Task"))
+        lib = {r[0]: r[1] for r in conn.execute(r"SELECT ctrl, count(*) FROM program WHERE name LIKE '%\%' AND block_count > 0 GROUP BY ctrl")}
+        got = {r[0]: r[1] for r in pconn.execute(r"SELECT s.ctrl, count(*) FROM print_sheet s JOIN print_pdf p ON p.id=s.pdf_id "
+                                                 r"WHERE p.gate_status='pass' AND s.program LIKE '%\%' AND s.map_method='exact' GROUP BY s.ctrl")}
+        drawn = {r[0] for r in pconn.execute("SELECT ctrl FROM print_pdf WHERE gate_status='pass'")}
+        check("every library-qualified program on a controller with a print resolves its sheets",
+              all(got.get(c, 0) > 0 for c in lib if c in drawn), f"programs {lib} sheets {got}")
+        bad = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.block_type='OUTXFER' "
+                        "AND p.name='DESTVAR' AND p.direction='I'")
+        check("no OUTXFER.DESTVAR is an input (the drawing puts the destination on the output side)", bad == 0, str(bad))
         bad = one(pconn, "SELECT count(*) FROM print_pin WHERE wire_kind='field'")
         check("no 'Block.PIN' link is filed as a field of a same-named variable", bad == 0, str(bad))
         bad = one(pconn, "SELECT count(*) FROM print_pin WHERE wire_kind='default' AND var_name IS NOT NULL")

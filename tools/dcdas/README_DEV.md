@@ -209,7 +209,7 @@ SFC 動作頁的 Software Path 會剛好截在 `.Action_Logic_<步驟>` 之前�
 （小方塊貼在大框邊上，x 座標相同），歸給列座標落在自己框內、面積最小的那顆。
 
 圖面身分：標題欄的 `Device Name` 是控制器、`Software Path` 是 `Program.Task[.UserBlock…]`，把 `.` 換成 `/`
-就是 `block.path` 的前綴。那格會在 76–86 字元處**直接截斷、不加省略號**，所以 `resolve_sheet_path` 分四種：
+就是 `block.path` 的前綴。程式庫程式的程式名帶反斜線（`LibA\Seq_1.Task`），反斜線只允許出現在程式那一段（`SWPATH`）。那格會在 76–86 字元處**直接截斷、不加省略號**，所以 `resolve_sheet_path` 分四種：
 `exact`（前綴就是索引的容器）、`repair`（截斷；補全必須唯一，否則不猜）、`internals`（前綴指到的是一顆**方塊**，
 這張圖畫的是該不透明巨集的內部，索引根本沒有這些子方塊）、`none`（放棄，該張不產生方塊路徑）。
 

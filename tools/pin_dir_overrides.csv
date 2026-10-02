@@ -37,3 +37,4 @@ SFC_CONTROL_INTERFACE,Transition_Holds_Array,S,SFC scaffolding array shared by t
 SFC_CONTROL_INTERFACE,Transition_Previous_Free_Running_Holds_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
 SFC_CONTROL_INTERFACE,Transition_Progression_Status_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
 SFC_CONTROL_INTERFACE,Transitions_Array,S,SFC scaffolding array shared by the plaintext step UserBlocks (read and written by both sides): state, not a writer; scalar pins (Complete/Run/Reset/...) stay unknown until a tool photo
+OUTXFER,DESTVAR,O,destination written while ENABLE is true; every printed sheet draws it on the output side

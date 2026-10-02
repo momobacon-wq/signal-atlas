@@ -80,8 +80,9 @@ BOOLLIT = {"TRUE", "FALSE"}            # compared upper-cased
 ENUMLIT = re.compile(r"^[A-Z][A-Z0-9_]+(-[A-Z][A-Z0-9_]+)+$")
 # bare marker glyphs the sheet prints beside a wire; never a variable
 MARKERS = {"EGD", "A", "N", "S", "R", "T", "P", "I", "O", "BQ", "L", "H"}
-# program / task / block names may carry "-" and "&" (e.g. "ST_LPExhP-TAL")
-SWPATH = re.compile(r"^[A-Za-z0-9_&-]+(\.[A-Za-z0-9_&-]+)*$")
+# program / task / block names may carry "-" and "&" (e.g. "ST_LPExhP-TAL"); a library-qualified
+# program name (Lib\Prog) carries a backslash, in the program segment only
+SWPATH = re.compile(r"^[A-Za-z0-9_&-]+(\\[A-Za-z0-9_&-]+)*(\.[A-Za-z0-9_&-]+)*$")
 
 PRINT_SCHEMA = "7"
 

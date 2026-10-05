@@ -115,6 +115,8 @@
       b.ver ? D.kv('版本', D.mono(b.ver)) : null,
       b.drg || b.pid ? D.kv('邏輯圖 / P&ID', D.frag(D.mono(D.val(b.drg)), '  ', D.mono(D.val(b.pid)))) : null,
       entry && entry.task.drg && entry.task.drg !== b.drg ? D.kv('所屬 Task 邏輯圖', D.frag(D.mono(entry.task.drg), ' ', D.h('span', { class: 'muted small', text: '（' + segs[1] + (entry.task.type ? ' · ' + entry.task.type : '') + '）' }))) : null,
+      b.eo != null ? D.kv('執行順序', D.frag(D.h('span', { class: 'eo-chip', text: String(b.eo) }), ' ', D.h('span', { class: 'muted small', text: '取自列印邏輯圖' }))) : null,
+      b.pc ? D.kv('列印圖', D.mono(D.pvText(b.pc))) : null,
       b.device ? D.kv('裝置', D.mono(b.device)) : null,
       b.hmi ? D.kv('HMI', typeof b.hmi === 'string' ? D.h('a', { href: D.hrefS(b.hmi), class: 'lk mono', text: b.hmi }) : D.mono(JSON.stringify(b.hmi))) : null));
     const attrs = Object.entries(b.attrs || {});
@@ -136,8 +138,20 @@
       D.table(D.PIN_HEADS, pins.map((p) => pinRow(p, mm ? mm.get(key + '#' + p[0]) : null, pvMap[key + '#' + p[0]] || null)), 'pins'));
     else if (oi && oi.kind === 'cat') pinsBody = D.catalogueTable(oi.cat);
     else pinsBody = D.empty(b.opaque ? '介面加密，無可見腳位' : '沒有腳位');
+    // 方塊圖示（glyph.js；同邏輯圖裡的畫法，放大顯示）：RUNG = 梯形圖，比較器 = 運算子…；型別沒有圖示或常數無法確定 → 不畫
+    const gs = D.glyph ? D.glyph.of(b.type, pins) : null;
+    let glyphEl = null;
+    if (gs) {
+      const pad = 6, k = gs.kind === 'ladder' ? 1.6 : 2.4;
+      const ports = new Map(pins.map((p) => [p[0], { id: key + '#' + p[0] }]));
+      glyphEl = D.h('div', { class: 'gl-solo-wrap' },
+        D.svg('svg', { class: 'dg-svg gl-solo', viewBox: [0, 0, gs.w + pad * 2, gs.h + pad * 2].join(' '), width: Math.round((gs.w + pad * 2) * k), height: Math.round((gs.h + pad * 2) * k), role: 'img', 'aria-label': gs.title || b.type },
+          D.glyph.draw(gs, { x: pad, y: pad, ports })),
+        gs.title ? D.h('p', { class: 'muted small mono', text: gs.title }) : null);
+    }
     const secs = [
       D.section('基本資料', meta),
+      glyphEl ? D.section('圖示（列印邏輯圖的符號）', glyphEl) : null,
       D.section('屬性（attrs）', attrs.length ? D.h('table', { class: 'kv' }, D.h('tbody', null, attrs.map(([k, v]) => D.kv(k, D.mono(v == null ? '—' : String(v)))))) : D.empty('無屬性'), { count: attrs.length, open: attrs.length > 0 }),
       D.section('腳位（pins）', pinsBody, { count: pins.length || (oi && oi.kind === 'cat' ? oi.n : 0), note: oi && oi.kind === 'cat' && !pins.length ? '程式庫目錄' : null }),
     ];

@@ -14,7 +14,7 @@ tools/stamp_assets.py          index.html 資產加 ?v=<hash>、version.json
 docs/index.html                單頁 App（vanilla JS，無 build step，CSP script-src 'self'，noindex）
 docs/robots.txt                Disallow: /
 docs/assets/                   boot.js、auth.js（員工代號閘門）、app.css、core.js、search.js、signal.js、trace.js、block.js、io.js、browse.js、
-                               diagram.js（方塊圖引擎 D.dg）、dtask.js（Task 圖）、dsignal.js（訊號圖）、dagre.min.js（vendored 3.1.1，MIT，圖頁才載入）
+                               glyph.js（方塊圖示 D.glyph：列印圖畫法的符號與 RUNG 梯形圖）、diagram.js（方塊圖引擎 D.dg）、dtask.js（Task 圖）、dsignal.js（訊號圖）、dagre.min.js（vendored 3.1.1，MIT，圖頁才載入）
 docs/data/                     export-web 的輸出（下）
 ```
 
@@ -121,7 +121,7 @@ task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 
 }}}}
 ```
 - `b` 的鍵順序 = 原始 XML 文件順序，第一筆是 task 根（`kind:"task"`，其 `pins` 為介面腳）；巢狀 UserBlock 內的方塊同在此 entry（同 task）。
-- 方塊記錄欄位同前（`ctrl program path name type kind ver opaque desc drg pid device hmi attrs pins line file`），新增可選 `lay`（`BlockLayoutData`，同層的 1-based 繪圖順序，含 UserBlock；缺值省略）。空欄位/空陣列/0 一律省略。
+- 方塊記錄欄位同前（`ctrl program path name type kind ver opaque desc drg pid device hmi attrs pins line file`），新增可選 `lay`（`BlockLayoutData`，同層的 1-based 繪圖順序，含 UserBlock；缺值省略）；可選 `eo`（執行順序，取自列印邏輯圖標題旁的數字）與 `pc`（`[pdf, page, cell]`，該方塊在列印圖上的位置），只有列印圖通過 gate 且建置相符、圖頁路徑確定（exact／repair）的方塊才有。空欄位/空陣列/0 一律省略。
 - 腳位 tuple 第 11 欄 `desc` = 腳位自身的描述（`Pin@Description` 第一行；無則 `null`），例如產生器方塊 `L4TTRP_OVR.IN1` = "Generator LCI Trip"。
 - 腳位 tuple 第 12 欄 `org` = 腳位來源：`null` = XML 明文；`"d"` = **回推自宣告在該腳位的變數**；`"l"` = **回推自鄰近方塊的 `L:` 連線**；`"p"` = **同編號配對**（不透明 `AI_INT_k` 的 `IN` 接同層 `AI_k` 的 `{Device}` 輸出或 `FF_AI_k` 的 `OUT` 變數；`AI_k` 配對再依命名補 `OUT`→`ai_<stem>`、`DEVICE_STATUS`→`<stem>_DS`，且該變數的 `ReferencedIn` 須含此程式而程式內無可見引用；命名推斷、方向 I/O／`R`）；`"v"` = **三取二表決推斷**（不透明 `2oo3_Basic`，task `FNCTN_<stem>`：`INA/INB/INC` 接程式內只在加密方塊引用的 `(ai_)<stem>[_Alt]{A,B,C}[Crctd]` 變數、`BQA/BQB/BQC` 接 `<輸入>.BQ` 警報子變數或 `<輸入>_BQ` 變數（程式內加密引用者優先；皆無時才是無變數的 `conn_kind D` 欄位列）、`HYST` 接唯一的 `k_…<stem>…_HYST`；task 內只有一顆表決器時再補 `HI_LIMIT` ← 唯一的 `k_…_SP`、`OUT` → 唯一無寫入者的 `PRO_<stem>*Hi|Lo`；一顆實例經工具確認、其餘為推斷，方向來源 `R`）；`"x"` = **人工登錄**（`tools/xref_manual.csv`；`grade` 欄 tool = 使用者在組態工具的交互參照或邏輯圖看到 → 方向來源 `T`；mirror／infer = 從另一台控制器鏡射或依規律推論 → 方向來源 `M`，徽章同樣「登錄」但來源字母不同）；`"g"` = **圖面**（腳位列取自組態工具**列印的邏輯圖**：XML 隱藏、圖面畫在不透明巨集上的腳，或被圖面更正的推斷列；
   是權威證據而非推斷，方向通常為 `G`（左側入、右側出），前端徽章「圖」、圖面色；出處見 entry 的 `pv`）。只出現在不透明巨集
@@ -158,11 +158,19 @@ task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 
 ## 方塊圖規則（`diagram.js` / `dtask.js` / `dsignal.js`）
 
 - 原始組態工具的圖面座標不可得（`DiagramXML` 為專有壓縮格式），用 dagre 自動排版；`lay`（缺值則文件順序）決定同層排序與「頁」的閱讀順序；孤立方塊依連通群組分別排版再依序打包成欄。
-- 走線只畫資料裡確定的關係：同 task 內 `L:` 接線（消費端指向來源）、同 task 內一寫（≤2）多讀（≤扇出上限）的變數——扇出上限由工具列「扇出」循環 4 / 8 / 全部（`?fan=4|8|all` 只影響本次；偏好存 `localStorage atlas.dg.fan`；預設 8），只因上限而改用標籤的變數數寫在狀態列（「N 個變數超過扇出上限改用標籤」）；其他變數以腳位旁的 xref 標籤呈現（左入右出），點標籤高亮同名所有端點；`P` 介面腳標籤 `⟨pin⟩`；`N/E` 常數為腳位行內文字；`A/D` 預設隱藏。
+- 走線只畫資料裡確定的關係：同 task 內 `L:` 接線（消費端指向來源）、同 task 內一寫（≤2）多讀（≤扇出上限）的變數——扇出上限由工具列「扇出」循環 4 / 8 / 全部（`?fan=4|8|all` 只影響本次；偏好存 `localStorage atlas.dg.fan`；預設 8），只因上限而改用標籤的變數數寫在狀態列（「N 個變數超過扇出上限改用標籤」）；其他變數以腳位旁的 xref 標籤呈現（左入右出），點標籤高亮同名所有端點；`P` 介面腳標籤 `⟨pin⟩`；`N/E` 常數為腳位行內文字（已由方塊圖示畫出的常數腳除外，見下）；`A/D` 預設隱藏。
 - 方向來自索引的推斷值（腳位徽章顯示來源字母）；`?` 方向腳以虛線/灰色；多寫入者變數走線為紅色虛線；不透明 UserBlock 斜紋框、不可展開。
 - 圖面（org `g` 或方向來源 `G`）：port、腳位標籤與任一端為圖面腳的走線（`L:` 與同變數走線）用圖面色（青綠，class `src-g`，自有箭頭；多寫入者紅色仍優先）；腳位名旁徽章「圖」（回推「推」、人工登錄「錄」）；腳位 `<title>` 與側欄／方塊頁「來源」欄附 `圖面 <pdf> p<page> <cell>`（`pv`）。Task 圖中 org `g` 且 `conn_kind` 為 V/L/N/E 的腳一律顯示（不受 `vu`／夥伴條件限制）。工具列「圖例」開浮動面板（`#legend-pop`）說明線型、斜紋框與徽章。
 - 不透明巨集：回推腳位（`org` 非空）顯示規則同「宣告在腳位」的變數腳（有夥伴／有人用／`?pins=1` 才畫），腳位名旁標「推」；有 `rc` 的方塊副標「介面回推 N 腳（可能不完整）」（有圖面腳時為「圖面 N 腳＋回推 M 腳」）；
   沒有回推腳但 `lib_iface` 有型別 → 側欄／方塊頁列「目錄介面」；都沒有 → 框內「介面加密，無可見腳位」。訊號圖／追蹤圖遇到有回推腳位的不透明方塊照常經由其腳位擴展，只有無腳位者才是「無法追蹤內部」葉。
+- 方塊圖示（`glyph.js`，Task 圖、訊號圖、方塊頁共用）：依型別與字面常數畫出列印邏輯圖的符號——RUNG 依 `EQN` 畫梯形圖（排法與全部列印的 RUNG 逐格相同；接點標腳位字母、斜線 = 常閉、線圈在第 0 列；字母必須正好等於方塊的輸入腳，否則退回 `EQN = …` 文字）、
+  COMPARE 依 `FUNC` 畫 ≥ > < = ≤ ≠（GT/LT/EQ… 型別同）（數值 `N:1` 列印為 >，其他數值不畫）、HI_LO_MON 的 H/L 方框、NOT／AND／OR 閘、LATCH 的 S/R（圈出優先的一邊：`RDOM` True → R、False 或未設定（程式庫預設 FALSE）→ S，接變數不圈）、
+  MIN_MAX 的 MAX/MIN（未設定 = 預設 MIN，同列印圖）、SELECT 的 CASC 接點加每對 INn／SELn 一個開關（兩者個數不同就不畫）、MOVE 箭頭、ON_OFF_DELAY 的 IN/OUT 波形（`PU_DEL`／`DO_DEL` 未設定 = 0 不畫延時；字面常數標數值、接變數只畫延時不標值）、PULSE 脈波與寬度（ms）等。
+  被圖示畫出的字面常數腳（`FUNC`、`EQN`、ON_OFF_DELAY 的常數延時、PULSE 的常數寬度）不再畫成腳位，側欄與方塊頁腳位表照列；`?pins=1` 時照畫。圖示擺在左右腳位名之間（放不下或完整說明模式有腳位描述時放在腳位下方）。
+  梯形圖接點 `<title>` 列字母、常開／常閉與所接變數，點接點 = 點該變數（高亮）；訊號圖只畫出部分輸入腳時，畫出的那幾個接點加亮。常數不是字面值、或型別沒有圖示時不畫（寧缺勿錯）。
+- 執行順序：方塊有 `eo` 時標題列右側畫紅底黃字小框（數字同列印圖；列印圖上 RUNG、UserBlock 與安全控制器的方塊用白框，網頁一律紅底黃字），tooltip／側欄／方塊頁附列印圖位置（`pc`）；
+  沒有列印圖的方塊不標（不用 `lay` 或檔案順序代替：兩者在部分 task 與列印的數字不同）。安全控制器的列印圖只畫方框不畫符號，網頁仍畫同型別的符號。
+- 走線上的變數名標籤沿所在線段找不壓到任何方塊的位置（避免蓋住圖示、常閉斜線或執行順序），找不到就不畫（名稱仍在走線 tooltip）。
 - 規模：Task 圖 ≤300 方塊全畫，301–1000 依連通群組分頁，>1000 先篩選；訊號圖由 BFS 的 200 節點上限保護。
 - 訊號圖隱藏分支（只影響顯示，不改資料）：方塊／變數的側欄「隱藏此分支」把該節點藏起來，只畫拿掉隱藏節點後仍與根訊號連通的部分（只經由它連到根的整支一起不畫，另有路徑的共用節點留著）；
   「只看此路徑」把根↔該節點有向路徑上各節點的其他非葉鄰居加入隱藏（該節點後面那一支保留；根不當中繼，經由根繞回的自鎖迴路不算路徑）。被切斷的腳位一律接虛線「⋯ 已隱藏」標記（同一腳上下游各一；多寫入者／EGD 樣式保留；列印／匯出 SVG 也保留，避免被讀成未接線），點標記列清單逐一還原、雙擊全部還原；

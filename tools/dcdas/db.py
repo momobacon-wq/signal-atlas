@@ -12,7 +12,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = "14"
+SCHEMA_VERSION = "15"
 
 
 def local_dir() -> Path:
@@ -104,6 +104,8 @@ CREATE TABLE IF NOT EXISTS pin(
   origin TEXT CHECK(origin IN ('decl','link','pair','vote','xref','print')), lib_name TEXT, UNIQUE(block_id, name));
 -- where on the printed logic sheets a pin promoted from them (origin 'print' or dir_source 'G') is drawn
 CREATE TABLE IF NOT EXISTS pin_cite(pin_id INTEGER PRIMARY KEY, pdf TEXT NOT NULL, page INTEGER NOT NULL, cell TEXT);
+-- a block's execution order as printed beside its title on the logic sheets, and where it is drawn (schema 15)
+CREATE TABLE IF NOT EXISTS block_cite(block_id INTEGER PRIMARY KEY, exec_order INTEGER NOT NULL, pdf TEXT NOT NULL, page INTEGER NOT NULL, cell TEXT);
 CREATE INDEX IF NOT EXISTS ix_pin_origin ON pin(origin);
 CREATE INDEX IF NOT EXISTS ix_pin_var ON pin(var_id, direction);
 CREATE INDEX IF NOT EXISTS ix_pin_block ON pin(block_id);

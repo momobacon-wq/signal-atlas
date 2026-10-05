@@ -432,6 +432,24 @@ def main(docs):
             if pbad <= 5:
                 err(f"printed-sheet cite {ctrl_}|{path_}#{pin_}: {got} vs {[pdf_, page_, cell_]}")
     (ok if not pbad else err)(f"sampled {min(20, len(prows))} of {len(prows)} pins promoted from the printed sheets, {pbad} cite mismatches")
+    # ---- execution order printed beside each block's title (block_cite): the block record's eo / pc
+    has_bc = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='block_cite'").fetchone()
+    brows = conn.execute("SELECT b.ctrl, b.path, c.exec_order, c.pdf, c.page, c.cell FROM block_cite c JOIN block b ON b.id=c.block_id").fetchall() if has_bc else []
+    ebad = 0
+    for ctrl_, path_, eo_, pdf_, page_, cell_ in random.sample(brows, min(20, len(brows))):
+        rec = ((task_entry(tkey_of(ctrl_, path_)) or {}).get("b") or {}).get(f"{ctrl_}|{path_}") or {}
+        if rec.get("eo") != eo_ or rec.get("pc") != [pdf_, page_, cell_]:
+            ebad += 1
+            if ebad <= 5:
+                err(f"execution order {ctrl_}|{path_}: {rec.get('eo')} {rec.get('pc')} vs {eo_} {[pdf_, page_, cell_]}")
+    nolist = conn.execute("SELECT b.ctrl, b.path FROM block b WHERE b.kind='block' AND b.id NOT IN (SELECT block_id FROM block_cite) "
+                          "ORDER BY random() LIMIT 2000").fetchall() if has_bc else []
+    for ctrl_, path_ in random.sample(nolist, min(10, len(nolist))):
+        rec = ((task_entry(tkey_of(ctrl_, path_)) or {}).get("b") or {}).get(f"{ctrl_}|{path_}") or {}
+        if "eo" in rec:
+            ebad += 1
+            err(f"execution order on an unprinted block {ctrl_}|{path_}: {rec.get('eo')}")
+    (ok if brows and not ebad else err)(f"sampled {min(20, len(brows))} of {len(brows)} blocks with a printed execution order (+ unprinted ones carry none), {ebad} mismatches")
     li = man.get("lib_iface", {})
     (ok if li and "AI_INT" in li else err)(f"manifest lib_iface: {len(li)} types")
     # ---- tasks: sample 30 task entries (root first, document order, counts)

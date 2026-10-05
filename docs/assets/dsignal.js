@@ -57,7 +57,8 @@
     const rec = blk || {};
     n = { id, kind: rec.kind === 'userblock' ? 'ub' : 'block', key, ctrl, program: segs[0] || '', task: segs[1] || '', tkey: D.taskKeyOf(key),
       name: rec.name || segs[segs.length - 1], type: rec.type || (rec.kind === 'userblock' ? 'UserBlock' : ''), sub: (segs[0] || '') + '/' + (segs[1] || ''),
-      desc: rec.desc || '', attrs: rec.attrs, pins: rec.pins || [], kindLabel: rec.kind, opaque: !!rec.opaque, rc: rec.rc || null, ord: S.ord++, left: [], right: [], body: [], cls: '', fresh: true };
+      desc: rec.desc || '', attrs: rec.attrs, pins: rec.pins || [], kindLabel: rec.kind, opaque: !!rec.opaque, rc: rec.rc || null, ord: S.ord++, left: [], right: [], body: [], cls: '', fresh: true,
+      eo: rec.eo != null ? rec.eo : null, pc: rec.pc || null, glyph: D.glyph ? D.glyph.of(rec.type, rec.pins || []) : null, partial: true }; // 圖示（glyph.js）、執行順序（列印圖）；partial = 只畫追到的腳（梯形圖加亮那幾個接點）
     S.nodes.set(id, n);
     S.st.count++; S.st.blocks++;
     return n;
@@ -136,7 +137,7 @@
       } else if (ck === 'P') {
         blockPort(S, bn, name, up ? 'L' : 'R', t).inline = '⟨' + (tgtPin || stripK(conn) || '介面腳') + '⟩';
       } else if (ck === 'N' || ck === 'E') {
-        blockPort(S, bn, name, up ? 'L' : 'R', t).inline = stripK(conn);
+        if (!(bn.glyph && bn.glyph.eat.indexOf(name) >= 0)) blockPort(S, bn, name, up ? 'L' : 'R', t).inline = stripK(conn); // 圖示已畫出的常數腳（FUNC、EQN…）不另畫
       }
       // 無變數的 A／D：只有位址／device 的腳不畫（同 trace.js）——但仍要看有沒有別的方塊用 L: 指到它（下）
       // 反向 L:：多數同 task 連線只記在讀取端（輸入腳的 L:Block.Pin），由輸出腳往下游時要反查；往上游同理補「只記在寫入端」的少數

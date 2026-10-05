@@ -397,6 +397,34 @@ body.wide .foot .foot-rev, body.wide .foot .foot-row.small { display: none; }
 .dg-svg .node .body { fill: var(--muted); font-size: 10px; }
 .dg-svg .node.comment .body { fill: var(--const); }
 .dg-svg .node .inline { fill: var(--const); font-size: 10px; }
+/* 方塊圖示（glyph.js）：列印邏輯圖同款符號；描邊／字色走 token，深色主題自動跟上；不攔點擊（.gl-hit 例外：點梯形圖接點 = 點它接的變數）。
+   不限 .node 底下：圖例 swatch（.dg-svg.sw）與方塊頁的放大圖（.gl-solo）共用同一套規則；匯出 SVG 另見 diagram.js EXPORT_CSS */
+.dg-svg .gl { pointer-events: none; }
+.dg-svg .gl path, .dg-svg .gl .gl-s { fill: none; stroke: var(--text); stroke-width: 1.1; stroke-linejoin: round; }
+.dg-svg .gl .gl-f { fill: var(--text); stroke: none; }
+.dg-svg .gl text { fill: var(--text); stroke: none; font-family: var(--font); }
+.dg-svg .gl .gl-op { font-size: 16px; font-weight: 700; }
+.dg-svg .gl .gl-hl { font-size: 10px; font-weight: 700; }
+.dg-svg .gl .gl-word { font-size: 9px; font-weight: 700; }
+.dg-svg .gl .gl-sym { font-size: 12px; font-weight: 700; }
+.dg-svg .gl .gl-tiny { font-size: 7.5px; }
+.dg-svg .gl .gl-val { fill: var(--const); font-size: 8px; }
+.dg-svg .gl .gl-lab { font-size: 8px; fill: var(--muted); }
+.dg-svg .gl .gl-cbody { fill: var(--surface-3); stroke: none; }
+.dg-svg .gl .gl-coil { fill: var(--surface-3); stroke: var(--text); stroke-width: 1.1; }
+.dg-svg .gl .gl-ct.lit .gl-cedge { stroke: var(--accent-2); stroke-width: 1.8; }
+.dg-svg .gl .gl-ct.lit .gl-lab { fill: var(--accent-text); font-weight: 700; }
+.dg-svg .gl .gl-hit { fill: transparent; stroke: none; pointer-events: all; }
+.dg-svg .node .gl .gl-hit[data-var] { cursor: pointer; }
+.dg-svg .gl .gl-hit.hl { fill: var(--sel); }
+.dg-svg .gl .gl-axis { stroke: var(--muted); stroke-width: 0.8; }
+/* 執行順序（列印圖標題旁的紅底黃字小框）：SVG 版 .eo、HTML 版 .eo-chip（側欄、方塊頁） */
+.dg-svg .eo rect { fill: #800000; stroke: none; }
+.dg-svg .eo text { fill: #ffff00; font-size: 9px; font-weight: 700; }
+.eo-chip { display: inline-block; min-width: 22px; padding: 0 5px; border-radius: 3px; background: #800000; color: #ffff00; font: 700 12px var(--mono); text-align: center; line-height: 18px; }
+.dg-svg.gl-solo { display: block; width: auto; height: auto; max-width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+.gl-solo-wrap { overflow-x: auto; }
+.gl-solo-wrap p { margin: 6px 0 0; }
 .dg-svg .port { fill: var(--surface); stroke: var(--muted); stroke-width: 1.2; }
 .dg-svg .port.dir-I { stroke: #1e40af; }
 .dg-svg .port.dir-O { stroke: #166534; fill: #dcfce7; }

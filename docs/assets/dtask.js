@@ -73,8 +73,10 @@
         nodes.set(k, node); comments.push(node);
         continue;
       }
-      const node = { id: k, kind: rec.kind === 'userblock' ? 'ub' : 'block', key: k, name, type: rec.type || (rec.kind === 'userblock' ? 'UserBlock' : ''), desc: rec.desc || '', attrs: rec.attrs, pins: rec.pins || [], ord, left: [], right: [], body: [], opaque: !!rec.opaque, rc: rec.rc || null, cls: rec.opaque ? 'opaque' : '', kindLabel: rec.kind };
+      const node = { id: k, kind: rec.kind === 'userblock' ? 'ub' : 'block', key: k, name, type: rec.type || (rec.kind === 'userblock' ? 'UserBlock' : ''), desc: rec.desc || '', attrs: rec.attrs, pins: rec.pins || [], ord, left: [], right: [], body: [], opaque: !!rec.opaque, rc: rec.rc || null, cls: rec.opaque ? 'opaque' : '', kindLabel: rec.kind,
+        eo: rec.eo != null ? rec.eo : null, pc: rec.pc || null, glyph: D.glyph ? D.glyph.of(rec.type, rec.pins || []) : null };
       const need = needed.get(k);
+      const eaten = new Set(node.glyph && !q.pins ? node.glyph.eat : []); // 圖示已畫出的常數腳（FUNC、EQN…）不另畫成腳位；?pins=1 照畫
       for (const p of rec.pins || []) {
         const [pin, dir, src, ck, conn, varFull, tgtKey, tgtPin] = p;
         const org = D.orgOf(p); // 回推腳（只在不透明方塊上）：'d' 宣告變數／'l' 連線；明文 null
@@ -85,6 +87,7 @@
         const drawnShown = org === 'g' && (ck === 'V' || ck === 'L' || ck === 'N' || ck === 'E');
         const shown = !!q.pins || !!(need && need.has(pin)) || drawnShown || (!org && (ck === 'V' || ck === 'L' || ck === 'P' || ck === 'N' || ck === 'E')) || (declared && (declaredShown(rec, pin, varFull) || partnered(k, varFull)));
         if (!shown) { meta.nHiddenPins++; continue; }
+        if (eaten.has(pin) && (ck === 'N' || ck === 'E')) continue;
         if (org === 'g' || src === 'G') meta.nDrawn++; else if (org) meta.nRecovered++; else if (declared) meta.nDeclared++;
         const port = { id: k + '#' + pin, pin, dir: dir || '?', src, ck, conn, varFull: varFull || null, tgtKey, tgtPin, inline: null, org,
           desc: (p.length > 10 && p[10]) || null, varDesc: (varFull && vd[varFull]) || null, mirror: (mm && mm.get(k + '#' + pin)) || null, pv: pv[k + '#' + pin] || null };

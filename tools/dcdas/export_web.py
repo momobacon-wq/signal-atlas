@@ -405,6 +405,10 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     for r in conn.execute("SELECT b.ctrl, b.path, p.name, c.pdf, c.page, c.cell FROM pin_cite c "
                           "JOIN pin p ON p.id=c.pin_id AND (p.origin='print' OR p.dir_source='G') JOIN block b ON b.id=p.block_id"):
         task_pv[task_key(r[0], r[1])][f"{r[0]}|{r[1]}#{r[2]}"] = [r[3], r[4], r[5]]
+    # execution order printed beside each block's title on the logic sheets, and where it is drawn (schema 15)
+    has_bcite = bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='block_cite'").fetchone())
+    bcite = {r[0]: (r[1], [r[2], r[3], r[4]]) for r in conn.execute(
+        "SELECT block_id, exec_order, pdf, page, cell FROM block_cite")} if has_bcite else {}
     ORG = {"decl": "d", "link": "l", "pair": "p", "xref": "x", "vote": "v", "print": "g"}
     for r in conn.execute("""SELECT block_id,name,direction,dir_source,conn_kind,connection,var_id,tgt_block_id,tgt_pin,address,alias,description,origin
                              FROM pin ORDER BY block_id,id"""):
@@ -449,6 +453,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
              "opaque": opq, "desc": desc, "drg": ldrg, "pid": p_id, "device": dev, "hmi": hlo, "lay": lay,
              "attrs": attrs.get(bid, {}), "pins": pins_by_block.get(bid, []), "line": ln,
              "file": prog_file.get(pid) or f"{ctrl}/_{prog}.xml", "rc": rc_by_block.get(bid)}
+        if bid in bcite:
+            b["eo"], b["pc"] = bcite[bid]
         tkey = task_key(ctrl, path)
         task_items[tkey].append(_dump(key) + ":" + _dump(_compact(b)))
         task_n[tkey] += 1

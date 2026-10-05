@@ -653,6 +653,33 @@ def main():
               got is not None and tuple(got) == ("O", "print", "01005E3A"), str(got))
         bad = one(conn, "SELECT count(*) FROM pin_cite WHERE pin_id NOT IN (SELECT id FROM pin)")
         check("no citation left pointing at a replaced pin", bad == 0, str(bad))
+        # execution order printed beside each block's title (block_cite, schema 15): the site's red badge
+        n_bc = one(conn, "SELECT count(*) FROM block_cite")
+        n_bctrl = one(conn, "SELECT count(DISTINCT b.ctrl) FROM block_cite c JOIN block b ON b.id=c.block_id")
+        check("blocks with a printed execution order >= 90k on the 17 printed controllers", n_bc >= 90000 and n_bctrl == 17, f"{n_bc} on {n_bctrl}")
+        bad = one(conn, "SELECT count(*) FROM block_cite WHERE block_id NOT IN (SELECT id FROM block) OR exec_order < 1")
+        check("every execution order belongs to a block and is >= 1", bad == 0, str(bad))
+        dup = one(conn, """SELECT count(*) FROM (SELECT b.ctrl, b.parent_id, b.task_id, c.exec_order FROM block_cite c JOIN block b ON b.id=c.block_id
+                               GROUP BY 1, 2, 3, 4 HAVING count(*) > 1)""")
+        check("no two blocks in one scope share an execution order", dup == 0, str(dup))
+
+    # ---- block glyphs (docs/assets/glyph.js): every RUNG equation in the index draws a ladder that, read as a circuit,
+    #      is the equation for every input combination, and uses exactly the block's input pins (tests/glyph_test.js)
+    import json as _json
+    import shutil as _shutil
+    import subprocess as _sp2
+    node = _shutil.which("node")
+    if node:
+        rungs = {}
+        for eqn, pins in conn.execute("""SELECT e.connection, (SELECT group_concat(name, ' ') FROM pin WHERE block_id=b.id)
+                                         FROM block b JOIN pin e ON e.block_id=b.id AND e.name='EQN' WHERE b.block_type='RUNG'"""):
+            rungs[(eqn, " ".join(sorted((pins or "").split())))] = 1
+        _r = _sp2.run([node, str(Path(__file__).resolve().parent / "glyph_test.js")], input=_json.dumps(
+            [{"eqn": e, "pins": ps.split()} for e, ps in rungs]), capture_output=True, text=True, encoding="utf-8")
+        check(f"glyph test: built-in cases + {len(rungs)} RUNG equations drawn as ladders equal to the equation",
+              _r.returncode == 0 and "ALL OK" in _r.stdout, (_r.stdout + _r.stderr)[-300:])
+    else:
+        print("skip glyph test (node not installed)")
 
     # ---- quality gates
     for c in ("G11", "H11", "WSC1"):

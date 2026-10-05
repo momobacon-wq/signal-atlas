@@ -46,6 +46,9 @@
  *   inst.pinMode／inst.setPin(mode|省略=循環)
  * 圖面腳（D.isDrawn：org 'g' 或方向來源 'G'）：port／標籤／任一端為圖面腳的走線加 class src-g（圖面色 --drawn、箭頭 #dg-arrow-g）；
  *   腳位 <title> 與側欄「來源」欄附 D.pvText(D.pvOf(key, pin))（列印邏輯圖 pdf／頁／格）。工具列「圖例」開 #legend-pop（線型／斜紋框／推・錄・圖徽章）。
+ * 方塊圖示（n.glyph = D.glyph.of(type, pins)，由 dtask.js／dsignal.js 建圖時掛上；規則在 glyph.js）：size() 先試擺在左右腳位名之間（同列印圖），
+ *   放不下（或 full 模式有腳位描述）就在腳位下方另起一帶（n.glyphX/glyphY/glyphH）；梯形圖可把方塊撐寬到 GLYPH_BOX_MAX。
+ *   點梯形圖接點（.gl-hit[data-var]）= 點它所接的變數。n.eo（執行順序，取自列印圖）→ 標題列右側紅底黃字小框，同列印圖。
  * 需先 D.loadScript('dagre.min.js')（全域 dagre）。CSP：無 inline script；SVG 文字皆走 textContent。 */
 'use strict';
 (function () {
@@ -68,6 +71,9 @@
   // 型別行字 9.5px 相對量測字 11px 的寬度比；型別下的副標（訊號圖：Program/Task 路徑）獨立成行、在 /／_／駝峰邊界換行 ≤2 行、撐寬方塊至多 SUB_W_MAX
   const TYPE_K = 9.5 / 11, SUB_LH = 11, SUB_LINES = 2, SUB_W_MAX = 170;
   const NB2 = '\u00a0\u00a0'; // 腳位名與同行描述之間（nbsp 不會被 SVG 折疊）
+  // 方塊圖示：梯形圖方塊寬上限；執行順序小框字級（9px）相對量測字 11px 的寬度比
+  const GLYPH_BOX_MAX = 520, EO_K = 9 / 11;
+  const eoW = (n) => (n.eo != null ? dg.measure(String(n.eo)) * EO_K + 8 : 0);
   dg.C = { PIN_H, TITLE_H, BODY_LH, BOX_MIN, BOX_MAX, BOX_MAX_B, BOX_MAX_D, SHEET_H, SHEET_H_FULL, TAG_H, TAG_H_D, VAR_H, VAR_H_D, DESC_LH, TAG_W_FULL, VAR_W_FULL };
   dg.MODES = MODES;
   dg.MODE_LABEL = { off: '關', brief: '精簡', full: '完整' };
@@ -314,16 +320,26 @@
       n.opqLine = n.opaque ? D.opaqueInfo(n).text : '';
       // 型別行只放型別；副標 n.sub（訊號圖的 Program/Task 路徑）另起行，boxW 定了之後再換行（n.subLines）
       const subW = n.sub ? Math.min(dg.measure(n.sub) * TYPE_K, SUB_W_MAX) : 0;
-      let need = Math.max(dg.measure(n.name) + 16, dg.measure(n.type || '') * TYPE_K + 16 + (n.opaque ? LOCK_W : 0), subW + 16, bd ? dmeasure(bd) + 16 : 0, n.opqLine ? dmeasure(n.opqLine) + 16 : 0);
+      let need = Math.max(dg.measure(n.name) + 16 + (n.eo != null ? eoW(n) + 6 : 0), dg.measure(n.type || '') * TYPE_K + 16 + (n.opaque ? LOCK_W : 0), subW + 16, bd ? dmeasure(bd) + 16 : 0, n.opqLine ? dmeasure(n.opqLine) + 16 : 0);
       const anyPinDesc = full && n.left.concat(n.right).some((p) => p.desc);
+      let maxL = 0, maxR = 0;
       for (let i = 0; i < rows; i++) {
         const l = n.left[i], r = n.right[i];
         const lw = l ? pinNameW(l, mode, pm) + 7 : 0, rw = r ? pinNameW(r, mode, pm) + 7 : 0;
+        maxL = Math.max(maxL, lw); maxR = Math.max(maxR, rw);
         need = Math.max(need, lw + rw + (l && r ? 14 : 8));
       }
       for (const b of n.body) need = Math.max(need, dg.measure(b) + 16);
       // full 且有腳位描述：方塊至少 BOX_MAX_D 寬（描述換行而不撐寬）；brief 上限 BOX_MAX_B；其餘 BOX_MAX；腳位名「完整」模式再放寬到 BOX_MAX_P
-      const bmax0 = mode === 'brief' ? BOX_MAX_B : BOX_MAX, bmax = pm === 'full' ? Math.max(bmax0, BOX_MAX_P) : bmax0;
+      const bmax0 = mode === 'brief' ? BOX_MAX_B : BOX_MAX, bmax1 = pm === 'full' ? Math.max(bmax0, BOX_MAX_P) : bmax0;
+      // 圖示：左右腳位名之間放得下 → 擺中間（同列印圖）；否則腳位下方另起一帶。梯形圖可把方塊撐到 GLYPH_BOX_MAX
+      const gl = n.glyph || null;
+      const bmax = gl && gl.kind === 'ladder' ? Math.max(bmax1, GLYPH_BOX_MAX) : bmax1;
+      if (gl) {
+        const mid = maxL + maxR + gl.w + 14;
+        n.glyphMid = !anyPinDesc && mid <= bmax;
+        need = Math.max(need, n.glyphMid ? mid : gl.w + 16);
+      }
       n.boxW = anyPinDesc ? Math.max(BOX_MAX_D, clamp(need, BOX_MIN, bmax)) : clamp(need, BOX_MIN, bmax);
       const inner = n.boxW - 14; // 左右各 7 padding
       n.subLines = n.sub ? dg.wrapPin(n.sub, inner / TYPE_K, SUB_LINES).lines : [];
@@ -383,10 +399,31 @@
         pinsH += rh;
       }
       n.pinsH = pinsH;
+      n.glyphH = 0;
+      if (gl) {
+        // 實際佔寬（換行後的腳位名、同行／下方描述）再確認中間放得下；放不下改到腳位下方
+        const occ = (p) => {
+          let w = Math.max(0, ...(p.nameLines || [p.pin]).map(dg.measure)) + orgW(p);
+          if (mode === 'brief' && p.briefDesc) w = Math.max(w, dg.measure(p.nameLines[p.nameLines.length - 1]) + orgW(p) + dmeasure(NB2 + p.briefDesc));
+          if (p.descLines && p.descLines.length) w = Math.max(w, ...p.descLines.map(dmeasure));
+          return w;
+        };
+        const oL = Math.max(0, ...n.left.map(occ)), oR = Math.max(0, ...n.right.map(occ));
+        const free = inner - oL - oR - 12;
+        if (n.glyphMid && free >= gl.w) {
+          n.glyphX = 7 + oL + 6 + (free - gl.w) / 2;
+          n.glyphY = n.titleH + (gl.kind === 'ladder' || pinsH < gl.h + 4 ? 4 : (pinsH - gl.h) / 2);
+          n.glyphH = Math.max(0, n.glyphY + gl.h + 4 - n.titleH - pinsH);
+        } else {
+          n.glyphX = (n.boxW - gl.w) / 2;
+          n.glyphY = n.titleH + pinsH + 4;
+          n.glyphH = gl.h + 8;
+        }
+      }
       n.bodyH = n.body.length ? 6 + n.body.length * BODY_LH : 0;
       n.capLines = full && n.desc ? wrapDesc(n.desc, n.boxW - 16, CAP_LINES) : [];
       n.capH = n.capLines.length ? 6 + DESC_LH * n.capLines.length : 0;
-      n.h = n.titleH + pinsH + n.bodyH + n.capH + 6;
+      n.h = n.titleH + pinsH + n.glyphH + n.bodyH + n.capH + 6;
       let tl = 0, tr = 0;
       n.left.forEach((p) => { tl = Math.max(tl, tagW.get(p.id) || 0, p.inline ? dg.measure(dg.trunc(p.inline, 18)) + TAG_GAP + 4 : 0); });
       n.right.forEach((p) => { tr = Math.max(tr, tagW.get(p.id) || 0, p.inline ? dg.measure(dg.trunc(p.inline, 18)) + TAG_GAP + 4 : 0); });
@@ -499,10 +536,36 @@
         lx = (xo + xi) / 2; ly = yb;
       }
       e.path = d; e.labelXY = { x: lx, y: ly };
-      if (Math.abs(y1 - y2) < 20 && dirA === 1 && dirB === -1) e.labelXY = { x: (x1 + x2) / 2, y: y1 - 4, mid: true };
+      if (dirA === 1 && dirB === -1 && x2 - x1 >= 24) e.labelSeg = { v: true, x: lx, a: y1, b: y2 };
+      else e.labelSeg = { v: false, y: ly, a: x1 + dirA * stub, b: x2 + dirB * 12 };
+      if (Math.abs(y1 - y2) < 20 && dirA === 1 && dirB === -1) { e.labelXY = { x: (x1 + x2) / 2, y: y1 - 4, mid: true }; e.labelSeg = { v: false, y: y1 - 4, a: x1 + 6, b: x2 - 6, mid: true }; }
     }
+    placeLabels(graph);
     return graph;
   };
+  /** 走線標籤不可壓在方塊上（會蓋住方塊圖示、梯形圖接點的斜線或執行順序）：沿所在線段找第一個不碰任何方塊的位置，都碰到就不畫（變數名仍在走線 tooltip） */
+  function placeLabels(graph) {
+    const rects = [];
+    for (const n of graph.nodes.values()) if (n.x != null) rects.push([n.x + (n.tagL || 0) - 3, n.y - 3, n.x + (n.tagL || 0) + (n.boxW || n.w) + 3, n.y + n.h + 3]);
+    const hit = (x0, y0, x1, y1) => rects.some((r) => x0 < r[2] && r[0] < x1 && y0 < r[3] && r[1] < y1);
+    const TS = [0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9];
+    for (const e of graph.edges) {
+      const sub = e.mirror && e.mirror.length; // 呼叫端會在標籤下（mid 在上）補一行（dtask.js 的「發佈為 …」，≤30 字）
+      if ((!e.label && !sub) || !e.labelXY || !e.labelSeg) continue;
+      const w = e.label ? dg.measure(dg.trunc(e.label, 24)) * (10 / 11) / 2 + 2 : 0, s = e.labelSeg;
+      const w2 = sub ? Math.min(dg.measure(e.mirror.join('、')) + 40, 220) * (10 / 11) / 2 + 2 : 0;
+      let best = null;
+      for (const t of TS) {
+        const x = s.v ? s.x : s.a + (s.b - s.a) * t, y = s.v ? s.a + (s.b - s.a) * t : s.y;
+        const yy = y + (s.mid ? 0 : 3.5); // 文字基線
+        const y2 = e.label ? (s.mid ? y - 11 : yy + 11) : yy;
+        if (e.label && hit(x - w, yy - 9, x + w, yy + 3)) continue;
+        if (sub && hit(x - w2, y2 - 9, x + w2, y2 + 3)) continue;
+        best = { x, y, mid: s.mid }; break;
+      }
+      e.labelXY = best;
+    }
+  }
   const r1 = (v) => Math.round(v * 10) / 10;
 
   /* ------------------------------------------------------------------ 渲染 */
@@ -518,7 +581,8 @@
   function renderNode(graph, n) {
     const cls = ['node', n.kind === 'ub' ? 'blk ub' : n.kind === 'block' ? 'blk' : n.kind, n.cls || ''].join(' ').trim();
     const g = D.svg('g', { class: cls, 'data-id': n.id, 'data-key': n.key || null, 'data-var': n.kind === 'var' ? n.varFull : null, tabindex: '0', transform: 'translate(' + r1(n.x) + ' ' + r1(n.y) + ')' });
-    const tt = [n.key || n.name || '', n.type ? '[' + n.type + ']' : '', n.sub || '', n.opaque ? '不透明：' + (n.opqLine || D.opaqueInfo(n).text) : '', n.desc || ''].filter(Boolean).join('\n');
+    const tt = [n.key || n.name || '', n.type ? '[' + n.type + ']' : '', n.sub || '', n.opaque ? '不透明：' + (n.opqLine || D.opaqueInfo(n).text) : '',
+      n.eo != null ? '執行順序 ' + n.eo + (n.pc ? '（' + D.pvText(n.pc) + '）' : '') : '', n.glyph && n.glyph.title ? n.glyph.title : '', n.desc || ''].filter(Boolean).join('\n');
     g.appendChild(D.svg('title', { text: tt }));
     const bx = n.tagL;
     if (n.kind === 'comment') {
@@ -540,7 +604,13 @@
     const mode = graph.descMode || (graph.showDesc ? 'full' : 'off');
     g.appendChild(D.svg('rect', { class: 'box', x: r1(bx), y: 0, width: r1(n.boxW), height: r1(n.h), rx: 4 }));
     if (n.kind === 'ub') g.appendChild(D.svg('rect', { class: 'box2', x: r1(bx + 3), y: 3, width: r1(n.boxW - 6), height: r1(n.h - 6), rx: 3 }));
-    g.appendChild(D.svg('text', { class: 'name', x: r1(bx + 7), y: 12, text: dg.fitText(n.name || '', n.boxW - 14) }));
+    g.appendChild(D.svg('text', { class: 'name', x: r1(bx + 7), y: 12, text: dg.fitText(n.name || '', n.boxW - 14 - (n.eo != null ? eoW(n) + 6 : 0)) }));
+    // 執行順序（列印圖標題旁的紅底黃字小框）：標題列右側
+    if (n.eo != null) {
+      const w = eoW(n), x = bx + n.boxW - 4 - w;
+      g.appendChild(D.svg('g', { class: 'eo' }, D.svg('title', { text: '執行順序 ' + n.eo + (n.pc ? '\n' + D.pvText(n.pc) : '') }),
+        D.svg('rect', { x: r1(x), y: 3, width: r1(w), height: 12, rx: 1.5 }), D.svg('text', { x: r1(x + w / 2), y: 12.5, 'text-anchor': 'middle', text: String(n.eo) })));
+    }
     // 不透明方塊：型別前小鎖頭（描邊 path，無 emoji）＋型別下一行介面說明 .opq（size() 算好 n.opqLine）
     if (n.opaque) g.appendChild(D.svg('path', { class: 'lock', d: D.LOCK_D, transform: 'translate(' + r1(bx + 7) + ' 14.5) scale(0.8)' }));
     if (n.type) g.appendChild(D.svg('text', { class: 'type', x: r1(bx + 7 + (n.opaque ? LOCK_W : 0)), y: 23, text: dg.fitText(n.type, (n.boxW - 14 - (n.opaque ? LOCK_W : 0)) / TYPE_K) }));
@@ -594,7 +664,14 @@
       if (p.inline) g.appendChild(D.svg('text', { class: 'inline', x: r1(bx + n.boxW + TAG_GAP), y: p.y + 3.5, text: dg.trunc(p.inline, 18) }, D.svg('title', { text: p.inline })));
     }
     const rows = Math.max(n.left.length, n.right.length);
-    const bodyY = (n.titleH == null ? TITLE_H : n.titleH) + (n.pinsH == null ? rows * PIN_H : n.pinsH);
+    // 圖示（glyph.js）：梯形圖接點依腳名找 port（data-port／data-var）；訊號圖只畫部分腳時，畫出的那幾支接點加亮
+    if (n.glyph && D.glyph && n.glyphX != null) {
+      const ports = new Map(n.left.concat(n.right).map((p) => [p.pin, p]));
+      const letters = Object.keys(n.glyph.map || {});
+      const lit = !!n.partial && letters.some((v) => ports.has(v)) && letters.some((v) => !ports.has(v)); // 只在訊號圖（n.partial）
+      g.appendChild(D.glyph.draw(n.glyph, { x: bx + n.glyphX, y: n.glyphY, ports, lit }));
+    }
+    const bodyY = (n.titleH == null ? TITLE_H : n.titleH) + (n.pinsH == null ? rows * PIN_H : n.pinsH) + (n.glyphH || 0);
     n.body.forEach((line, i) => g.appendChild(D.svg('text', { class: 'body', x: r1(bx + 7), y: bodyY + 12 + i * BODY_LH, text: line })));
     // full：方塊描述 caption（底部；size() 算好 n.capLines）
     if (n.capLines && n.capLines.length) {
@@ -673,7 +750,15 @@
         item(sw(line('kind-V multi')), '警示色虛線 = 多寫入者'),
         item(sw(line('kind-L src-g')), '圖面色 = 圖面（列印邏輯圖：左入右出，權威證據）'),
         item(sw(line('kind-EGD egd')), '藍色長虛線 = 跨控制器 EGD（訊號圖）'),
-        item(hatch, '斜紋框 = 不透明巨集（介面加密，不可展開）')),
+        item(hatch, '斜紋框 = 不透明巨集（介面加密，不可展開）'),
+        item(sw(D.svg('g', { class: 'gl' }, D.svg('path', { d: 'M1 8H8M12 8H19M23 8H33' }),
+          D.svg('rect', { class: 'gl-cbody', x: '8', y: '5', width: '4', height: '6' }), D.svg('path', { class: 'gl-s gl-cedge', d: 'M8 5V11M12 5V11' }),
+          D.svg('rect', { class: 'gl-cbody', x: '19', y: '5', width: '4', height: '6' }), D.svg('path', { class: 'gl-s gl-cedge', d: 'M19 5V11M23 5V11M24 4L18 12' }),
+          D.svg('circle', { class: 'gl-coil', cx: '36', cy: '8', r: '3' }))), '梯形圖（RUNG）：接點上的字母 = 左側同名腳位；斜線 = 常閉（為假時導通）；圓 = 線圈（OUT）。點接點 = 點它接的變數'),
+        item(sw(D.svg('g', { class: 'gl' }, D.svg('rect', { class: 'gl-s', x: '8.5', y: '0.5', width: '22', height: '13', rx: '2' }), D.svg('text', { class: 'gl-t gl-op', x: '19.5', y: '12', 'text-anchor': 'middle', text: '≥' }))),
+          '方塊內圖示 = 列印邏輯圖的畫法（比較符號取自 FUNC；參數接變數時不畫數值）'),
+        item(sw(D.svg('g', { class: 'eo' }, D.svg('rect', { x: '10', y: '1', width: '20', height: '12', rx: '1.5' }), D.svg('text', { x: '20', y: '10.5', 'text-anchor': 'middle', text: '83' }))),
+          '紅底黃字 = 執行順序（取自列印邏輯圖；沒有列印圖的方塊不標）')),
       D.h('p', { class: 'dg-legend-badges' },
         D.orgBadge('d'), ' 回推（可能不完整） ', D.orgBadge('x'), ' 人工登錄 ', D.orgBadge('g'), ' 圖面'),
       D.h('p', { class: 'muted small dg-legend-foot', text: '腳位旁字母 = 方向來源：U/T/C 明文或查表；L/H/R/M 推斷（虛框）；G 圖面。' }));
@@ -889,7 +974,7 @@
     }
     function hitOf(target) {
       if (!target || !target.closest || !inst.svg || !inst.svg.contains(target)) return null;
-      const v = target.closest('.tag[data-var], .wlabel[data-var], .wire[data-var], .port[data-var]');
+      const v = target.closest('.tag[data-var], .wlabel[data-var], .wire[data-var], .port[data-var], .gl-hit[data-var]');
       if (v) return { kind: 'var', id: 'v:' + v.getAttribute('data-var'), varFull: v.getAttribute('data-var'), port: v.getAttribute('data-port'), el: v };
       const n = target.closest('.node[data-id]');
       if (n) return { kind: 'node', id: 'n:' + n.getAttribute('data-id'), nodeId: n.getAttribute('data-id'), el: n };
@@ -1052,6 +1137,15 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
 .node .pin .org{font-size:8px;fill:var(--accent-text);font-weight:700}
 .node .pin .org-g{fill:var(--drawn)}
 .node .bdesc.opq{fill:var(--muted)}
+.gl path,.gl .gl-s{fill:none;stroke:var(--text);stroke-width:1.1;stroke-linejoin:round}
+.gl .gl-f{fill:var(--text);stroke:none}
+.gl text{fill:var(--text);stroke:none;font-family:var(--font)}
+.gl .gl-op{font-size:16px;font-weight:700}.gl .gl-hl{font-size:10px;font-weight:700}.gl .gl-word{font-size:9px;font-weight:700}.gl .gl-sym{font-size:12px;font-weight:700}
+.gl .gl-tiny{font-size:7.5px}.gl .gl-val{fill:var(--const);font-size:8px}.gl .gl-lab{font-size:8px;fill:var(--muted)}
+.gl .gl-cbody{fill:var(--surface-3);stroke:none}.gl .gl-coil{fill:var(--surface-3);stroke:var(--text);stroke-width:1.1}
+.gl .gl-ct.lit .gl-cedge{stroke:var(--accent-2);stroke-width:1.8}.gl .gl-ct.lit .gl-lab{fill:var(--accent-text);font-weight:700}
+.gl .gl-hit{fill:none;stroke:none}.gl .gl-axis{stroke:var(--muted);stroke-width:.8}
+.eo rect{fill:#800000;stroke:none}.eo text{fill:#ffff00;font-size:9px;font-weight:700}
 `;
   function exportCss() {
     const cs = getComputedStyle(document.documentElement);
@@ -1077,6 +1171,9 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
     }
     const heads = D.h('div', { class: 'dg-side-tags' }, n.type ? D.tag(n.type, 'lg') : null, ' ', D.tag(n.kind === 'ub' ? 'UserBlock' : (n.kindLabel || 'block')), n.opaque ? D.frag(' ', D.tag('不透明 opaque', 'warn')) : null, n.sub ? D.frag(' ', D.h('span', { class: 'muted small mono', text: n.sub })) : null);
     out.push(heads);
+    // 執行順序與列印圖位置（取自列印邏輯圖；沒有列印圖的方塊沒有這行）
+    if (n.eo != null || n.pc) out.push(D.h('p', { class: 'small dg-side-eo' }, n.eo != null ? D.frag(D.h('span', { class: 'eo-chip', text: String(n.eo) }), ' 執行順序') : null,
+      n.pc ? D.h('span', { class: 'muted mono', text: (n.eo != null ? ' · ' : '') + D.pvText(n.pc) }) : null));
     if (n.opaque) out.push(D.opaqueLine(n)); // 鎖頭 + 介面回推 N 腳／目錄介面 N 腳／介面加密
     if (n.desc) out.push(D.h('p', { class: 'dg-side-desc small' }, D.lines(dg.trunc(n.desc, 600))));
     const acts = D.h('div', { class: 'dg-side-actions' },

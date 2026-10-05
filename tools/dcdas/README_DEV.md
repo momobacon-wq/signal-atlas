@@ -245,3 +245,8 @@ Build Major/Minor 兩個時間戳。其他格子有客戶、廠址與人員識�
 - 取代推斷列時保留 address／value／alias／描述，`pin_mirror` 跟著改指新列（刪掉會讓 94 個變數變成「無可見寫入者」）。
 - XML 明文腳只改方向，而且只在圖上的線就是它自己的變數時才改。
 `print_check`／`print_show` 用 `_PC_PINS_SQL` 看「不含升格列」的索引；已升格的腳在 print-check 計入 `promoted`，不再算 `new_pin`。
+
+schema 15 起同一個 pass 另寫 `block_cite(block_id, exec_order, pdf, page, cell)`：列印圖標題旁的執行順序（網頁紅底黃字小框）與方塊畫在哪一頁。
+只收路徑確定的圖頁（`map_method` exact／repair），同一方塊只有一個數字才收。**不要用 `block.layout` 或同層檔案順序代替**：
+`layout` 只有約三分之一等於印出的數字；同層檔案順序（含註解）雖有 99.35% 相同，剩下 606 顆全在 G11/G12 的 FFB 介面 task
+（每組 `_COMMENT`／`FF_AI`／`AI_INT` 只算兩個號），沒有列印圖的控制器無從驗證，所以沒有列印圖就不標。

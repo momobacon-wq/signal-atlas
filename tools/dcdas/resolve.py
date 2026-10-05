@@ -935,18 +935,23 @@ def load_print(conn, ctrl_names, log=print):
                drawing contradicts; and a recovered pin (origin set) whose inferred wire the drawing
                contradicts. The inferred row is replaced; the XML's own connection is never touched.
     A (block, pin) the sheets disagree about (two sheets, two answers) is left alone.
-    Every promoted pin gets a pin_cite row (pdf, page, cell) for the site's tooltip."""
+    Every promoted pin gets a pin_cite row (pdf, page, cell) for the site's tooltip.
+    Each drawn block also gets a block_cite row: the execution order printed beside its title and where it
+    is drawn (only sheets whose path is certain, exact / repair; one number per block). The index's layout
+    and file order are NOT the same number in every task, so the site shows only this one."""
     try:
         from . import parse_pei, query as q
     except ImportError:
         from dcdas import parse_pei, query as q
     names = list(ctrl_names)
-    tot = {"new": 0, "dir": 0, "fix": 0, "conflict": 0, "skipped_xml": 0}
+    tot = {"new": 0, "dir": 0, "fix": 0, "conflict": 0, "skipped_xml": 0, "exec_order": 0}
     # undo the previous pass on plaintext pins (purge_recovered already dropped the 'print' rows)
     blk = f"block_id IN (SELECT id FROM block WHERE ctrl IN ({_inlist(names)}))"
     conn.execute(f"UPDATE pin SET direction='?', dir_source='-' WHERE dir_source='{PRINT_SOURCE}' AND origin IS NULL AND {blk}")
     conn.execute("DELETE FROM pin_cite WHERE pin_id NOT IN (SELECT id FROM pin WHERE origin='print' OR dir_source=?)",
                  (PRINT_SOURCE,))
+    conn.execute(f"DELETE FROM block_cite WHERE block_id IN (SELECT id FROM block WHERE ctrl IN ({_inlist(names)})) "
+                 "OR block_id NOT IN (SELECT id FROM block)")      # also rows of blocks a partial rebuild deleted
     if not parse_pei.print_db_path().exists():
         log("  print corpus absent: nothing promoted")
         conn.commit()
@@ -974,6 +979,18 @@ def load_print(conn, ctrl_names, log=print):
     for ctrl in names:
         if ctrl not in printed:
             continue
+        drawn = {}                      # block_path -> [set of printed execution orders, (pdf, page, cell) first drawn]
+        for bp, eo, pdf, page, cell in pconn.execute(
+                "SELECT q.block_path, q.exec_order, f.name, s.page, q.cell FROM print_pin q JOIN print_sheet s ON s.id=q.sheet_id "
+                "JOIN print_pdf f ON f.id=s.pdf_id WHERE f.ctrl=? AND f.gate_status='pass' AND s.map_method IN ('exact','repair') "
+                "AND q.block_path IS NOT NULL AND q.exec_order IS NOT NULL ORDER BY s.page, q.id", (ctrl,)):
+            drawn.setdefault(bp, [set(), (pdf, page, cell)])[0].add(eo)
+        bids = dict(conn.execute("SELECT path, id FROM block WHERE ctrl=?", (ctrl,)).fetchall())
+        for bp, (eos, c) in drawn.items():
+            if len(eos) == 1 and bp in bids:
+                conn.execute("INSERT OR REPLACE INTO block_cite(block_id, exec_order, pdf, page, cell) VALUES(?,?,?,?,?)",
+                             (bids[bp], next(iter(eos))) + c)
+                tot["exec_order"] += 1
         ix = q._PsIndex(conn, ctrl, pconn)
         acts = {}                       # (block_path, pin) -> set of action tuples
         cite = {}
@@ -1062,7 +1079,7 @@ def load_print(conn, ctrl_names, log=print):
     conn.commit()
     log(f"  print promoted: new pins {tot['new']}, directions {tot['dir']}, corrected guesses {tot['fix']}, "
         f"disproved pair rows dropped {tot.get('pair_dropped', 0)} (sheets disagree: {tot['conflict']} left alone; "
-        f"XML / verified conflicts never touched: {tot['skipped_xml']})")
+        f"XML / verified conflicts never touched: {tot['skipped_xml']}); blocks with a printed execution order {tot['exec_order']}")
     return tot
 
 

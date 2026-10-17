@@ -229,7 +229,7 @@ def _show(o, r):
     if r.get("hidden_ref"):
         o.line("HIDDEN-REF")
         o.rows(r["hidden_ref"], lambda p: f"{p}: ReferencedIn lists this program but no pin of this variable is indexed there "
-                                          f"-> the reference sits inside an encrypted block (once seen in the tool, add it to tools/xref_manual.csv)")
+                                          f"-> the reference sits inside an encrypted block (once seen in the tool, add it to the site's xref_manual.csv)")
 
 
 def _io_line(p):
@@ -491,6 +491,8 @@ def _print_check(o, r):
     for p in r["pdfs"]:
         if p["gate"] != "pass":
             o.line(f"  REFUSED {p['name']:<14} {p['gate']:<20} {p['note'] or ''}")
+        elif p.get("waiver"):
+            o.line(f"  WAIVED  {p['name']:<14} {p['waiver']}")
     o.line(f"  corpus: {', '.join(r['scanned']) or '(nothing scanned)'}"
            f"   pin rows={c['rows']}  compared={c['compared']}  agree={c['agree']}"
            f" ({100.0 * c['agree'] / max(1, c['compared']):.2f}%)")
@@ -588,6 +590,8 @@ def _print_show(o, r):
     if r.get("refused"):
         o.line(f"  {r['refused']}")
     else:
+        if (r.get("pdf") or {}).get("waiver"):
+            o.line(f"  {r['pdf']['name']} {r['pdf']['waiver']}")
         if r["mode"] == "block":
             if r.get("block_path"):
                 flags = [x for x, on in (("opaque", r.get("is_opaque")), ("encrypted program", r.get("encrypted"))) if on]

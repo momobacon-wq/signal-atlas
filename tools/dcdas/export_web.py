@@ -27,6 +27,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+from . import db as _db
 from .db import get_meta
 
 KDF_ITER = 200_000
@@ -126,8 +127,37 @@ def _ref(r):
             "b" if (r["kind"] == "block" or r.get("origin")) else "t"]
 
 
+def check_target(docs: Path, repo: Path, site: str):
+    """Refuse to export into another site's folder (before anything is deleted). docs/index.html, when present, must
+    carry <meta name="atlas-site" content="<site>"> for a non-default site and no such meta (or an empty one) for the
+    default site; a non-default site never exports into the repo's docs/ root. A folder without index.html (a scratch
+    export) is allowed."""
+    docs = Path(docs)
+    root = Path(repo).resolve()
+    if (root / "dcdas.py").exists():          # dcdas.py passes its own folder (tools/)
+        root = root.parent
+    if site and docs.resolve() == (root / "docs").resolve():
+        raise SystemExit(f"ABORT: site {site!r} must not export into {docs} (the default site's folder): "
+                         f"use its web_dir, e.g. docs/{site}")
+    for sub in sorted(_db.RESERVED_SITES):     # the default site's own folders (data/, assets/, reports/) and below
+        res = (root / "docs" / sub).resolve()
+        if docs.resolve() == res or res in docs.resolve().parents:
+            raise SystemExit(f"ABORT: {docs} lies inside the default site's docs/{sub}/: not a site folder")
+    ix = docs / "index.html"
+    if ix.exists():
+        m = re.search(r'<meta\s+name="atlas-site"\s+content="([^"]*)"', ix.read_text(encoding="utf-8"))
+        page = m.group(1) if m else ""
+        if page != site:
+            raise SystemExit(f"ABORT: {ix} is the page of site {page or '(default)'!r}, this config is site "
+                             f"{site or '(default)'!r}: check DCDAS_CONFIG / the target folder")
+
+
 def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     t0 = time.time()
+    site = _db.site()
+    check_target(docs, repo, site)
+    _db.check_index_site(conn, "export-web")   # the page matches the config; the index must match it too
+    cfg = _db.config()
     data = docs / "data"
     if data.exists():
         log(f"  clearing {data}")
@@ -289,7 +319,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
                              WHERE p.lib_name LIKE '{Alarm}.%'"""):
         sub_pin[(r[0], r[1])] = (r[2], r[3], r[4])
     var_val = {r[0]: r[1] for r in conn.execute("SELECT id, value FROM variable WHERE control_constant=1 OR sub_of IS NOT NULL")}
-    # tools/value_overrides.csv rows in effect: variable.value really holds the corrected value (status applied alone is not
+    # the site's value_overrides.csv rows in effect: variable.value really holds the corrected value (status applied alone is not
     # enough: a --no-post build restores the snapshot values); the card says so (d.vo)
     try:
         from . import resolve as _res
@@ -574,9 +604,11 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
                   "64": "egd_copy", "128": "in_encrypted", "256": "alarm_sub"},
         "encrypted_programs": enc_programs,
         "block_types": btypes,
-        "related": [],
+        "related": cfg.get("related") or [],
         "files": {"names": [f"names/{c}.json" for c in cnames]},
     }
+    if cfg.get("site_label"):                # human label of a non-default site: local config + encrypted manifest only
+        man["site_label"] = str(cfg["site_label"])
     # deterministic build hash over every data file (plaintext digests) + manifest (without build)
     man["build"] = w.build_hash(man)
     w.write("manifest.json", _dump(man))

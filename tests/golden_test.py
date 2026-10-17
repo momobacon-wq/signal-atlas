@@ -453,10 +453,33 @@ def main():
 
     # ---- printed logic sheets (skipped when the local corpus has not been built)
     from dcdas import parse_pei as _pei
+    # engineer's gate waivers (print_gate_accept.csv): only the build-stamp check is waivable, and a waived print
+    # must still carry the index's Major stamp shifted by one whole quarter-hour
+    check("gate waivers: identity / integrity checks can never be waived",
+          _pei.WAIVABLE == ("revision_mismatch",), str(_pei.WAIVABLE))
+    mo = (_pei.major_offset("2/21/2025 08:47:43", "2025-02-21T00:47:43"), _pei.major_offset("2/21/2025 08:47:43", "2025-02-20T00:47:43"),
+          _pei.revision_offset("2/21/2025 08:47:43", "000 00:00:00", "2025-02-21T00:47:43", "2025-11-22T09:46:46")[0])
+    check("gate waivers: Major offset 480 min accepted, a different Major day refused, an unreadable Minor is a revision mismatch",
+          mo[0] == (480, None) and mo[1][0] is None and mo[2] is None, str(mo))
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as _td:
+        _tools = Path(_td) / "tools"
+        _tools.mkdir()
+        _csv = _tools / _pei.GATE_ACCEPT_CSV
+        _csv.write_text("ctrl,check,date,basis\nA1,revision_mismatch,2026-01-01,engineer said so\n"
+                        "B1,wrong_device,2026-01-01,x\nC1,revision_mismatch,,x\nD1,revision_mismatch,2026-01-01,x\n"
+                        "D1,revision_mismatch,2026-01-02,y\nE1,revision_mismatch,2026-01-01\n", encoding="utf-8")
+        w_ok, w_bad = _pei.read_gate_waivers(_tools)
+        _csv.write_text("ctrl,check,date\nA1,revision_mismatch,2026-01-01\n", encoding="utf-8")
+        h_ok, h_bad = _pei.read_gate_waivers(_tools)
+    check("gate waivers CSV: only the well-formed row applies (unwaivable check, blank date, both duplicates, short row "
+          "rejected); a wrong header waives nothing",
+          set(w_ok) == {("A1", "revision_mismatch")} and len(w_bad) == 5 and all("NOT applied" in x for x in w_bad)
+          and h_ok == {} and len(h_bad) == 1 and "nothing waived" in h_bad[0], f"{sorted(w_ok)} {w_bad} {h_ok} {h_bad}")
     if not _pei.print_db_path().exists():
         print("  (print corpus absent: print-scan checks skipped)")
     else:
-        pconn = _pei.open_print(create=False)
+        pconn = _pei.open_print_ro()
         gates = dict(pconn.execute("SELECT name, gate_status FROM print_pdf"))
         # Properties, not a snapshot: two exports are broken today (one truncated, one a
         # print of another device under this controller's name) and the engineer will

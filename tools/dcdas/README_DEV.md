@@ -167,6 +167,28 @@ Full build of 19 controllers (+66 registered nodes) takes ~60 s (~25 min when th
   (controller 11 / safety 3 / exciter 3 / drive 2), nodes 66; G11 blocks 31,417 / tasks 1,018 / encrypted 20;
   S1 encrypted 88/92; WSC1 encrypted 10; hmi navcsv 17,321 after dedup; format_spec 3,069; egd_consumed 3,132.
 
+## Sites (one index per site)
+
+* A site = one local config file (`db.py` docstring has the keys). Default site: `%LOCALAPPDATA%\dcdas\config.json`,
+  web folder `docs/`. Any other site (today `u2`): env `DCDAS_CONFIG=<its config.json>`, which sets `site`; `db_path` /
+  `print_db` default to files next to that config, `web_dir` to `docs/<site>/`, `web_base` to the default base + `<site>/`.
+  `db.site()` rejects anything but `[a-z0-9_-]+` and the reserved `data`, `assets`, `reports`.
+* Per-site CSVs: `parse_manual.site_dir()` = `tools/` for the default site, `tools/sites/<site>/` otherwise (missing folder =
+  SystemExit, never a fallback to the default site's rows): `xref_manual.csv`, `value_overrides.csv`, and (optional)
+  `print_gate_accept.csv` (see parse_pei below; keyed in `csv_sha1` only when the file exists). Messages name them with
+  `resolve.csv_label()`; the `csv_sha1` meta keys stay the bare file names. `pin_dir_*.csv` are shared; `pindir-import`
+  refuses when a site is set.
+* The index records its site: `build` / `xref-reload` write meta `site` only for a non-default site (the default site's index
+  has no such key). `db.check_index_site(conn, what)` refuses another site's index (a never-built file passes) and is called
+  before any write by `build` (before `--full` deletes the file), `xref-reload`, `xref-paste`, `print-scan`, `export-web`;
+  `status` prints `site:` / `web:` and ERROR on a mismatch (nothing new for the default site).
+* `export_web.check_target`: a page's `atlas-site` must equal the configured site, a site never exports into `docs/` itself
+  or inside `docs/data|assets|reports`; a folder without index.html (scratch export) is allowed. `site_label` / `related`
+  enter the manifest only when set, so the default site's build hash is unchanged.
+* Front end: the sub-site page is `stamp_assets.subsite_html(root page)` (`make_subsite.py`; `verify_web` compares modulo
+  stamps). `stamp_assets.py docs` stamps the root and every `docs/*/index.html` carrying `atlas-site`. Scripts loaded lazily
+  resolve against core.js's folder (`ASSET_BASE`), never against the page.
+
 ## Testing a stage in isolation
 
 ```
@@ -216,6 +238,16 @@ SFC 動作頁的 Software Path 會剛好截在 `.Action_Logic_<步驟>` 之前�
 標題欄只讀 Device Name / Software Path / Sh. No. / Cont. on Sh. / Module Revision、工具版本格（靠欄位座標定位，不寫廠商字面）與
 Build Major/Minor 兩個時間戳。其他格子有客戶、廠址與人員識別資訊，**刻意不讀**，以免流進 repo 或站台。
 時間戳不可用 `Last Modified`（某些控制器那格放的是列印當天）。
+
+工程師豁免（`print_gate_accept.csv`，每站台一份，表頭 `ctrl,check,date,basis`，沒有檔案＝沒有豁免）：工程師明確指示某台的列印圖
+可信、即使印出的建置戳記與 checkout 不符時登錄一列。`parse_pei.read_gate_waivers` 讀它（表頭不符＝全部不套用；空白 date／basis、
+重複列、不可豁免的 check 只報告不套用）。**只有 `revision_mismatch` 可豁免**（`WAIVABLE`）；完整性與身分（`truncated`、`unreadable`、
+`wrong_device`、`mixed_device`）永遠不可豁免，工具版本照查。豁免時 Major 戳記仍須與索引差一個整刻鐘（`major_offset`，同時給
+`tz_offset_min`），不符就維持拒收並在 gate_note 註明豁免未套用。過關的列仍是 `gate_status='pass'`，另在 `print_pdf.waiver`
+存 JSON（check／date／basis／printed／indexed；欄位不升 schema，`open_print` 對舊語料 `ALTER TABLE`，讀取端用 `pdf_waivers` 探測）。
+`load_print` 只在 CSV 仍有該列、且索引仍是當時的建置時才升格豁免的圖，升格腳的描述加註「工程師指示以圖為準」。
+`print_fingerprint` 在豁免的檔名值後加 `+waiver:<check>:<date>`。`status` 比對 CSV 與語料：新增或撤銷豁免要 `print-scan --ctrl X`
+（gate 在掃描時決定）再 `xref-reload`；只改 basis 文字時 `xref-reload` 即可；圖已與索引一致時提示該列可刪。
 
 已知限制：Software Path 讀不出路徑的圖（`map_method='none'`）在第 4 版語料只剩 14 張，全部屬於兩類：
 巢狀在不透明巨集裡的子巨集內部（`…/C10QCB20KD100/CW_PB_1`，索引本來就沒有這一層），以及在 SFC 步驟名中間被截斷、

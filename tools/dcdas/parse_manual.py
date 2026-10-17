@@ -459,6 +459,35 @@ def _tools_dir(repo_dir: Path) -> Path:
     return repo_dir
 
 
+def site_dir(repo_dir: Path) -> Path:
+    """Folder of the per-site hand-maintained CSVs (xref_manual.csv, value_overrides.csv): the tools folder for the default
+    site, tools/sites/<site>/ for any other (it must exist: a site never falls back to the default site's rows). The
+    direction tables (TABLE_CSV, OVERRIDE_CSV) are shared by every site and stay in the tools folder."""
+    try:
+        from . import db as _db
+    except ImportError:
+        from dcdas import db as _db
+    tools = _tools_dir(repo_dir)
+    s = _db.site()
+    if not s:
+        return tools
+    d = tools / "sites" / s
+    if not d.is_dir():
+        raise SystemExit(f"site {s!r}: folder tools/sites/{s}/ missing (it holds this site's xref_manual.csv and "
+                         f"value_overrides.csv; create it, header-only files are fine)")
+    return d
+
+
+def site_rel(name: str) -> str:
+    """How messages name a per-site CSV: the bare file name for the default site, tools/sites/<site>/<name> otherwise."""
+    try:
+        from . import db as _db
+    except ImportError:
+        from dcdas import db as _db
+    s = _db.site()
+    return f"tools/sites/{s}/{name}" if s else name
+
+
 def write_table(rows: Iterable[tuple], path: Path) -> int:
     n = 0
     with open(path, "w", encoding="utf-8", newline="") as f:

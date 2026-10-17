@@ -11,10 +11,18 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 - 索引 DB（不進 repo）：`%LOCALAPPDATA%\dcdas\index.sqlite`（env `DCDAS_DB` 可覆寫）
 - 列印圖語料 DB（不進 repo）：`%LOCALAPPDATA%\dcdas\print.sqlite`（env `DCDAS_PRINT_DB`）；來源是組態工具匯出的
   `<CTRL>_P.pdf`，位置由 `config.json` 的 `pei_dir`（或 env `DCDAS_PEI`）指定，預設 `src_root\PEI\PEI`。換成新快照而新快照沒有
-  PEI 資料夾時，先把 `pei_dir` 明寫成舊位置，再改 `src_root`。`[print]` 升格前會再比對圖面的建置戳記與索引，別的建置不升格
+  PEI 資料夾時，先把 `pei_dir` 明寫成舊位置，再改 `src_root`。`[print]` 升格前會再比對圖面的建置戳記與索引，別的建置不升格（站台 `print_gate_accept.csv` 工程師豁免的除外，見列印邏輯圖段）
 - 站台密語：`config.json` 的 `web_key_file` 指向的檔案（或 env `DCDAS_WEB_KEY`）；**絕不可進 repo**
 - CLI：`py tools\dcdas.py <cmd>`（在本 repo 根目錄執行；`--json` 全指令可用）
 - 模組契約與 XML 事實：`tools/dcdas/README_DEV.md`；網頁資料契約：`CONTRACT.md`
+- **多站台**：預設站台（env 都不設）= 上面這些路徑、網頁 `docs/`。其他站台（目前只有 `u2`）各有一份本機設定檔，用 env
+  `DCDAS_CONFIG=<該站 config.json>` 選取；設定檔帶 `site`（小寫 token；`data`／`assets`／`reports` 保留不可用）、`db_path`、`print_db`
+  （沒寫時放在設定檔旁）、`src_root`、`pei_dir`、`web_key_file`，選用 `web_dir`（預設 `docs/<site>/`）、`web_base`（預設
+  `…/signal-atlas/<site>/`）、`site_label`（人看的站名，只進本機設定與加密 manifest，**不進 repo**）。env `DCDAS_SITE` 可覆寫 `site`。
+  - 人工登錄檔分站：預設站台是 `tools/xref_manual.csv`、`tools/value_overrides.csv`；站台 `<site>` 是 `tools/sites/<site>/` 底下的同名檔
+    （本文其餘提到這兩個檔的地方都照此對應）。`pin_dir_table.csv`／`pin_dir_overrides.csv` 各站共用，`pindir-import` 只能在預設設定下跑。
+  - 索引記得自己屬於哪個站台（meta `site`）；`build`／`xref-reload`／`xref-paste`／`print-scan`／`export-web` 遇到別站的索引一律拒絕、
+    什麼都不寫，`status` 印 ERROR。PowerShell 裡**每個指令都明寫** `$env:DCDAS_CONFIG=…` 或 `Remove-Item Env:DCDAS_CONFIG`。
 
 ## 回答「訊號 X 接到哪 / X 的邏輯 / X 的來源與去向 / X 接在哪個端子」時的規則
 
@@ -30,7 +38,8 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
    看列印圖怎麼畫（`show` 結尾的 `PRINTED SHEETS:` 行也會提示）。回答時把它**另起一段**當「列印圖證據（尚未併入索引）」，
    引用 `<CTRL>_P.pdf p<頁> Sh.<圖號> <圖格>`；`INDEX PINS NOT DRAWN AS WIRED` 不是反證（沒接線的腳不畫）。
 6. 回答用中文散文 + 英文訊號名；每個結論引用 `CTRL/Program/Task/Block.Pin (file:line)`，並附網頁深連結
-   `https://momobacon-wq.github.io/signal-atlas/#/v/<CTRL.NAME>`；要看圖時附 Task 圖 `#/d/<CTRL>/<Program>/<Task>?sel=<CTRL.NAME>`
+   `https://momobacon-wq.github.io/signal-atlas/#/v/<CTRL.NAME>`（其他站台以 `status` 的 `web:` 行為基底，站台 u2 是
+   `https://momobacon-wq.github.io/signal-atlas/u2/#/v/<CTRL.NAME>`）；要看圖時附 Task 圖 `#/d/<CTRL>/<Program>/<Task>?sel=<CTRL.NAME>`
    或訊號圖 `#/g/<CTRL.NAME>?up=2&down=2`（`show` 的 WRITERS 行 `CTRL/Program/Task/…` 的前三段就是 Task 圖路徑）。
 7. 誠實標示不確定：
    - 方向是推斷值。CLI 印 `O/T` 這種「方向/來源」字母：U=介面腳 Usage、T=手冊表、人工覆寫或工具查證、M=人工登錄但只是鏡射／推論、C=常數規則、L=連線投票、H=命名慣例、R=回推（不透明巨集）、G=列印邏輯圖（方塊左側入、右側出）、`?`=未知。來源是 L/H/R/M 時在回答裡寫「推斷」；G 是組態工具自己的圖面，不是推斷。
@@ -57,6 +66,14 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 - `print-gate`：逐檔檢查可不可信（`%%EOF` 完整、三種讀取器頁數一致、**標題欄 Device Name 必須等於檔名所指的控制器**、
   印出的 Build Major/Minor 與索引的 `controller.major_rev/minor_rev` 必須相差同一個整刻鐘時區位移、工具版本相符）。
   任何一項不過就拒收並記下原因，不會半途吃進去。檔名不能當身分依據——實際遇過一支檔名寫 A、內容整本是 B 的列印。
+  **工程師豁免**：站台資料夾的 `print_gate_accept.csv`（`ctrl,check,date,basis`；沒有檔案＝沒有豁免）登錄工程師明確指示
+  「這台以列印圖為準」的決定。只有 `revision_mismatch`（建置戳記不符）可豁免，而且 Major 戳記仍須差一個整刻鐘；完整性、
+  Device Name、工具版本照查，不可豁免。過關的檔在 `print-gate` 印 `pass+waiver`，`status`、`print-check`、`print-show` 都會印
+  `accepted by engineer waiver <date>: printed build X vs index Y`（`print-show`／`print-check` 在豁免列已從 CSV 撤銷時改註
+  `WITHDRAWN`）。只有**新增**的升格腳在描述加註「工程師指示以圖為準」；就地補方向的明文腳、取代推斷列的腳沿用原描述，
+  網頁 tooltip 也不帶豁免字樣，所以豁免要看 `status`／`print-show`／`print-check`。XML 明文接線與人工查證列照樣不覆寫。回答引用這些圖時
+  要說明：圖面建置與 checkout 快照不同，是工程師指示以圖為準。新增或撤銷豁免後 `status` 會要求 `print-scan --ctrl X` 再
+  `xref-reload`；不要自己加列，只有工程師指示時才登錄。
 - `print-scan`：把圖面解析進 `print.sqlite`（`print_pdf` / `print_sheet` / `print_pin`）。**完全不動 `index.sqlite`。**
   語料另存一個 DB 是刻意的：索引會因改 schema 或 checkout 變動被刪掉重建，重解析上萬張圖要好幾分鐘。
   語料只存方塊路徑與變數**名稱**，不存索引的 row id，所以重建索引後仍然對得上。
@@ -127,4 +144,13 @@ py tools\verify_web.py docs                     # 獨立對帳（解密比對）
 py tools\auth\mock_server.py 8766               # 本機測站（含員工代號閘門的 mock）
 git add -A && git commit && git push            # GitHub Pages 約 10 分鐘生效
 ```
+站台 u2（每個指令前 `$env:DCDAS_CONFIG="$env:LOCALAPPDATA\dcdas\u2\config.json"`，做完 `Remove-Item Env:DCDAS_CONFIG`）：
+```
+py tools\make_subsite.py u2 [--check]           # 由 docs/index.html 推出 docs/u2/index.html（共用 ../assets/、../auth-config.json）
+py tools\dcdas.py build / print-gate / print-scan / xref-reload / status
+py tools\dcdas.py export-web                     # 不帶參數 = 設定的 web_dir（docs\u2）；頁面 atlas-site 或索引站台不符就中止
+py tools\verify_web.py                           # 不帶參數 = docs\u2
+```
+改了 `docs/assets/` 之後跑 `py tools\stamp_assets.py docs`（一併 stamp 所有子站）。新增子站時加進 `docs/404.html` 的 `SUBS`。
+env 沒設好時**不要**把預設站台重新匯出進 `docs/`（只有使用者要發佈預設站台時才做）。
 push 前要先問使用者。`export-web --no-encrypt` 的產物不得 push。JSON 不得含本機絕對路徑（export-web 會自檢）。

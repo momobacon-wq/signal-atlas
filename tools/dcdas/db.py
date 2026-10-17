@@ -2,12 +2,21 @@
 """SQLite schema + connection helpers + local configuration.
 
 Nothing site-specific lives in the repo. Local settings come from (in priority order):
-  env DCDAS_DB            index file            default %LOCALAPPDATA%\\dcdas\\index.sqlite
+  env DCDAS_CONFIG        config file           default %LOCALAPPDATA%\\dcdas\\config.json (one config file per site)
+  env DCDAS_DB            index file            else config.json "db_path", default index.sqlite next to the config file
   env DCDAS_SRC           checkout root         else config.json "src_root"
   env DCDAS_WEB_KEY       site passphrase       else config.json "web_key_file" (first line of that file)
-  %LOCALAPPDATA%\\dcdas\\config.json   {"src_root": "...", "web_key_file": "...", "manual_pdfs": ["...", ...]}
+  env DCDAS_SITE          site token            else config.json "site" (lowercase [a-z0-9_-]); empty = the default site
+  config.json   {"src_root": "...", "web_key_file": "...", "manual_pdfs": ["...", ...],
+                 optional: "db_path", "print_db", "pei_dir", "site", "web_dir", "web_base", "site_label", "related"}
+A non-default site keeps its hand-maintained CSVs in tools/sites/<site>/ and publishes to web_dir (default docs/<site>/)
+at web_base (default: the default site's base + "<site>/"). site_label and related go only into the encrypted
+manifest: they never appear in a repo file. The index records its site (meta "site", absent = the default site); the
+commands that write the index, the print corpus, a site's CSV or its web folder refuse another site's index
+(check_index_site).
 """
 import json
+import re
 import os
 import sqlite3
 from pathlib import Path
@@ -31,11 +40,49 @@ def config() -> dict:
     return {}
 
 
+_SITE_RE = re.compile(r"^[a-z0-9_-]+$")
+RESERVED_SITES = {"data", "assets", "reports"}     # folders of the default site's docs/: never a sub-site name
+DEFAULT_WEB_BASE = "https://momobacon-wq.github.io/signal-atlas/"
+
+
+def site() -> str:
+    """This configuration's site token ("" = the default site). env DCDAS_SITE wins over config "site"."""
+    v = os.environ.get("DCDAS_SITE")
+    if v is None:
+        v = config().get("site") or ""
+    v = str(v).strip()
+    if v and not _SITE_RE.match(v):
+        raise SystemExit(f"site {v!r} invalid: lowercase letters, digits, '_' and '-' only "
+                         f"(DCDAS_SITE or \"site\" in {config_path()})")
+    if v in RESERVED_SITES:
+        raise SystemExit(f"site {v!r} invalid: {', '.join(sorted(RESERVED_SITES))} are folders of the default site's docs/")
+    return v
+
+
+def web_dir(repo: Path) -> Path:
+    """Default folder for export-web / verify_web: config "web_dir" (relative to the repo root), else docs/ for the
+    default site and docs/<site>/ for any other."""
+    repo = Path(repo)
+    w = config().get("web_dir")
+    if w:
+        w = Path(w)
+        return w if w.is_absolute() else repo / w
+    s = site()
+    return repo / "docs" / s if s else repo / "docs"
+
+
+def web_base() -> str:
+    """Public URL of this site's pages (the base of deep links), always ending in '/'."""
+    s = site()
+    b = config().get("web_base") or (DEFAULT_WEB_BASE + s + "/" if s else DEFAULT_WEB_BASE)
+    return b if b.endswith("/") else b + "/"
+
+
 def db_path() -> Path:
     p = os.environ.get("DCDAS_DB") or config().get("db_path")
     if p:
         return Path(p)
-    return local_dir() / "index.sqlite"
+    return config_path().parent / "index.sqlite"   # = local_dir() for the default config; a site's config keeps its own
 
 
 def src_root() -> Path:
@@ -262,3 +309,25 @@ def set_meta(conn, key, value):
 def get_meta(conn, key, default=None):
     r = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     return r[0] if r else default
+
+
+def index_site(conn):
+    """The site an index was built for: meta "site" ("" = the default site), or None for a file never built
+    (no built_at, or no meta table yet)."""
+    try:
+        if get_meta(conn, "built_at") is None:
+            return None
+        return get_meta(conn, "site") or ""
+    except sqlite3.Error:
+        return None
+
+
+def check_index_site(conn, what):
+    """Refuse (SystemExit) when the index belongs to another site than the configured one. A file never built passes,
+    so a site's first build works. Called before any write by the commands that write the index, the print corpus, a
+    site's CSV or its web folder (build, xref-reload, xref-paste, print-scan, export-web)."""
+    have, want = index_site(conn), site()
+    if have is not None and have != want:
+        raise SystemExit(f"ABORT {what}: the index {db_path()} belongs to site {have or '(default)'!r}, this config is "
+                         f"site {want or '(default)'!r} ({config_path()}): check DCDAS_CONFIG / DCDAS_DB / DCDAS_SITE. "
+                         f"Nothing was written. (If that file really must be replaced, delete it by hand, then build.)")

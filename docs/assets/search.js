@@ -83,8 +83,11 @@
     let ctrl = route.query.c || D.store.get('ctrl', 'ALL');
     if (ctrl !== 'ALL' && !D.ctrls.includes(ctrl)) ctrl = 'ALL';
 
+    // 例子用本站真的有的控制器：G11，否則第一台 G<數字>（有 L4 的那類），最後才是第一台控制器
+    const exCtrl = D.ctrls.includes('G11') ? 'G11' : D.ctrls.find((c) => /^G\d+$/.test(c)) || D.ctrls[0] || 'G11';
+    const lab = D.siteLabel();
     const input = D.h('input', { id: 'q', type: 'search', autocomplete: 'off', spellcheck: 'false', autofocus: true, value: q0,
-      placeholder: '訊號名 / KKS 別名 / DeviceTag / 說明…（例：L27QE1_A、G11.L4、lube oil）', 'aria-label': '搜尋訊號' });
+      placeholder: '訊號名 / KKS 別名 / DeviceTag / 說明…（例：L27QE1_A、' + exCtrl + '.L4、lube oil）', 'aria-label': '搜尋訊號' });
     const chips = D.h('div', { class: 'chips', role: 'group', 'aria-label': '控制器' });
     const fchips = D.h('div', { class: 'chips', role: 'group', 'aria-label': '篩選' });
     let mask = Number(D.store.get('fmask', 0)) || 0;
@@ -94,7 +97,7 @@
     const hint = D.h('p', { class: 'muted small hint' }, '排序：名稱完全相同 › 名稱開頭 › 別名 › 名稱含 › 別名含 › 說明含；多個字以空白分隔（全部都要符合）；輸入 CTRL.NAME 只查該控制器。');
     D.set(view, 
       D.h('div', { class: 'home-wrap' },
-        D.h('h1', { class: 'home-title', text: 'Signal Atlas 訊號邏輯查詢' }),
+        D.h('h1', { class: 'home-title', text: 'Signal Atlas ' + (lab ? lab + ' ' : '') + '訊號邏輯查詢' }),
         D.h('p', { class: 'muted home-sub', text: '查一個訊號在哪裡被寫、被讀、接在哪個端子、送到哪個控制器、出現在哪張畫面。' }),
         D.h('div', { class: 'bigsearch' }, input),
         chips, fchips, prog, status, results, hint, browseRow()));

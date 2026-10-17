@@ -53,7 +53,7 @@ ORIGIN_NOTE = {"decl": "(recovered: variable declared at this pin of an opaque m
                "link": "(recovered: sibling L: link into this opaque macro)",
                "pair": "(recovered: paired with the sibling AI_k/FF_AI_k of the same number; outputs by ai_<stem>/<stem>_DS naming + ReferencedIn; inferred)",
                "vote": "(recovered: 2oo3 voter interface inferred from the FNCTN_<stem> task name and the program's encrypted-only references; one instance confirmed in the tool; inferred)",
-               "xref": "(verified in the configuration tool's cross-reference; hand-entered in tools/xref_manual.csv)",
+               "xref": "(verified in the configuration tool's cross-reference; hand-entered in the site's xref_manual.csv)",
                "print": "(from the configuration tool's printed logic sheet; left side = input, right = output)"}
 
 
@@ -550,7 +550,7 @@ def show(conn, signal, all_rows=False):
         encset = {r[0] for r in conn.execute("SELECT name FROM program WHERE ctrl=? AND encrypted=1", (v["ctrl"],))}
         enc = [p for p in refd if p in encset]
         # ReferencedIn lists a (non-encrypted) program but no pin of this variable is indexed there -> the reference can
-        # only sit inside an encrypted block of that program (a candidate for tools/xref_manual.csv)
+        # only sit inside an encrypted block of that program (a candidate for the site's xref_manual.csv)
         progs = {r[0] for r in conn.execute("SELECT name FROM program WHERE ctrl=?", (v["ctrl"],))}
         seen = {r[0] for r in conn.execute("""SELECT DISTINCT pr.name FROM pin p JOIN block b ON b.id=p.block_id
                                               JOIN program pr ON pr.id=b.program_id WHERE p.var_id=?""", (vid,))}
@@ -1618,6 +1618,10 @@ def print_check(conn, pconn, ctrl=None, what="all", limit=40):
         "SELECT p.name, p.ctrl, p.gate_status, p.gate_note, p.page_count, p.n_sheets, "
         "(SELECT count(*) FROM print_pin q JOIN print_sheet s ON s.id=q.sheet_id WHERE s.pdf_id=p.id) "
         "FROM print_pdf p ORDER BY p.gate_status<>'pass', p.ctrl")]
+    for name, w in _ps_waivers(pconn).items():
+        for p in pdfs:
+            if p["name"] == name and p["gate"] == "pass":
+                p["waiver"] = _ps_waiver_text(w, p["ctrl"])
     scanned = [p["ctrl"] for p in pdfs if p["gate"] == "pass" and p["sheets"]]
     want = [c for c in scanned if not ctrl or c == ctrl]
 
@@ -1754,7 +1758,36 @@ def _ps_status(pconn, ctrl):
         return None, f"no printed logic sheets for {ctrl}"
     if r[1] != "pass":
         return {"name": r[0]}, f"{r[0]} was refused by the print gate ({r[1]}: {r[2]})"
-    return {"name": r[0]}, None
+    out = {"name": r[0]}
+    w = _ps_waivers(pconn).get(r[0])
+    if w:                                  # accepted only because the engineer waived one gate check
+        out["waiver"] = _ps_waiver_text(w, ctrl)
+    return out, None
+
+
+def _ps_waivers(pconn):
+    try:
+        from . import parse_pei
+    except ImportError:
+        from dcdas import parse_pei
+    return parse_pei.pdf_waivers(pconn)
+
+
+def _ps_waiver_text(w, ctrl):
+    """The corpus's waiver line; flagged WITHDRAWN when the CSV row is gone (resolve.load_print then skips the PDF)."""
+    try:
+        from . import parse_pei
+    except ImportError:
+        from dcdas import parse_pei
+    text = parse_pei.waiver_text(w)
+    try:
+        withdrawn = (ctrl, w.get("check")) not in parse_pei.read_gate_waivers()[0]
+    except (OSError, SystemExit):
+        withdrawn = False
+    if withdrawn:
+        text += (" - WITHDRAWN: no longer in %s, so the index does not promote it; re-run  print-scan --ctrl %s"
+                 % (parse_pei.GATE_ACCEPT_CSV, ctrl))
+    return text
 
 
 class _PsIndex:

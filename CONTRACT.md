@@ -8,7 +8,10 @@
 tools/dcdas.py                 CLI（build / status / find / show / trace / … / export-web）
 tools/dcdas/*.py               萃取器（README_DEV.md 有各模組契約與 XML 事實）
 tools/pin_dir_table.csv        手冊抽出的 block 腳位方向表（block_type,pin_name,direction,source_doc,page）
-tools/pin_dir_overrides.csv    人工修正（優先於 table）
+tools/pin_dir_overrides.csv    人工修正（優先於 table）；這兩份方向表各站台共用
+tools/xref_manual.csv、tools/value_overrides.csv   預設站台的人工登錄（交互參照、初始值更正）
+tools/sites/<site>/*.csv       其他站台（例 u2）各自的 xref_manual.csv、value_overrides.csv（表頭相同）
+tools/make_subsite.py          由 docs/index.html 推出子站頁 docs/<site>/index.html
 tools/verify_web.py            獨立對帳：SQLite ⇄ docs/data（解密後逐項比對）
 tools/stamp_assets.py          index.html 資產加 ?v=<hash>、version.json
 docs/index.html                單頁 App（vanilla JS，無 build step，CSP script-src 'self'，noindex）
@@ -16,7 +19,14 @@ docs/robots.txt                Disallow: /
 docs/assets/                   boot.js、auth.js（員工代號閘門）、app.css、core.js、search.js、signal.js、trace.js、block.js、io.js、browse.js、
                                glyph.js（方塊圖示 D.glyph：列印圖畫法的符號與 RUNG 梯形圖）、diagram.js（方塊圖引擎 D.dg）、dtask.js（Task 圖）、dsignal.js（訊號圖）、dagre.min.js（vendored 3.1.1，MIT，圖頁才載入）
 docs/data/                     export-web 的輸出（下）
+docs/<site>/                   子站（例 docs/u2/）：index.html（帶 <meta name="atlas-site" content="<site>">，程式讀 ../assets/、
+                               閘門設定讀 ../auth-config.json）、自己的 data/ 與 version.json；不放 assets/、404.html、robots.txt
 ```
+
+**子站**：每個站台一份本機設定（env `DCDAS_CONFIG` 選取；`site`、`web_dir`、`web_base`、`site_label` 見 `tools/dcdas/db.py`），
+自己的索引、語料、`data/`（各自的 salt，同一密語）。前端 localStorage 鍵：主站 `atlas.<k>`（`atlas.key`、`atlas.ctrl`、`atlas.fmask`），
+子站 `atlas.<site>.<k>`，互不覆蓋；`ams.theme`、`ams.auth`、`atlas.dg.*` 各站共用。延遲載入的程式（`dagre.min.js`）以 core.js 所在資料夾
+為基準，不以頁面為基準。`docs/404.html` 的 `SUBS` 列出子站，打錯的 `/<site>/…` 回該子站首頁。
 
 ## 加密與封裝（`export-web`）
 
@@ -28,7 +38,7 @@ docs/data/                     export-web 的輸出（下）
 - `manifest.build` = 所有資料檔**明文** sha256 摘要（含路徑）+ manifest（不含 build）的 sha256 前 10 碼；決定性（IV 隨機不影響）。
   前端所有請求加 `?v=<build>`（build 從 `meta.json`／`<meta name="dcdas-build">` 取得）；`docs/version.json = {"build"}`。
 - 前端流程：員工代號閘門 → 讀 `meta.json` → 有記住的金鑰（localStorage `atlas.key`，b64 原始金鑰）就用，否則密語視窗 →
-  WebCrypto PBKDF2 推導 → 解 `check` 驗證 → 載入器 fetch `.bin` → AES-GCM 解密 → `DecompressionStream('gzip')` → JSON。
+  WebCrypto PBKDF2 推導（子站的鍵是 `atlas.<site>.key`）→ 解 `check` 驗證 → 載入器 fetch `.bin` → AES-GCM 解密 → `DecompressionStream('gzip')` → JSON。
   `meta.json` 404 = 未加密的本機測試匯出（`export-web --no-encrypt`），載入器退回直接抓 `.json`；此類產物不得 push。
 - 通則：JSON 緊湊（`separators=(',',':')`, `ensure_ascii=False`）；**任何檔案不得含本機絕對路徑**（產生器逐檔 regex 自檢，命中即中止）；
   檔案位置一律是相對 checkout 根的路徑（`G11/_LubeOil.xml`）；每檔目標 ≤ 1 MB（超過只警告）；磁碟總量 > 700 MB 中止。
@@ -59,6 +69,8 @@ docs/data/                     export-web 的輸出（下）
 - `nodes` = **非控制器節點**登錄（DB `node` 表）：`[{"name","kind"}]`，`kind` ∈ `hmi`（HMI／工作站、精簡型終端）｜`server`（伺服器／虛擬機）｜`network`（交換器、時間同步等網路設備）｜`external`（外部資料集中器等）｜`other`。
   **只有名稱與種類**（不含位址、主機名或其他欄位）；節點沒有變數、程式、I/O、警報、訊號卡，**永遠不會有** `names/`、`program/`、`io/`、`alarm/` 檔；名稱與 `controllers` 不重疊。
   部分節點送出 EGD 給控制器，所以訊號卡的 `egd.src.ctrl` 可能是節點名；節點的 ConsumedData（HMI 訂閱）刻意**不索引**。前端頁尾只列各種類數量，不列名稱。
+- `site_label`（選用）= 子站人看的站名，來自本機設定 `site_label`，**只在加密 manifest 裡**；前端用在標題、`.brand-sub` 與首頁標題，
+  沒有時子站顯示站名大寫、主站不顯示。`related`（選用，預設 `[]`）來自本機設定 `related`。兩者沒設時不出現／為空，主站 build 雜湊不變。
 - `prog_files`（選用）= `{ctrl: {program: file}}`，**只列**原始檔不是 `<ctrl>/_<program>.xml` 的程式（例：程式庫程式 `LibA\Seq_1` → `L1/_LibA~Seq_1.xml`）。
   前端 `D.progFile(ctrl, program)` = 查此表，否則 `<ctrl>/_<program>.xml`；方塊記錄的 `file` 欄已是正確檔名（= DB `program.file_path`）。
 - 程式名與方塊路徑可含反斜線（`LibA\Seq_1/Task/…`）；`/` 仍是唯一的路徑分隔。hash 路由的路徑片段以 `D.enc` 跳脫 `%`、`?`、`#`、`&`、空白與 `\`（反斜線 → `%5C`），
@@ -192,4 +204,5 @@ task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 
 以同一密語解密；`manifest.controllers` 名稱 = DB `controller`（雙向）且 `kind` 在四種之內；`manifest.nodes` = DB `node`、與控制器不重疊、節點沒有 names/program/io/alarm 檔；
 `prog_files` = DB 中 `file_path ≠ <ctrl>/_<program>.xml` 的程式；names 列數 = variable 數（沒有變數的控制器可缺檔）；抽樣卡的 `egd.c` 只有控制器且筆數 = DB、`egd.src.ctrl` ∈ 控制器 ∪ 節點；
 抽樣方塊 `file` = `program.file_path`（含至少一個 `prog_files` 例外程式的方塊）；抽樣畫面 `st`=1 ⇔ `hmi_point.var_id` 非空；每張訊號卡在正確分片；抽樣 200 卡 + 300 方塊與 SQLite 逐欄相等；無絕對路徑；
-`manifest.build` 可重現且與 `meta.json` 一致；除 `meta.json` 外無明文 `.json`；磁碟總量；exit 0 才可 push。
+`manifest.build` 可重現且與 `meta.json` 一致；除 `meta.json` 外無明文 `.json`；磁碟總量；頁面 `atlas-site` = 設定的站台；子站頁 = 由主站頁推出的頁（不計 stamp）；
+延遲載入的程式都在共用 assets 且沒有以頁面為基準的 `'assets/'` 網址；整個 `docs/` < 1 GB；exit 0 才可 push。不帶參數時對帳設定的 `web_dir`。

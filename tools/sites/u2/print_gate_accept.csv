@@ -1,0 +1,3 @@
+ctrl,check,date,basis
+G21S,revision_mismatch,2026-10-18,工程師指示以列印圖為準（列印建置戳記與 checkout 不符：印出的 Minor 戳記為 000 00:00:00）
+H22,revision_mismatch,2026-10-18,工程師指示以列印圖為準（列印建置戳記與 checkout 不符：圖面是較新的建置）

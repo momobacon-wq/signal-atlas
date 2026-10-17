@@ -9,10 +9,12 @@
   py tools/dcdas.py block <CTRL> <path>      | task <CTRL> <program> <task>
   py tools/dcdas.py io <tag|var|module>      | egd <var|ctrl> | screen <cim|var> | alarm <pattern>
   py tools/dcdas.py where <CTRL.NAME | CTRL block-path>
-  py tools/dcdas.py lint | coverage | audit-type <BLOCK_TYPE> | pindir-import | xref-paste <txt> --ctrl X | export-web <docs_dir>
+  py tools/dcdas.py lint | coverage | audit-type <BLOCK_TYPE> | pindir-import | xref-paste <txt> --ctrl X | export-web [docs_dir]
   py tools/dcdas.py print-gate | print-scan [--ctrl X] | print-check [--ctrl X]   (the printed logic sheets as evidence)
   py tools/dcdas.py print-show CTRL.NAME | print-show CTRL Program/Task/.../Block   (what the drawing shows for one signal / block)
 All commands accept --json. Output is deliberately compact (one fact per line) for Claude.
+Which site (index, checkout, CSV folder, web folder) a command works on comes from the local config: env DCDAS_CONFIG
+selects another site's config file (see dcdas/db.py); `status` prints the site and its web base when one is set.
 """
 import argparse
 import json
@@ -46,6 +48,17 @@ def cmd_build(a):
     if not root.exists():
         raise SystemExit(f"source root not found: {root} (set DCDAS_SRC or src_root in {dbm.config_path()})")
     path = dbm.db_path()
+    if path.exists():   # another site's index is never rebuilt, extended or deleted (also not by --full)
+        import sqlite3 as _sq
+        try:
+            c0 = _sq.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        except _sq.Error:
+            c0 = None
+        if c0 is not None:
+            try:
+                dbm.check_index_site(c0, "build")
+            finally:
+                c0.close()
     if a.full and path.exists():
         path.unlink()
     if path.exists():   # schema check BEFORE the DDL touches the file (new columns/indexes would fail on an old table)
@@ -166,7 +179,11 @@ def cmd_build(a):
     dbm.set_meta(conn, "schema_version", dbm.SCHEMA_VERSION)
     tcws = sorted(root.glob("*.tcw"))
     if tcws:
-        dbm.set_meta(conn, "toolbox_version", inv.head_info(tcws[0])["version"])
+        # the tool that last saved the project (what the printed sheets show, see print-gate), else the PI version
+        hi = inv.head_info(tcws[0])
+        dbm.set_meta(conn, "toolbox_version", hi.get("written_by") or hi["version"])
+    if dbm.site():
+        dbm.set_meta(conn, "site", dbm.site())
     conn.commit()
     log("[summary]")
     for t in ("controller", "node", "program", "task", "block", "pin", "variable", "io_point", "egd_produced",
@@ -193,10 +210,14 @@ def cmd_xref_reload(a):
     names = [c.name for c in inv.controllers(root)]
     if a.dry_run:
         conn = dbm.open_ro()
+        dbm.check_index_site(conn, "xref-reload")
         bad = resolve.xref_validate(conn, HERE, names, log)
         if a.json:
             print(json.dumps({"invalid": bad}, ensure_ascii=False, indent=1))
         return
+    conn = dbm.open_ro()
+    dbm.check_index_site(conn, "xref-reload")   # before open_build: a wrong index is not even opened for writing
+    conn.close()
     conn = dbm.open_build(dbm.db_path())
     t0 = time.time()
     log("[xref-reload]")
@@ -211,6 +232,8 @@ def cmd_xref_reload(a):
     dbm.set_meta(conn, "csv_sha1", json.dumps(resolve.csv_fingerprints(HERE), sort_keys=True))
     dbm.set_meta(conn, "print_sha", json.dumps(resolve.print_fingerprint(), sort_keys=True))
     dbm.set_meta(conn, "xref_reloaded_at", now_iso())
+    if dbm.site():
+        dbm.set_meta(conn, "site", dbm.site())
     conn.commit()
     log(f"done in {time.time()-t0:.0f}s (index data unchanged otherwise; run export-web to publish)")
 
@@ -228,13 +251,22 @@ def cmd_status(a):
         rec = {}
     now = _res.csv_fingerprints(HERE)
     out["csv_stale"] = {k: (rec.get(k) != v) for k, v in now.items()}
+    for k in rec:                                # a keyed-when-present file that was deleted since
+        if k not in now:
+            out["csv_stale"][k] = True
     # the printed-sheet corpus the index promoted pins from: re-scanned since?
     try:
         prec = json.loads(dbm.get_meta(conn, "print_sha") or "{}")
     except ValueError:
         prec = {}
     out["print_stale"] = prec != _res.print_fingerprint()
+    pw = _waiver_status(conn)
+    if pw:                                       # only a site with waivers (file or corpus rows) gets the key
+        out["print_waivers"] = pw
     out["schema"] = dbm.get_meta(conn, "schema_version")
+    site, idx_site = dbm.site(), dbm.get_meta(conn, "site")   # idx_site None = the default site's index
+    if site or idx_site:                         # the default site with an index that never had a site: no new keys
+        out["site"], out["index_site"], out["web_base"] = site, idx_site, dbm.web_base()
     out["value_overrides"] = _vo_status(conn, _res)
     live = {c.name: c for c in inv.controllers(root)}
     seen = set()
@@ -256,6 +288,11 @@ def cmd_status(a):
         print(json.dumps(out, ensure_ascii=False, indent=1))
         return
     print(f"db: {out['db']}")
+    if "site" in out:
+        print(f"site: {out['site'] or '(default)'}   web: {out['web_base']}")
+        if (out["index_site"] or "") != out["site"]:
+            print(f"  ERROR the index was built for site {out['index_site'] or '(default)'!r}, this config is site "
+                  f"{out['site'] or '(default)'!r}: wrong DCDAS_CONFIG / DCDAS_DB / db_path?")
     print(f"built_at: {out['built_at']}   toolbox: {out['toolbox_version']}")
     for c in out["controllers"]:
         flag = "NOT INDEXED" if c.get("not_indexed") else ("CHANGED" if c["changed"] else "ok")
@@ -268,10 +305,11 @@ def cmd_status(a):
         for p in out["stale_examples"][k]:
             print(f"  {k}: {p}")
     vo = out["value_overrides"]
+    vo_name = _res.csv_label(_res.VO_CSV)
     if vo["csv_rows"] or vo["rows"] or vo["header_error"]:
         c = vo["counts"]
         print(f"value overrides: {c['applied']} applied, {c['merged']} merged, {c['conflict']} conflict, {c['missing']} missing"
-              + (f"  ({_res.VO_CSV} not readable: see ERROR)" if vo["header_error"] else f"  ({vo['csv_rows']} rows in {_res.VO_CSV})"))
+              + (f"  ({vo_name} not readable: see ERROR)" if vo["header_error"] else f"  ({vo['csv_rows']} rows in {vo_name})"))
         if vo["header_error"]:
             print(f"  ERROR {vo['header_error']}: NOTHING is applied until the file is fixed")
         for x in vo["rows"]:
@@ -283,28 +321,121 @@ def cmd_status(a):
                   f"e.g. after a --no-post build): {', '.join(vo['not_in_effect'][:8])} - not in effect: run xref-reload or build")
         if vo["stale"]:
             print(f"  {vo['stale']}")
+    if pw:
+        ga_name = _res.csv_label(_res.GATE_ACCEPT_CSV)
+        eff = ", ".join(f"{x['ctrl']} {x['check']} {x['date']}" for x in pw["in_effect"])
+        print(f"print gate waivers: {len(pw['in_effect'])} in effect" + (f" ({eff})" if eff else "")
+              + f"  ({pw['csv_rows']} rows in {ga_name})")
+        for m in pw["messages"]:
+            print(f"  {m}")
     csv_stale = [k for k, v in out["csv_stale"].items() if v]
-    if out["schema"] != dbm.SCHEMA_VERSION:
+    if "site" in out and (out["index_site"] or "") != out["site"]:   # build / xref-reload / export-web refuse this index
+        print(f"ERROR (index of site {out['index_site'] or '(default)'!r}, config of site {out['site'] or '(default)'!r}): "
+              f"check DCDAS_CONFIG / DCDAS_DB / DCDAS_SITE; do not run build or xref-reload with this config")
+    elif out["schema"] != dbm.SCHEMA_VERSION:
         print(f"STALE (index schema {out['schema']} != {dbm.SCHEMA_VERSION}): run  py tools/dcdas.py build")
     elif any(out["stale"].values()) or any(c["changed"] for c in out["controllers"]):
         print("STALE: run  py tools/dcdas.py build")
+    elif pw and pw["unreadable"]:
+        print(f"ERROR ({_res.csv_label(_res.GATE_ACCEPT_CSV)} unreadable, nothing waived): fix it (no print-scan "
+              f"meanwhile: that would drop the waivers), then run  py tools/dcdas.py status")
+    elif pw and pw["needs_scan"]:
+        print(f"STALE ({_res.csv_label(_res.GATE_ACCEPT_CSV)} and the printed-sheet corpus disagree): run  "
+              f"py tools/dcdas.py print-scan --ctrl {' '.join(pw['needs_scan'])}  then  py tools/dcdas.py xref-reload")
     elif csv_stale:
-        if set(csv_stale) <= {"xref_manual.csv", _res.VO_CSV}:
+        if set(csv_stale) <= {_res.XREF_CSV, _res.VO_CSV, _res.GATE_ACCEPT_CSV}:
             print(f"STALE ({', '.join(csv_stale)} changed since the index was built): run  py tools/dcdas.py xref-reload")
         else:
             print(f"STALE ({', '.join(csv_stale)} changed since the index was built): run  py tools/dcdas.py build")
     elif vo["header_error"]:
-        print(f"ERROR ({_res.VO_CSV} unreadable): fix it, then run  py tools/dcdas.py xref-reload")
+        print(f"ERROR ({vo_name} unreadable): fix it, then run  py tools/dcdas.py xref-reload")
     elif vo["not_in_effect"]:
         print(f"STALE ({len(vo['not_in_effect'])} value overrides not in effect): run  py tools/dcdas.py xref-reload or build")
     elif vo["stale"]:
-        print(f"STALE ({_res.VO_CSV} rows differ from the index): run  py tools/dcdas.py xref-reload")
+        print(f"STALE ({vo_name} rows differ from the index): run  py tools/dcdas.py xref-reload")
     elif out["print_stale"]:
         print("STALE (the printed-sheet corpus changed since the index was built): run  py tools/dcdas.py xref-reload")
-    elif vo.get("not_applied"):
-        print(f"fresh ({vo['not_applied']} {_res.VO_CSV} rows NOT applied: see WARN above)")
+    elif vo.get("not_applied") or (pw and pw["not_applied"]):
+        na = [f"{n} {lbl} rows" for n, lbl in ((vo.get("not_applied"), vo_name),
+                                                 (pw and pw["not_applied"], _res.csv_label(_res.GATE_ACCEPT_CSV))) if n]
+        print(f"fresh ({' and '.join(na)} NOT applied: see WARN above)")
     else:
         print("fresh")
+
+
+def _waiver_status(conn):
+    """The site's print_gate_accept.csv against the printed-sheet corpus, or None when there is neither a file nor
+    a waived corpus row (a site without waivers prints nothing new). -> {csv_rows, in_effect: [row], messages: [text],
+    needs_scan: [ctrl]}: a waiver added (the corpus still holds the refusal) or withdrawn (the corpus still holds the
+    waived pass) takes a print-scan of that controller; the corpus decides what the gate accepted."""
+    from dcdas import parse_pei, parse_manual as _pm, resolve as _res
+    try:
+        csv_w, problems = parse_pei.read_gate_waivers(HERE)
+        have_file = (_pm.site_dir(HERE) / parse_pei.GATE_ACCEPT_CSV).exists()
+    except SystemExit:
+        return None
+    corpus = {}
+    if parse_pei.print_db_path().exists():
+        try:
+            pconn = parse_pei.open_print_ro()
+        except SystemExit:
+            pconn = None
+        if pconn is not None:
+            try:
+                wv = parse_pei.pdf_waivers(pconn)
+                for name, ctrl, st, note, pmaj, pmin in pconn.execute(
+                        "SELECT name, ctrl, gate_status, gate_note, print_major, print_minor FROM print_pdf"):
+                    corpus[ctrl] = {"name": name, "gate": st, "note": note or "", "waiver": wv.get(name),
+                                    "pmaj": pmaj, "pmin": pmin}
+            finally:
+                pconn.close()
+    if not have_file and not any(c["waiver"] for c in corpus.values()):
+        return None
+    idx = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT name, major_rev, minor_rev FROM controller")}
+    out = {"csv_rows": len(csv_w), "in_effect": [], "messages": ["WARN " + p for p in problems], "needs_scan": []}
+    for (ctrl, check), w in sorted(csv_w.items()):
+        c = corpus.get(ctrl)
+        row = {"ctrl": ctrl, "check": check, "date": w["date"], "basis": w["basis"]}
+        if ctrl not in idx:
+            out["messages"].append(f"WARN {ctrl} {check}: controller not in the index - NOT applied")
+        elif c is None:
+            if (parse_pei.pei_dir() / f"{ctrl}_P.pdf").exists():
+                out["messages"].append(f"WARN {ctrl} {check}: {ctrl}_P.pdf is not in the corpus yet")
+                out["needs_scan"].append(ctrl)
+            else:
+                out["messages"].append(f"WARN {ctrl} {check}: there is no {ctrl}_P.pdf - nothing to accept")
+        elif c["gate"] == "pass" and c["waiver"] and c["waiver"].get("indexed") != "%s / %s" % idx[ctrl]:
+            out["messages"].append(f"WARN {ctrl} {check}: accepted against index build {c['waiver'].get('indexed')}, the index "
+                                   f"is now {idx[ctrl][0]} / {idx[ctrl][1]} (not promoted until re-gated)")
+            out["needs_scan"].append(ctrl)
+        elif c["gate"] == "pass" and c["waiver"]:
+            out["in_effect"].append(row)
+            if (c["waiver"].get("date"), c["waiver"].get("basis")) != (w["date"], w["basis"]):
+                out["messages"].append(f"WARN {ctrl} {check}: the corpus recorded date/basis {c['waiver'].get('date')} "
+                                       f"{c['waiver'].get('basis')!r}, the CSV now says {w['date']} {w['basis']!r}")
+                out["needs_scan"].append(ctrl)
+            if parse_pei.revision_offset(c["pmaj"], c["pmin"], *idx[ctrl])[0] is not None:
+                out["messages"].append(f"INFO {ctrl} {check}: the print now matches the indexed build - the row can be removed")
+        elif c["gate"] == "pass":
+            out["messages"].append(f"INFO {ctrl} {check}: the print passes the gate without the waiver - the row can be removed")
+        elif c["gate"] == check and "NOT applied" in c["note"]:
+            out["messages"].append(f"WARN {ctrl} {check}: {c['name']} still refused - {c['note']}")
+        elif c["gate"] == check:
+            out["messages"].append(f"WARN {ctrl} {check}: the corpus holds {c['name']} as refused (scanned before the waiver)")
+            out["needs_scan"].append(ctrl)
+        else:
+            out["messages"].append(f"WARN {ctrl} {check}: {c['name']} is refused for {c['gate']} ({c['note']}); "
+                                   f"the waiver covers only {check} - NOT applied")
+    unreadable = any("nothing waived" in p for p in problems)
+    for ctrl, c in sorted(corpus.items()):
+        if c["waiver"] and (ctrl, c["waiver"].get("check")) not in csv_w and not unreadable:
+            out["messages"].append(f"WARN {ctrl}: {c['name']} was accepted by a waiver no longer in "
+                                   f"{_res.csv_label(_res.GATE_ACCEPT_CSV)} (not promoted)")
+            out["needs_scan"].append(ctrl)
+    out["needs_scan"] = sorted(set(out["needs_scan"]))
+    out["unreadable"] = unreadable
+    out["not_applied"] = sum(1 for m in out["messages"] if m.endswith("NOT applied"))
+    return out
 
 
 def _vo_status(conn, res, repo_dir=None):
@@ -341,7 +472,7 @@ def _vo_status(conn, res, repo_dir=None):
     want = {(r["ctrl"], r["name"]): ((r["value"], r["was"]) if n_key[(r["ctrl"], r["name"])] == 1 else None) for r in csv_rows}
     have = {(d["ctrl"], d["name"]): (d["value"], d["was"]) for d in out["rows"]}
     if set(have) != set(want) or any(w is not None and have[k] != w for k, w in want.items()):
-        out["stale"] = (f"the index holds {len(have)} override rows and {res.VO_CSV} {len(want)} variables, and they differ: "
+        out["stale"] = (f"the index holds {len(have)} override rows and {res.csv_label(res.VO_CSV)} {len(want)} variables, and they differ: "
                         f"run  py tools/dcdas.py xref-reload")
     # every variable whose value differs from its snapshot must be an override in effect (nothing else may change a value)
     try:
@@ -449,6 +580,9 @@ def cmd_coverage(a):
 
 
 def cmd_pindir_import(a):
+    if dbm.site():
+        raise SystemExit(f"pindir-import: the direction tables are a shared table for every site (site {dbm.site()!r} is "
+                         f"configured): run it from the default config (DCDAS_CONFIG and DCDAS_SITE unset)")
     from dcdas import parse_manual
     parse_manual.run(HERE, a.pdf, log)
 
@@ -456,6 +590,7 @@ def cmd_pindir_import(a):
 def cmd_xref_paste(a):
     from dcdas import resolve
     conn = dbm.open_ro()
+    dbm.check_index_site(conn, "xref-paste")
     resolve.xref_paste(conn, HERE, a.txt, a.ctrl, date=a.date, dry_run=a.dry_run, log=log)
 
 
@@ -463,23 +598,33 @@ def cmd_print_gate(a):
     """Which printed reports may be ingested at all -- and why not, for the rest."""
     from dcdas import parse_pei
     conn = dbm.open_ro()
-    rows, missing = parse_pei.gate_all(conn, Path(a.dir) if a.dir else None, ctrls=a.ctrl)
+    waivers, problems = parse_pei.read_gate_waivers(HERE)
+    rows, missing = parse_pei.gate_all(conn, Path(a.dir) if a.dir else None, ctrls=a.ctrl, waivers=waivers)
     if a.json:
-        print(json.dumps({"gates": rows, "no_print": missing}, ensure_ascii=False, indent=1))
+        res = {"gates": rows, "no_print": missing}
+        if waivers or problems:
+            res["waiver_problems"] = problems
+        print(json.dumps(res, ensure_ascii=False, indent=1))
         return
     log(f"printed logic sheets in {a.dir or parse_pei.pei_dir()}")
+    for p in problems:
+        log(f"  WARN {p}")
     for g in sorted(rows, key=lambda g: (g["gate_status"] != "pass", g["name"])):
         log("  %-14s %-22s pages=%-5s device=%-7s %s"
-            % (g["name"], g["gate_status"], g["page_count"] or "-", g["device_name"] or "-", g["gate_note"]))
+            % (g["name"], g["gate_status"] + ("+waiver" if g.get("waiver") else ""), g["page_count"] or "-",
+               g["device_name"] or "-", g["gate_note"]))
     ok = [g for g in rows if g["gate_status"] == "pass"]
-    log(f"  {len(ok)} of {len(rows)} files ingestable; controllers with no print at all: "
-        f"{', '.join(missing) if missing else '-'}")
+    wv = [g["ctrl"] for g in ok if g.get("waiver")]
+    log(f"  {len(ok)} of {len(rows)} files ingestable"
+        + (f" ({len(wv)} by engineer waiver: {', '.join(wv)})" if wv else "")
+        + f"; controllers with no print at all: {', '.join(missing) if missing else '-'}")
 
 
 def cmd_print_scan(a):
     """Parse the printed logic sheets into the print corpus (never into the index)."""
     from dcdas import parse_pei
     conn = dbm.open_ro()
+    dbm.check_index_site(conn, "print-scan")    # the corpus path follows the same config: refuse before opening it
     pconn = parse_pei.open_print(partial=bool(a.ctrl or a.pages))
     t0 = time.time()
     s = parse_pei.scan(conn, pconn, ctrls=a.ctrl, pdf_dir=Path(a.dir) if a.dir else None,
@@ -514,7 +659,7 @@ def cmd_export_web(a):
     from dcdas import export_web
     conn = dbm.open_ro()
     key = None if a.no_encrypt else dbm.web_passphrase(a.key_file)
-    export_web.run(conn, Path(a.docs), HERE, log, passphrase=key)
+    export_web.run(conn, Path(a.docs) if a.docs else dbm.web_dir(HERE.parent), HERE, log, passphrase=key)
 
 
 def _positive(v):
@@ -544,7 +689,7 @@ def main(argv=None):
     p.add_argument("--vacuum", action="store_true")
 
     add("status", cmd_status, help="is the index up to date with the checkout and the hand-maintained CSVs?")
-    p = add("xref-reload", cmd_xref_reload, help="reload tools/xref_manual.csv + recovery rules without reparsing (seconds, not a minute)")
+    p = add("xref-reload", cmd_xref_reload, help="reload the site's xref_manual.csv / value_overrides.csv + recovery rules without reparsing (seconds, not a minute)")
     p.add_argument("--dry-run", action="store_true", help="only validate the CSV rows against the index")
     p = add("diff-units", cmd_diff_units, help="constants / alarm set-points that differ between two controllers of the same kind (e.g. G11 G12)")
     p.add_argument("a"); p.add_argument("b"); p.add_argument("--what", choices=["constants", "alarms", "all"], default="all"); p.add_argument("--limit", type=int, default=200)
@@ -561,8 +706,9 @@ def main(argv=None):
     p = add("lint", cmd_lint); p.add_argument("--limit", type=int, default=40)
     p = add("coverage", cmd_coverage); p.add_argument("--limit", type=int, default=40)
     p = add("audit-type", cmd_audit_type, help="per-pin audit of one block type"); p.add_argument("block_type"); p.add_argument("--ctrl"); p.add_argument("--limit", type=int, default=200)
-    p = add("pindir-import", cmd_pindir_import); p.add_argument("--pdf", nargs="*", help="manual PDFs (default: known set)")
-    p = add("xref-paste", cmd_xref_paste, help="pasted Where-Used tree -> tools/xref_manual.csv rows (opaque blocks only; new pins added, recovered pins upgraded)")
+    p = add("pindir-import", cmd_pindir_import, help="rebuild the shared pin-direction table from the manuals (default config only)")
+    p.add_argument("--pdf", nargs="*", help="manual PDFs (default: known set)")
+    p = add("xref-paste", cmd_xref_paste, help="pasted Where-Used tree -> rows of the site's xref_manual.csv (opaque blocks only; new pins added, recovered pins upgraded)")
     p.add_argument("txt"); p.add_argument("--ctrl", required=True); p.add_argument("--date"); p.add_argument("--dry-run", action="store_true")
     p = add("print-gate", cmd_print_gate, help="which printed logic-sheet exports may be trusted (device / revision / integrity)")
     p.add_argument("dir", nargs="?", help="folder holding <CTRL>_P.pdf (default: the local pei_dir setting)")
@@ -576,7 +722,8 @@ def main(argv=None):
     p.add_argument("key", help="CTRL.NAME, or CTRL when a block path follows")
     p.add_argument("path", nargs="?", help="Program/Task/.../Block (also a Program/Task the index cannot open)")
     p.add_argument("--limit", type=_positive, default=60)
-    p = add("export-web", cmd_export_web); p.add_argument("docs", nargs="?", default=str(HERE.parent / "docs"))
+    p = add("export-web", cmd_export_web, help="SQLite -> encrypted data shards of the static site")
+    p.add_argument("docs", nargs="?", default=None, help="site folder (default: the config's web_dir: docs/, or docs/<site>/)")
     p.add_argument("--key-file", help="file holding the site passphrase (default: web_key_file in the local config)")
     p.add_argument("--no-encrypt", action="store_true", help="plain JSON export (local testing only; never publish)")
 

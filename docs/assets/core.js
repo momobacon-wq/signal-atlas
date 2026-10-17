@@ -3,6 +3,11 @@
 'use strict';
 (function () {
   const D = (window.DC = window.DC || {});
+  /* 程式檔所在的資料夾（…/assets/）：延遲載入的程式以它為基準，不以頁面為基準——子站頁面在 docs/<site>/，共用的是 ../assets/ */
+  const ASSET_BASE = (() => {
+    const s = document.currentScript || document.querySelector('script[src*="assets/core.js"]');
+    return s && s.src ? s.src.replace(/[?#].*$/, '').replace(/[^/]*$/, '') : 'assets/';
+  })();
 
   /* ------------------------------------------------------------------ 基本工具 */
   const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -57,9 +62,14 @@
     let t = 0;
     return function (...a) { clearTimeout(t); t = setTimeout(() => fn.apply(this, a), ms); };
   };
+  /* 子站（docs/<site>/index.html 帶 <meta name="atlas-site" content="<site>">）：localStorage 鍵加站名前綴 atlas.<site>.*，
+   * 各站的金鑰（鹽值不同）與偏好互不覆蓋；主站沒有這個 meta，鍵名維持 atlas.key／atlas.ctrl／atlas.fmask。
+   * ams.theme、ams.auth、atlas.dg.*（圖面顯示偏好）刻意各站共用。 */
+  D.site = ((document.querySelector('meta[name="atlas-site"]') || {}).content) || '';
+  const NS = D.site ? 'atlas.' + D.site + '.' : 'atlas.';
   D.store = {
-    get(k, d) { try { const v = localStorage.getItem('atlas.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
-    set(k, v) { try { localStorage.setItem('atlas.' + k, JSON.stringify(v)); } catch (e) { /* 私密模式 */ } },
+    get(k, d) { try { const v = localStorage.getItem(NS + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem(NS + k, JSON.stringify(v)); } catch (e) { /* 私密模式 */ } },
   };
   D.int = (n) => (n == null || n === '' ? '' : Number(n).toLocaleString('en-US'));
   D.blank = (v) => v === null || v === undefined || v === '';
@@ -150,7 +160,7 @@
   D.meta = null;          // data/meta.json（{enc,gzip,kdf,check,build}）；404 → {enc:0}（未加密的舊版匯出）
   D.key = null;           // AES-GCM CryptoKey（解鎖後）
   D.v = '';               // '?v=<build>'
-  const KEY_STORE = 'atlas.key';
+  const KEY_STORE = NS + 'key';
   const utf8 = (s) => new TextEncoder().encode(s);
   const b64enc = (u8) => { let s = ''; for (const c of u8) s += String.fromCharCode(c); return btoa(s); };
   const b64dec = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
@@ -383,7 +393,7 @@
     const all = idx.get(key + '#' + pin) || [];
     return all.filter((x) => x.key !== key && (up ? x.t[1] === 'O' : x.t[1] !== 'O'));
   };
-  /** 延遲載入 assets/<name>（?v= 用 atlas-build 的 data-app）；同名只載一次 */
+  /** 延遲載入 assets/<name>（相對於 core.js 所在的資料夾；?v= 用 atlas-build 的 data-app）；同名只載一次 */
   const scriptCache = new Map();
   D.loadScript = function (name) {
     if (scriptCache.has(name)) return scriptCache.get(name);
@@ -391,7 +401,7 @@
     const app = (meta && meta.getAttribute('data-app')) || '';
     const p = new Promise((resolve, reject) => {
       const el = document.createElement('script');
-      el.src = 'assets/' + name + (app ? '?v=' + app : '');
+      el.src = ASSET_BASE + name + (app ? '?v=' + app : '');
       el.async = true;
       el.onload = () => resolve();
       el.onerror = () => reject(new Error('無法載入 ' + name));
@@ -455,7 +465,9 @@
     if (p == null) { bar.hidden = true; bar.firstElementChild.style.width = '0'; return; }
     bar.hidden = false; bar.firstElementChild.style.width = Math.round(p * 100) + '%';
   };
-  D.setTitle = (t) => { document.title = (t ? t + ' — ' : '') + 'Signal Atlas — 訊號邏輯查詢'; };
+  /** 站台標籤：manifest.site_label（只在加密 manifest 與本機設定裡）；子站沒有標籤時用站名大寫；主站沒有 → '' */
+  D.siteLabel = () => (D.man && D.man.site_label) || (D.site ? D.site.toUpperCase() : '');
+  D.setTitle = (t) => { const lab = D.siteLabel(); document.title = (t ? t + ' — ' : '') + 'Signal Atlas' + (lab ? ' ' + lab : '') + ' — 訊號邏輯查詢'; };
   D.link = (href, text, cls) => D.h('a', { href, class: cls || 'lk', text });
   D.mono = (text, cls) => D.h('span', { class: 'mono' + (cls ? ' ' + cls : ''), text });
   D.tag = (text, cls) => D.h('span', { class: 'tag' + (cls ? ' ' + cls : ''), text });
@@ -674,6 +686,8 @@
         const k = D.$('#btn-key'); if (k) k.hidden = false;
       }
       await D.loadManifest();
+      const lab = D.siteLabel(), sub = D.$('.brand-sub');
+      if (lab && sub) sub.textContent = lab + ' · 訊號邏輯查詢';
     } catch (e) {
       console.error(e);
       D.set(D.$('#view'), D.errorBox('無法載入資料', (e && e.message) || String(e)));

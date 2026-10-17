@@ -33,6 +33,9 @@ HMI_FILES = [Path("HmiScreens") / "navigation" / "tp_actPt_navPointSearchDbStd.c
              Path("HmiScreens") / "navigation" / "CIMNavigationMenuItemsStd.csv"]
 
 _PI_RE = re.compile(r'<\?GeCssClass\s+type="([^"]*)"(?:\s+Version="([^"]*)")?(?:\s+Coherency="([^"]*)")?')
+# the tool version that last saved the file (root element attribute); the PI Version above can be older (a project
+# created with an older tool and saved by a newer one) and the printed sheets carry the saving tool's version
+_WRITTEN_BY_RE = re.compile(r'\sWrittenByToolVersion="([^"]*)"')
 
 
 @dataclass
@@ -90,13 +93,17 @@ class Node:
 
 
 def head_info(path: Path) -> dict:
-    """Return {'class','version','coherency'} from the GeCssClass PI (first 2 KB)."""
+    """Return {'class','version','coherency'} from the GeCssClass PI (first 2 KB), plus 'written_by' = the root
+    element's WrittenByToolVersion when it appears in the same 2 KB ("" otherwise)."""
     with open(path, "rb") as f:
         head = f.read(2048).decode("utf-8", "replace")
+    w = _WRITTEN_BY_RE.search(head)
+    written_by = w.group(1) if w else ""
     m = _PI_RE.search(head)
     if not m:
-        return {"class": "", "version": "", "coherency": ""}
-    return {"class": m.group(1) or "", "version": m.group(2) or "", "coherency": m.group(3) or ""}
+        return {"class": "", "version": "", "coherency": "", "written_by": written_by}
+    return {"class": m.group(1) or "", "version": m.group(2) or "", "coherency": m.group(3) or "",
+            "written_by": written_by}
 
 
 def _device_xml(ctrl: Controller):

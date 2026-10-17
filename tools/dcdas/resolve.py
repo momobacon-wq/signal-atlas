@@ -409,6 +409,12 @@ def _pm():
     return pm
 
 
+def csv_label(name):
+    """How messages name a per-site CSV (XREF_CSV, VO_CSV): the bare name for the default site,
+    tools/sites/<site>/<name> for any other."""
+    return _pm().site_rel(name)
+
+
 def load_xref(conn, repo_dir, ctrl_names, log=print):
     """tools/xref_manual.csv: connections the user verified in the configuration tool's cross-reference (Where Used) that the
     XML cannot show (pins of a fully encrypted UserBlock instance, e.g. a 4oo20 voter reading a temperature). Each valid row
@@ -421,7 +427,7 @@ def load_xref(conn, repo_dir, ctrl_names, log=print):
     build (purge_recovered drops every origin row first); rows of controllers outside this build are left alone."""
     from pathlib import Path
     pm = _pm()
-    path = pm._tools_dir(Path(repo_dir)) / XREF_CSV
+    path = pm.site_dir(Path(repo_dir)) / XREF_CSV
     rows = pm.read_csv(path, XREF_HEADER)
     tot = {"rows": 0, "loaded": 0, "skipped": 0, "replaced": 0}
     next_id = (conn.execute("SELECT coalesce(max(id),0) FROM pin").fetchone()[0] or 0) + 1
@@ -468,7 +474,7 @@ def load_xref(conn, repo_dir, ctrl_names, log=print):
         tot["loaded"] += 1
     conn.commit()
     log(f"  xref loaded: {tot['loaded']} of {tot['rows']} rows (skipped {tot['skipped']}, replaced {tot['replaced']}; "
-        f"tool-verified T={tot.get('T', 0)}, mirrored/inferred M={tot.get('M', 0)}) from {path.name}")
+        f"tool-verified T={tot.get('T', 0)}, mirrored/inferred M={tot.get('M', 0)}) from {csv_label(XREF_CSV)}")
     return tot
 
 
@@ -538,14 +544,14 @@ def read_value_overrides(repo_dir):
     import csv
     from pathlib import Path
     pm = _pm()
-    path = pm._tools_dir(Path(repo_dir)) / VO_CSV
+    path = pm.site_dir(Path(repo_dir)) / VO_CSV
     if not path.exists():
         return [], None
     try:
         with open(path, encoding="utf-8-sig", newline="") as f:
             recs = list(csv.reader(f))
     except UnicodeDecodeError as e:
-        return [], f"{VO_CSV} is not UTF-8 ({e.reason}): save it as UTF-8 CSV"
+        return [], f"{csv_label(VO_CSV)} is not UTF-8 ({e.reason}): save it as UTF-8 CSV"
     rows, header = [], None
     for i, rec in enumerate(recs, 1):
         if not rec or not "".join(rec).strip() or rec[0].lstrip().startswith("#"):
@@ -553,7 +559,7 @@ def read_value_overrides(repo_dir):
         if header is None:
             header = [c.strip() for c in rec]
             if header != VO_HEADER:
-                return [], f"{VO_CSV} header is {','.join(header)!r} (line {i}), expected exactly {','.join(VO_HEADER)!r}"
+                return [], f"{csv_label(VO_CSV)} header is {','.join(header)!r} (line {i}), expected exactly {','.join(VO_HEADER)!r}"
             continue
         d = {h: (rec[k].strip() if k < len(rec) else "") for k, h in enumerate(VO_HEADER)}
         d["line"], d["nfields"] = i, len(rec)
@@ -624,7 +630,7 @@ def load_value_overrides(conn, repo_dir, log=print):
         if st == "applied":
             conn.execute("UPDATE variable SET value=? WHERE id=?", (x["value"], x["var_id"]))
         elif st == "merged":
-            log(f"  INFO value override {ctrl}.{name}: the snapshot already holds {x['value']} - the row can be removed from {VO_CSV}")
+            log(f"  INFO value override {ctrl}.{name}: the snapshot already holds {x['value']} - the row can be removed from {csv_label(VO_CSV)}")
         else:
             log(f"  WARN value override {ctrl}.{name} (csv {x['was']!r} -> {x['value']!r}, snapshot {x['snap_value']!r}): "
                 f"{st}, {why} - NOT applied (check the row)")
@@ -633,29 +639,40 @@ def load_value_overrides(conn, repo_dir, log=print):
         tot[st] += 1
     conn.commit()
     log(f"  value overrides: {tot['applied']} applied, {tot['merged']} merged, {tot['conflict']} conflict, "
-        f"{tot['missing']} missing (restored {nrev} earlier corrections first) from {VO_CSV}")
+        f"{tot['missing']} missing (restored {nrev} earlier corrections first) from {csv_label(VO_CSV)}")
     return tot
 
 
 def csv_fingerprints(repo_dir):
     """sha1 of the hand-maintained CSVs the index depends on (xref rows, direction overrides / table): stored in meta at
-    build / xref-reload time so `status` can tell when the index no longer reflects them."""
+    build / xref-reload time so `status` can tell when the index no longer reflects them. XREF_CSV and VO_CSV are read
+    from the site's folder (pm.site_dir), the shared direction tables from the tools folder; the keys stay the bare file
+    names on every site."""
     import hashlib
     from pathlib import Path
     pm = _pm()
     tools = pm._tools_dir(Path(repo_dir))
+    site = pm.site_dir(Path(repo_dir))
     out = {}
     for name in (XREF_CSV, VO_CSV, pm.OVERRIDE_CSV, pm.TABLE_CSV):
-        p = tools / name
+        p = (site if name in (XREF_CSV, VO_CSV) else tools) / name
         out[name] = hashlib.sha1(p.read_bytes()).hexdigest()[:12] if p.exists() else None
+    # the engineer's print-gate waivers: keyed only when the site has the file (a site without waivers records
+    # exactly the keys it always did)
+    p = site / GATE_ACCEPT_CSV
+    if p.exists():
+        out[GATE_ACCEPT_CSV] = hashlib.sha1(p.read_bytes()).hexdigest()[:12]
     return out
+
+
+GATE_ACCEPT_CSV = "print_gate_accept.csv"     # the same file as parse_pei.GATE_ACCEPT_CSV (read by parse_pei.read_gate_waivers)
 
 
 def xref_row_count(repo_dir, ctrl_names):
     """Data rows of xref_manual.csv for these controllers (the number load_xref is expected to load when every row is valid)."""
     from pathlib import Path
     pm = _pm()
-    rows = pm.read_csv(pm._tools_dir(Path(repo_dir)) / XREF_CSV, XREF_HEADER)
+    rows = pm.read_csv(pm.site_dir(Path(repo_dir)) / XREF_CSV, XREF_HEADER)
     return sum(1 for r in rows if r["ctrl"] in ctrl_names)
 
 
@@ -664,7 +681,7 @@ def xref_validate(conn, repo_dir, ctrl_names, log=print):
     direction, plaintext pin) without touching the index. Returns the list of (ctrl, block_path, pin, why)."""
     from pathlib import Path
     pm = _pm()
-    rows = pm.read_csv(pm._tools_dir(Path(repo_dir)) / XREF_CSV, XREF_HEADER)
+    rows = pm.read_csv(pm.site_dir(Path(repo_dir)) / XREF_CSV, XREF_HEADER)
     bad, seen, n = [], set(), 0
     for r in rows:
         ctrl, var, bpath, pin, d, note, grade = (r[h] for h in XREF_HEADER)
@@ -712,7 +729,7 @@ def xref_paste(conn, repo_dir, text_path, ctrl, date=None, dry_run=False, log=pr
     appended rows."""
     from pathlib import Path
     pm = _pm()
-    path = pm._tools_dir(Path(repo_dir)) / XREF_CSV
+    path = pm.site_dir(Path(repo_dir)) / XREF_CSV
     lines = [l.rstrip("\n") for l in open(text_path, encoding="utf-8-sig") if l.strip()]
     if not lines:
         raise SystemExit("empty file")
@@ -757,7 +774,7 @@ def xref_paste(conn, repo_dir, text_path, ctrl, date=None, dry_run=False, log=pr
             continue
         key = (ctrl, b[2], pin)
         if key in have:
-            log(f"  = {b[2]}.{pin}: already in {path.name}")
+            log(f"  = {b[2]}.{pin}: already in {csv_label(XREF_CSV)}")
             continue
         stamp = f"tool cross-reference {date or ''}".strip()
         if ex:   # recovered (decl/link/pair) pin: the tool confirms it -> verified row, replaces the recovered one on build
@@ -913,7 +930,12 @@ def print_fingerprint():
     except SystemExit:
         return {}
     try:
-        return {r[0]: r[1] for r in pconn.execute("SELECT name, sha256 FROM print_pdf WHERE gate_status='pass'")}
+        out = {r[0]: r[1] for r in pconn.execute("SELECT name, sha256 FROM print_pdf WHERE gate_status='pass'")}
+        # a print accepted by an engineer's waiver: the waiver is part of what the index was promoted from
+        for name, w in parse_pei.pdf_waivers(pconn).items():
+            if name in out:
+                out[name] = "%s+waiver:%s:%s" % (out[name], w.get("check"), w.get("date"))
+        return out
     finally:
         pconn.close()
 
@@ -966,11 +988,30 @@ def load_print(conn, ctrl_names, log=print):
     printed = set()
     # the corpus was gated against the index it was scanned with; a later snapshot may carry another build of the
     # controller, and a drawing of another build must not be promoted (same offset rule as the gate)
-    for c, pmaj, pmin in pconn.execute("SELECT ctrl, print_major, print_minor FROM print_pdf WHERE gate_status='pass'"):
+    # A print accepted by an engineer's waiver (print_gate_accept.csv) is promoted only while the waiver row is still
+    # in the CSV, the index is still the build it was accepted against, and the Major stamps still line up.
+    pdf_w = parse_pei.pdf_waivers(pconn)
+    csv_w = parse_pei.read_gate_waivers()[0] if pdf_w else {}
+    waived_note = {}
+    for name, c, pmaj, pmin in pconn.execute("SELECT name, ctrl, print_major, print_minor FROM print_pdf WHERE gate_status='pass'"):
         row = conn.execute("SELECT major_rev, minor_rev FROM controller WHERE name=?", (c,)).fetchone()
         if row is None:
             continue
         off, why = parse_pei.revision_offset(pmaj, pmin, row[0], row[1])
+        w = pdf_w.get(name)
+        if off is None and w:
+            if (c, w.get("check")) not in csv_w:
+                log(f"  print corpus for {c} was accepted by a waiver no longer in {csv_label(parse_pei.GATE_ACCEPT_CSV)}: "
+                    f"not promoted; re-run  print-scan --ctrl {c}")
+                continue
+            if w.get("indexed") != "%s / %s" % (row[0], row[1]):
+                log(f"  print corpus for {c} was waived against index build {w.get('indexed')}, the index is now "
+                    f"{row[0]} / {row[1]}: not promoted; re-run print-gate / print-scan --ctrl {c}")
+                continue
+            off, why = parse_pei.major_offset(pmaj, row[0])
+            if off is not None:
+                waived_note[c] = "（工程師指示以圖為準 %s，列印建置戳記與 checkout 不符）" % w.get("date")
+                log(f"  print corpus for {c}: {parse_pei.waiver_text(w)}")
         if off is None:
             log(f"  print corpus for {c} is of another build ({why}): not promoted; re-run print-gate / print-scan")
             continue
@@ -1036,7 +1077,7 @@ def load_print(conn, ctrl_names, log=print):
             ex = conn.execute("SELECT id, origin, conn_kind, connection, var_id, tgt_block_id, tgt_pin, description "
                               "FROM pin WHERE block_id=? AND name=?", (b[0], pin)).fetchone()
             c = cite[(bp, pin)]
-            note = "圖面 %s p%d %s" % c
+            note = "圖面 %s p%d %s" % c + waived_note.get(ctrl, "")
             if act[0] == "new":
                 if ex:
                     continue

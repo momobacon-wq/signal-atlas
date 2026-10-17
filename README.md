@@ -51,9 +51,15 @@ py tools/verify_web.py docs             # 獨立對帳（用同一密語解密�
 py tools/auth/mock_server.py 8766       # 本機開 http://127.0.0.1:8766/（閘門 mock；帳號見 tools/auth/mock_users.csv）
 ```
 手冊方向表：`py tools/dcdas.py pindir-import`（從廠商 Block Library PDF 重抽 `tools/pin_dir_table.csv`）；
-人工修正寫進 `tools/pin_dir_overrides.csv`（`block_type,pin_name,direction,note`），下次 build 生效。
+人工修正寫進 `tools/pin_dir_overrides.csv`（`block_type,pin_name,direction,note`），下次 build 生效。兩份方向表各站台共用，
+`pindir-import` 只能在預設設定下跑（`DCDAS_CONFIG`、`DCDAS_SITE` 都不設）。
 
-**人工更正初始值**：快照之後現場改過的常數（初始值），登錄在 `tools/value_overrides.csv`
+**子站**：第二個站台（目前 `u2`）放在 `docs/u2/`（網址 `…/signal-atlas/u2/`），共用 `docs/assets/` 與閘門設定，自己有 `data/`。
+指令一樣，只是先設 env `DCDAS_CONFIG=<該站本機 config.json>`；`export-web`、`verify_web.py` 不帶資料夾參數時就用該站的 `docs/u2`。
+該站的 `xref_manual.csv`、`value_overrides.csv` 在 `tools/sites/u2/`。子站頁由 `py tools/make_subsite.py u2` 從 `docs/index.html` 推出，
+不要手改；索引記錄自己的站台，指錯設定時寫入類指令會拒絕執行。
+
+**人工更正初始值**：快照之後現場改過的常數（初始值），登錄在 `tools/value_overrides.csv`（子站：`tools/sites/<site>/value_overrides.csv`）
 （`ctrl,name,value,was,date,basis`：新值、快照裡的舊值、日期、依據），`build` 或 `xref-reload` 生效。索引同時保留快照值
 （`variable.snap_value`），每列的狀態記在 `value_override` 表：快照仍是 `was` → `applied`（改用新值，`show` 與網頁標「人工更正」並列出快照值）；
 換了新快照、快照已經是新值 → `merged`（`status` 會提示，這列可以刪掉）；快照兩者都不是 → `conflict`，**不套用**、維持快照值，

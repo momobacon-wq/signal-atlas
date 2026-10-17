@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 """Independent reconciliation of docs/data (static shards) against the SQLite index.  py tools/verify_web.py [docs]
 
+The default folder is the config's web_dir (docs/ for the default site, docs/<site>/ for a site set by DCDAS_CONFIG).
+
 Written without importing export_web: it re-derives every expectation from CONTRACT.md + the DB.
 Checks: manifest present & build reproducible; names rows == variable rows per controller; every variable's card is in
 the shard sha1(full_name)[:3]; 200 random cards match the DB field-by-field (def, writers, readers, io, egd, alarm);
-every block key in its shard and pin counts match; no local absolute path in any file; file sizes; screens/alarms counts.
+every block key in its shard and pin counts match; no local absolute path in any file; file sizes; screens/alarms counts;
+the page's atlas-site equals the configured site; a sub-site page equals the one derived from the root page (modulo
+stamps); the repo's whole docs/ stays under the GitHub Pages 1 GB limit.
 Exit 0 only when there are zero errors.
 """
 import hashlib
@@ -18,6 +22,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dcdas import db as dbm  # noqa: E402
+import stamp_assets  # noqa: E402
+
+REPO = Path(__file__).resolve().parents[1]
+PAGES_LIMIT = 1_000_000_000
 
 ABS_RE = re.compile(r'(?:(?<![A-Za-z])|(?<=\\[nrtbf]))[A-Za-z]:(?:\\\\|/)|/c/Users/|\\Users\\|\\\\\\\\[A-Za-z0-9][\w.$-]*\\\\')
 CTRL_KINDS = {"controller", "safety", "exciter", "drive"}
@@ -61,10 +69,74 @@ def sh(key, n=3):
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:n]
 
 
+def dir_size(d):
+    n = 0
+    for root, _d, fs in os.walk(d):
+        for fn in fs:
+            try:
+                n += (Path(root) / fn).stat().st_size
+            except OSError:
+                pass
+    return n
+
+
+def check_pages(docs):
+    """atlas-site of <docs>/index.html == the configured site; every sub-site page == the page derived from the root
+    page (stamp_assets.subsite_html) modulo stamps; the repo's docs/ (what Pages serves) under 1 GB."""
+    docs = Path(docs)
+    site = dbm.site()
+    ix = docs / "index.html"
+    if ix.exists():
+        page = stamp_assets.page_site(ix.read_text(encoding="utf-8"))
+        (ok if page == site else err)(f"page atlas-site {page or '(default)'!r}, configured site {site or '(default)'!r}")
+    else:
+        ok(f"no index.html in {docs.name}: page checks skipped (scratch export)")
+    # sub-site pages to compare with the root page: this folder when it is a sub-site, every sub-site when it is the root
+    if site and ix.exists():
+        pairs = [(site, docs, docs.parent / "index.html")]
+    elif not site and ix.exists():
+        pairs = [(s, Path(d), ix) for s, d in stamp_assets.subsites(str(docs))]
+    else:
+        pairs = []
+    for s, d, root_ix in pairs:
+        if not root_ix.exists():
+            err(f"sub-site {s}: root page {root_ix.name} missing in {root_ix.parent.name}")
+            continue
+        try:
+            want = stamp_assets.subsite_html(root_ix.read_text(encoding="utf-8"), s)
+        except ValueError as e:
+            err(f"sub-site {s}: cannot derive the page from the root page: {e}")
+            continue
+        got = (d / "index.html").read_text(encoding="utf-8")
+        same = stamp_assets.unstamp(want) == stamp_assets.unstamp(got)
+        (ok if same else err)(f"sub-site {s}: index.html " + ("matches the root page (modulo stamps)" if same else
+                              "differs from the page derived from the root page: regenerate it"))
+    # lazily loaded scripts (D.loadScript): each exists in the shared assets, and no script builds a page-relative
+    # 'assets/' URL (a sub-site page lives one folder down: it would 404 there while the root page works)
+    adir = Path(stamp_assets.assets_dir_for(str(docs.resolve())))
+    if adir.is_dir():
+        lazy, rel = set(), []
+        for js in sorted(adir.glob("*.js")):
+            if js.name.endswith(".min.js"):
+                continue
+            t = js.read_text(encoding="utf-8")
+            lazy |= set(re.findall(r"loadScript\(\s*'([\w.-]+)'\s*\)", t))
+            rel += [js.name for _ in re.finditer(r"""['"]assets/['"]\s*\+""", t)]
+        missing = sorted(n for n in lazy if not (adir / n).exists())
+        (ok if lazy and not missing else err)(f"lazy-loaded scripts {sorted(lazy)}: " + (f"missing {missing}" if missing else
+                                              f"all in {adir.parent.name}/{adir.name}/"))
+        (ok if not rel else err)("no page-relative 'assets/' script URL" + (f": {sorted(set(rel))}" if rel else ""))
+    pages = REPO / "docs"
+    if pages.exists():
+        n = dir_size(pages)
+        (ok if n < PAGES_LIMIT else err)(f"docs/ total {n/1e6:.0f} MB (GitHub Pages limit 1 GB)")
+
+
 def main(docs):
     global KEY, DATA_DIR
     data = Path(docs) / "data"
     DATA_DIR = data
+    check_pages(docs)
     if not data.exists():
         err(f"missing {data}")
         return 1
@@ -550,4 +622,4 @@ def main(docs):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else str(Path(__file__).resolve().parents[1] / "docs")))
+    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else str(dbm.web_dir(REPO))))

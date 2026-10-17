@@ -52,6 +52,7 @@ matching them positionally onto IN1/IN2/IN3 measured 73%, and a wrong pin name i
 a wrong wire.
 """
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -96,7 +97,7 @@ CREATE TABLE IF NOT EXISTS print_pdf(
     'pass','unreadable','truncated','wrong_device','mixed_device',
     'revision_mismatch','tool_version_mismatch')),
   gate_note TEXT, n_sheets INTEGER DEFAULT 0, n_tasks INTEGER DEFAULT 0,
-  n_other INTEGER DEFAULT 0, scanned_at TEXT);
+  n_other INTEGER DEFAULT 0, scanned_at TEXT, waiver TEXT);
 CREATE TABLE IF NOT EXISTS print_sheet(
   id INTEGER PRIMARY KEY, pdf_id INTEGER NOT NULL, page INTEGER NOT NULL,
   ctrl TEXT, sw_path TEXT, program TEXT, task TEXT, block_prefix TEXT,
@@ -129,7 +130,7 @@ def pei_dir() -> Path:
 
 def print_db_path() -> Path:
     p = os.environ.get("DCDAS_PRINT_DB") or dbm.config().get("print_db")
-    return Path(p) if p else dbm.local_dir() / "print.sqlite"
+    return Path(p) if p else dbm.config_path().parent / "print.sqlite"   # next to the config, like db_path()
 
 
 def open_print(path: Path = None, create=True, partial=False) -> sqlite3.Connection:
@@ -153,7 +154,108 @@ def open_print(path: Path = None, create=True, partial=False) -> sqlite3.Connect
             conn.executescript("DROP TABLE IF EXISTS print_pin; DROP TABLE IF EXISTS print_sheet; "
                                "DROP TABLE IF EXISTS print_pdf; DROP TABLE IF EXISTS meta;")
     conn.executescript(PRINT_DDL)
+    # print_pdf.waiver (an engineer's recorded gate waiver, JSON) was added without a schema bump:
+    # a corpus written before it gets the column here; readers probe for it (pdf_has_waiver_col)
+    if "waiver" not in [r[1] for r in conn.execute("PRAGMA table_info(print_pdf)")]:
+        conn.execute("ALTER TABLE print_pdf ADD COLUMN waiver TEXT")
     return conn
+
+
+def pdf_has_waiver_col(pconn) -> bool:
+    """A corpus scanned before print_pdf.waiver existed has no waivers (open_print_ro never alters it)."""
+    return "waiver" in [r[1] for r in pconn.execute("PRAGMA table_info(print_pdf)")]
+
+
+def pdf_waivers(pconn) -> dict:
+    """{pdf name: waiver dict} of the corpus rows accepted by an engineer's waiver ({} on an old corpus)."""
+    if not pdf_has_waiver_col(pconn):
+        return {}
+    out = {}
+    for name, w in pconn.execute("SELECT name, waiver FROM print_pdf WHERE waiver IS NOT NULL AND waiver<>''"):
+        try:
+            out[name] = json.loads(w)
+        except ValueError:
+            out[name] = {"check": "?", "date": "?", "basis": w}
+    return out
+
+
+# ------------------------------------------------------------ engineer's gate waivers
+GATE_ACCEPT_CSV = "print_gate_accept.csv"
+GATE_ACCEPT_HEADER = ["ctrl", "check", "date", "basis"]
+# Only the build-stamp comparison can be waived. Integrity (truncated / unreadable) and identity
+# (Device Name, mixed devices) never can: the file name is no evidence of what a print shows.
+WAIVABLE = ("revision_mismatch",)
+
+
+def _tools_default():
+    return Path(__file__).resolve().parents[1]
+
+
+def read_gate_waivers(repo_dir=None):
+    """(waivers, problems) of the site's print_gate_accept.csv (ctrl,check,date,basis): the engineer's
+    recorded decision that ONE gate check is waived for ONE controller's print (e.g. the printed build
+    stamp is not the checkout's, and the drawing is to be trusted anyway). waivers = {(ctrl, check): row};
+    problems = [text] for rows NOT applied (header not exactly the four columns -> nothing applied;
+    a check that may not be waived, blank ctrl / date / basis, duplicate key). A missing file -> ({}, [])."""
+    import csv
+    try:
+        from . import parse_manual as pm
+    except ImportError:
+        from dcdas import parse_manual as pm
+    path = pm.site_dir(Path(repo_dir) if repo_dir else _tools_default()) / GATE_ACCEPT_CSV
+    if not path.exists():
+        return {}, []
+    label = pm.site_rel(GATE_ACCEPT_CSV)
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            recs = list(csv.reader(f))
+    except UnicodeDecodeError as e:
+        return {}, [f"{label} is not UTF-8 ({e.reason}): nothing waived"]
+    out, problems, header, dup = {}, [], None, set()
+    for i, rec in enumerate(recs, 1):
+        if not rec or not "".join(rec).strip() or rec[0].lstrip().startswith("#"):
+            continue
+        if header is None:
+            header = [c.strip() for c in rec]
+            if header != GATE_ACCEPT_HEADER:
+                return {}, [f"{label} header is {','.join(header)!r} (line {i}), expected exactly "
+                            f"{','.join(GATE_ACCEPT_HEADER)!r}: nothing waived"]
+            continue
+        d = {h: (rec[k].strip() if k < len(rec) else "") for k, h in enumerate(GATE_ACCEPT_HEADER)}
+        d["line"] = i
+        why = None
+        if len(rec) != len(GATE_ACCEPT_HEADER):
+            why = f"{len(rec)} fields, expected {len(GATE_ACCEPT_HEADER)}"
+        elif not d["ctrl"]:
+            why = "blank ctrl"
+        elif d["check"] not in WAIVABLE:
+            why = f"check {d['check']!r} cannot be waived (only {', '.join(WAIVABLE)})"
+        elif not d["date"] or not d["basis"]:
+            why = "blank date or basis (a waiver must say when and why)"
+        elif (d["ctrl"], d["check"]) in out or (d["ctrl"], d["check"]) in dup:
+            first = out.pop((d["ctrl"], d["check"]), None)
+            if first:
+                problems.append(f"{label} line {first['line']} ({d['ctrl']} {d['check']}): duplicated on line {i} - NOT applied")
+            dup.add((d["ctrl"], d["check"]))
+            why = "duplicate key"
+        if why:
+            problems.append(f"{label} line {i} ({d['ctrl'] or '-'} {d['check'] or '-'}): {why} - NOT applied")
+            continue
+        out[(d["ctrl"], d["check"])] = d
+    return out, problems
+
+
+def waiver_record(w, print_major, print_minor, idx_major, idx_minor):
+    """The JSON stored in print_pdf.waiver: the CSV row plus both builds it was accepted against."""
+    return json.dumps({"check": w["check"], "date": w["date"], "basis": w["basis"],
+                       "printed": "%s / %s" % (print_major, print_minor),
+                       "indexed": "%s / %s" % (idx_major, idx_minor)}, ensure_ascii=False, sort_keys=True)
+
+
+def waiver_text(w):
+    """'accepted by engineer waiver <date>: printed build X vs index Y (<basis>)'."""
+    return ("accepted by engineer waiver %s (%s waived): printed build %s vs index %s (%s)"
+            % (w.get("date"), w.get("check"), w.get("printed"), w.get("indexed"), w.get("basis")))
 
 
 def open_print_ro(path: Path = None) -> sqlite3.Connection:
@@ -618,12 +720,18 @@ def _parse_stamp(s):
         return None
 
 
-def gate(path: Path, expect_ctrl: str, idx_conn, sample=8):
+def gate(path: Path, expect_ctrl: str, idx_conn, sample=8, waivers=None):
     """Decide whether one <CTRL>_P.pdf may be ingested at all.
 
     Order matters: a file that is not readable cannot be identified, and a file
     that belongs to another device must be refused before its revision is even
     compared. Only gate_status 'pass' may be ingested.
+
+    waivers ({(ctrl, check): row}, read_gate_waivers): an engineer's recorded decision to
+    trust this controller's print although ONE check fails. Only revision_mismatch can be
+    waived, and even then the Major stamps must still differ from the index's by one whole
+    quarter-hour (the same download lineage, a consistent time zone); every other check
+    still applies. A waived pass carries out["waiver"] (JSON) and the waiver in gate_note.
     """
     import fitz
     out = {"name": path.name, "ctrl": expect_ctrl, "size_bytes": path.stat().st_size,
@@ -691,10 +799,19 @@ def gate(path: Path, expect_ctrl: str, idx_conn, sample=8):
         out["gate_note"] = "controller %s is not in the index" % expect_ctrl
         return out
     off, note = revision_offset(out["print_major"], out["print_minor"], row[0], row[1])
+    waived = None
     if off is None:
-        out["gate_status"] = "revision_mismatch"
-        out["gate_note"] = note
-        return out
+        w = (waivers or {}).get((expect_ctrl, "revision_mismatch"))
+        if w is None:
+            out["gate_status"] = "revision_mismatch"
+            out["gate_note"] = note
+            return out
+        off, why = major_offset(out["print_major"], row[0])
+        if off is None:
+            out["gate_status"] = "revision_mismatch"
+            out["gate_note"] = "%s; the waiver in %s is NOT applied: %s" % (note, GATE_ACCEPT_CSV, why)
+            return out
+        waived = waiver_record(w, out["print_major"], out["print_minor"], row[0], row[1])
     out["tz_offset_min"] = off
 
     want = dbm.get_meta(idx_conn, "toolbox_version")
@@ -704,7 +821,22 @@ def gate(path: Path, expect_ctrl: str, idx_conn, sample=8):
         return out
 
     out["gate_status"] = "pass"
+    if waived:
+        out["waiver"] = waived
+        out["gate_note"] = waiver_text(json.loads(waived))
     return out
+
+
+def major_offset(print_major, idx_major):
+    """-> (offset in minutes, None) when the printed Major stamp is the indexed one shifted by one whole
+    quarter-hour (the check that still holds when an engineer waived the build comparison), else (None, reason)."""
+    pmaj, imaj = _parse_stamp(print_major), _parse_stamp(idx_major)
+    if not (pmaj and imaj):
+        return None, "cannot compare the Major stamps (printed %r, indexed %r)" % (print_major, idx_major)
+    d = (pmaj - imaj).total_seconds()
+    if d % 900 != 0 or not (-12 * 3600 <= d <= 14 * 3600):
+        return None, "the Major stamps differ too (printed %s vs indexed %s, offset %.0f s)" % (print_major, idx_major, d)
+    return int(d // 60), None
 
 
 def revision_offset(print_major, print_minor, idx_major, idx_minor):
@@ -723,13 +855,15 @@ def revision_offset(print_major, print_minor, idx_major, idx_minor):
     return int(dmaj // 60), None
 
 
-def gate_all(idx_conn, pdf_dir: Path = None, ctrls=None):
+def gate_all(idx_conn, pdf_dir: Path = None, ctrls=None, waivers=None):
     """Gate every <CTRL>_P.pdf that exists. -> list of gate dicts, plus the
     controllers the index knows that have no print at all."""
     pdf_dir = pdf_dir or pei_dir()
     if not pdf_dir.exists():
         raise SystemExit(f"printed reports not found: {pdf_dir} "
                          f"(set DCDAS_PEI or \"pei_dir\" in {dbm.config_path()})")
+    if waivers is None:
+        waivers = read_gate_waivers()[0]
     known = [r[0] for r in idx_conn.execute("SELECT name FROM controller ORDER BY name")]
     rows, missing = [], []
     for c in known:
@@ -737,7 +871,7 @@ def gate_all(idx_conn, pdf_dir: Path = None, ctrls=None):
             continue
         p = pdf_dir / ("%s_P.pdf" % c)
         if p.exists():
-            rows.append(gate(p, c, idx_conn))
+            rows.append(gate(p, c, idx_conn, waivers=waivers))
         else:
             missing.append(c)
     return rows, missing
@@ -808,9 +942,12 @@ def scan(idx_conn, pconn, ctrls=None, pdf_dir: Path = None, pages=None, log=prin
 
     vars_by_ctrl, blocks_by_ctrl = {}, {}
     summary = {"pdfs": [], "sheets": 0, "pins": 0, "refused": []}
+    waivers, problems = read_gate_waivers()
+    for p_ in problems:
+        log("  WARN " + p_)
 
     for ctrl, path in files:
-        g = gate(path, ctrl, idx_conn)
+        g = gate(path, ctrl, idx_conn, waivers=waivers)
         pconn.execute("DELETE FROM print_pin WHERE sheet_id IN (SELECT s.id FROM print_sheet s "
                       "JOIN print_pdf p ON p.id=s.pdf_id WHERE p.name=?)", (path.name,))
         pconn.execute("DELETE FROM print_sheet WHERE pdf_id IN (SELECT id FROM print_pdf WHERE name=?)",
@@ -818,11 +955,11 @@ def scan(idx_conn, pconn, ctrls=None, pdf_dir: Path = None, pages=None, log=prin
         pconn.execute("DELETE FROM print_pdf WHERE name=?", (path.name,))
         cur = pconn.execute(
             "INSERT INTO print_pdf(name,ctrl,sha256,size_bytes,page_count,device_name,print_major,"
-            "print_minor,tz_offset_min,tool_version,gate_status,gate_note,scanned_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))",
+            "print_minor,tz_offset_min,tool_version,gate_status,gate_note,scanned_at,waiver) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'),?)",
             (g["name"], ctrl, g["sha256"], g["size_bytes"], g["page_count"], g["device_name"],
              g["print_major"], g["print_minor"], g["tz_offset_min"], g["tool_version"],
-             g["gate_status"], g["gate_note"]))
+             g["gate_status"], g["gate_note"], g.get("waiver")))
         pdf_id = cur.lastrowid
         summary["pdfs"].append({"name": g["name"], "ctrl": ctrl, "gate": g["gate_status"],
                                 "note": g["gate_note"], "pages": g["page_count"]})
@@ -831,6 +968,8 @@ def scan(idx_conn, pconn, ctrls=None, pdf_dir: Path = None, pages=None, log=prin
             summary["refused"].append(g["name"])
             pconn.commit()
             continue
+        if g.get("waiver"):
+            log("  WAIVED  %-14s %s" % (g["name"], g["gate_note"]))
 
         if ctrl not in vars_by_ctrl:
             vars_by_ctrl[ctrl] = {r[0] for r in idx_conn.execute(

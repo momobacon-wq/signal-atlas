@@ -6,11 +6,14 @@
 <meta name="robots" content="noindex, nofollow">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>
-  // GitHub Pages 找不到路徑時，轉回單頁 App 首頁（保留 #hash）
+  // GitHub Pages 找不到路徑時，轉回單頁 App 首頁（保留 #hash）；路徑在子站 <base>/<site>/… 底下時轉回該子站首頁
   (function () {
+    var SUBS = ['u2']; // docs/<site>/ 子站（tools/make_subsite.py 會檢查這份清單）；只列真的存在的子站，否則會一直 404
     var p = location.pathname;
     var i = p.indexOf('/', 1);
     var base = (location.hostname.endsWith('github.io') && i > 0) ? p.slice(0, i + 1) : '/';
+    var seg = p.slice(base.length).split('/')[0];
+    if (SUBS.indexOf(seg) >= 0) base += seg + '/';
     location.replace(base + 'index.html' + location.search + location.hash);
   })();
 </script>

@@ -3,13 +3,14 @@
  * 報告本文只以密文放在 reports/<name>.bin（12-byte IV || AES-256-GCM(gzip(html))，AAD = "reports/<name>"），
  * 金鑰與站台相同：PBKDF2-HMAC-SHA-256（salt/iter 記在 reports/<name>.json）。
  *  1. 先過登入閘門（auth.js，員工代號＋登入紀錄）。
- *  2. 試 localStorage 'atlas.key'（主站記住的金鑰）；解不開才顯示密語視窗。
+ *  2. 試 localStorage 'atlas.key'（主站記住的金鑰；子站報告頁帶 <meta name="atlas-site" content="<site>"> 時是 'atlas.<site>.key'）；解不開才顯示密語視窗。
  *  3. 解密 → 解壓 → 以 DOMParser 取 <style> 與 <body>，換掉載入畫面；站台 app.css 停用（報告自帶樣式）。
  * 產生密文：py tools/seal_report.py <report.html> <name>
  */
 'use strict';
 (function () {
-  const KEY_STORE = 'atlas.key';
+  const SITE = (document.querySelector('meta[name="atlas-site"]') || {}).content || ''; // 子站報告：與 core.js 同一命名空間
+  const KEY_STORE = SITE ? 'atlas.' + SITE + '.key' : 'atlas.key';
   const NAME = (document.querySelector('meta[name="atlas-report"]') || {}).content;
   const utf8 = (s) => new TextEncoder().encode(s);
   const b64dec = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));

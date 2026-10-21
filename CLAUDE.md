@@ -29,6 +29,9 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 1. 先跑 `py tools\dcdas.py status`。若印出 STALE，告訴使用者索引過期並問要不要重建（`build` 約 1 分鐘；checkout 在雲端串流磁碟且未快取時約 25 分鐘），不要自己重建；
    若只是 `xref_manual.csv` 變了，`status` 會改建議 `xref-reload`（幾秒，只重載人工登錄列與回推規則）。
 2. 用 `show <CTRL.NAME>`（裸名撞多控制器時 CLI 會列出候選，再用 `CTRL.NAME`）。找不到就 `find <片段>`（走 FTS，含別名、DeviceTag、警報文字）。
+   圖面編號的連字號可省略（`find AB-CD-1` 也找 `ABCD1`；`io` 比對 DeviceTag 時同理），位號也會去掉機組前綴再比別名。
+   本機若有設備對照檔（`config.json` 的 `device_xref`，站台資料、不進 repo），`find`／`show`／`io` 會用它把圖面編號、位號連到邏輯名，
+   `find` 印 `device_xref` 行、`show` 的 DEF 印 `device_xref`；回答時把圖面編號與位號一起寫出，並照它的出處欄引用。
 3. 需要上下游多跳才用 `trace <CTRL.NAME> --up N --down N`（預設 `--max-lines 60`；大扇出訊號先看 show）。
 4. 端子 / EGD / 畫面 / 警報：`io <tag|var|module>`、`egd <var|ctrl> [--page X]`、`screen <cim|var>`、`alarm <pattern>`。
 5. 要驗證或引用原始 XML 時，用 `where <CTRL.NAME>` 拿到 `file:line`，再用 `Read` 的 offset/limit 只讀那幾十行。

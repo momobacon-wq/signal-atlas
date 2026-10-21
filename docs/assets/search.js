@@ -3,11 +3,17 @@
 (function () {
   const D = window.DC;
   const MAX = 500;
-  const lc = new Map(); // ctrl -> [[name, alias, desc], ...] 小寫索引
+  const lc = new Map(); // ctrl -> [[name, alias + 設備對照, desc], ...] 小寫索引
+  const cc = new Map(); // ctrl -> 同上但去掉 - / 空白（AB-CD-1 ＝ abcd1），只在查詢字帶這些符號時才建
 
   function lowerIndex(ctrl, rows) {
-    if (!lc.has(ctrl)) lc.set(ctrl, rows.map((r) => [r[0].toLowerCase(), (r[3] || '').toLowerCase(), (r[1] || '').toLowerCase()]));
+    if (!lc.has(ctrl)) lc.set(ctrl, rows.map((r) => [r[0].toLowerCase(), ((r[3] || '') + (r[5] ? ' ' + r[5] : '')).trim().toLowerCase(), (r[1] || '').toLowerCase()]));
     return lc.get(ctrl);
+  }
+  const squeeze = (s) => s.replace(/[-\/\s]+/g, '');
+  function compactIndex(ctrl, rows) {
+    if (!cc.has(ctrl)) cc.set(ctrl, lowerIndex(ctrl, rows).map((x) => [squeeze(x[0]), x[1].split(/\s+/).map(squeeze).join(' '), squeeze(x[2])]));
+    return cc.get(ctrl);
   }
 
   const SUB = 256; // names flags bit：警報子變數（<訊號>.<後綴>），搜尋時摺到母訊號下
@@ -19,24 +25,38 @@
     const m = /^([a-z0-9]+)\.(.+)$/.exec(tokens[0]);
     if (m && D.ctrls.some((c) => c.toLowerCase() === m[1])) { onlyCtrl = m[1]; tokens[0] = m[2]; }
     const t0 = tokens[0];
+    const t0c = squeeze(t0); // 圖面寫 AB-CD-1、邏輯寫 ABCD1：查詢帶 - / 時另比一次去掉符號的版本
+    const sq = t0c !== t0 && t0c.length >= 3;
     const rest = tokens.slice(1);
     const hits = [];
     let total = 0;
     for (const [ctrl, rows] of sets) {
       if (onlyCtrl && ctrl.toLowerCase() !== onlyCtrl) continue;
       const ix = lowerIndex(ctrl, rows);
+      const cx = sq ? compactIndex(ctrl, rows) : null;
       for (let i = 0; i < ix.length; i++) {
         const [name, alias, desc] = ix[i];
         const flags = rows[i][2] || 0;
         if (mask && (flags & mask) !== mask) continue;
-        let rank;
+        let rank = 9;
         if (name === t0) rank = 0;
         else if (name.startsWith(t0)) rank = 1;
-        else if (alias && (alias === t0 || alias.startsWith(t0))) rank = 2;
+        else if (alias && (alias === t0 || alias.startsWith(t0) || alias.includes(' ' + t0))) rank = 2;
         else if (name.includes(t0)) rank = 3;
         else if (alias && alias.includes(t0)) rank = 4;
         else if (desc.includes(t0)) rank = 5;
-        else continue;
+        if (cx && rank > 0) { // 去掉符號再比一次，取較好的名次（88QA-1 對 88QA1 是名稱相同，不是別名含）
+          const [nc, ac, dc] = cx[i];
+          let rc = 9;
+          if (nc === t0c) rc = 0;
+          else if (nc.startsWith(t0c)) rc = 1;
+          else if (ac && (ac.startsWith(t0c) || ac.includes(' ' + t0c))) rc = 2;
+          else if (nc.includes(t0c)) rc = 3;
+          else if (ac && ac.includes(t0c)) rc = 4;
+          else if (dc.includes(t0c)) rc = 5;
+          rank = Math.min(rank, rc);
+        }
+        if (rank === 9) continue;
         if (rest.length) {
           let ok = true;
           for (const t of rest) if (!(name.includes(t) || alias.includes(t) || desc.includes(t))) { ok = false; break; }
@@ -94,7 +114,7 @@
     const prog = D.h('div', { class: 'lb-bar', hidden: true }, D.h('div'));
     const status = D.h('div', { class: 'status muted small' });
     const results = D.h('div', { class: 'results' });
-    const hint = D.h('p', { class: 'muted small hint' }, '排序：名稱完全相同 › 名稱開頭 › 別名 › 名稱含 › 別名含 › 說明含；多個字以空白分隔（全部都要符合）；輸入 CTRL.NAME 只查該控制器。');
+    const hint = D.h('p', { class: 'muted small hint' }, '排序：名稱完全相同 › 名稱開頭 › 別名 › 名稱含 › 別名含 › 說明含；多個字以空白分隔（全部都要符合）；輸入 CTRL.NAME 只查該控制器；編號裡的 - 與 / 可有可無（AB-CD-1 ＝ ABCD1）；別名欄也比對設備對照（圖面編號、位號）。');
     D.set(view, 
       D.h('div', { class: 'home-wrap' },
         D.h('h1', { class: 'home-title', text: 'Signal Atlas ' + (lab ? lab + ' ' : '') + '訊號邏輯查詢' }),
@@ -150,7 +170,7 @@
         D.h('td', { class: 'nowrap' }, D.mono(c)),
         D.h('td', { class: 'nowrap' }, D.h('a', { href: D.hrefV(c + '.' + r[0]), class: 'lk mono b', text: r[0] }), ' ', D.flagIcons(r[2])),
         D.h('td', null, r[1] || ''),
-        D.h('td', { class: 'nowrap' }, r[3] ? D.mono(r[3]) : ''),
+        D.h('td', { class: 'nowrap' }, r[3] ? D.mono(r[3]) : '', r[5] ? D.h('div', { class: 'muted small mono', title: '設備對照（圖面編號／位號）', text: r[5] }) : ''),
         D.h('td', { class: 'nowrap muted small' }, r[4] || ''));
       const rows = hits.map((h) => {
         const [rank, c, r] = h;

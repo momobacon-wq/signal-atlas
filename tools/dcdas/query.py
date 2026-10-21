@@ -4,11 +4,14 @@ top-level 'kind' key; render.py turns it into fixed-width text for Claude / engi
 
 Signal resolution (resolve_signal): 'CTRL.NAME' = variable.full_name exact; bare NAME -> variable.name, used if
 it exists in exactly one controller, else kind='ambiguous' listing the candidates; then case-insensitive
-full_name/name, alias, io_point.device_tag, egd consumed copies ('<producer>.<name>' in a consumer controller).
+full_name/name, alias, io_point.device_tag, egd consumed copies ('<producer>.<name>' in a consumer controller),
+the name without separators ('AB-CD-1' -> ABCD1) and the local device cross-reference (see _xref).
 
 Reference notation everywhere:  CTRL/Program/Task/.../Block.Pin [BlockType] dir/src file:line
 (block.path is 'Program/Task/UB/Block'; program.file_path is relative to the checkout root).
 """
+import json
+import os
 import re
 import sqlite3
 from collections import OrderedDict
@@ -17,6 +20,128 @@ SECTION_CAP = 400          # hard cap per section returned to the caller (render
 CONNECTED = ("V", "L", "P", "D")
 DCS_PAGES = ("TURB_DCS", "MIS")
 _WILD = re.compile(r"[*?%\[]")
+
+
+# ------------------------------------------------------------------------------------- device cross-reference
+# One field device is written several ways: a drawing tag with separators ("AB-CD-1"), the same without them in the
+# logic ("ABCD1", "a_abcd1"), and a plant tag ("U11ABC01CT001", generic "XXABC01CT001"). config.json "device_xref"
+# (or env DCDAS_DEVICE_XREF) may name a local JSON file {"entries": [{"tag", "forms", "kks", "old_kks", "service",
+# "logic": ["CTRL.NAME", ...], "src": [{"doc", "loc", ...}], "conflict"}]} that ties them together; it is site data
+# and never lives in the repo. find/show/io/resolve use it when present; without it only the separator-blind
+# matching below applies.
+_SEP = re.compile(r"[\s\-/]+")
+# matched after compact(): a '-XX00' sub-part follows the body directly; the optional body letter is lazy so that
+# 'ABC01GP001MA01' splits as ABC01GP001 + MA01, not ABC01GP001M + A01
+_PLANT_TAG = re.compile(r"^([A-Z]\d{2}|XX|YY)?([A-Z]{3}\d{2}[A-Z]{2}\d{3}[A-Z]??)([A-Z]{1,2}\d{2})?$")   # XX/YY = generic unit
+_XREF = {}
+
+
+def compact(s):
+    """Match key that ignores separators and case: 'ab-cd-1', 'ABCD-1', 'abcd1' -> 'ABCD1' ('_' and '.' are kept)."""
+    return _SEP.sub("", s or "").upper()
+
+
+def plant_tag_body(s):
+    """'U11ABC01CT001' / 'XXABC01CT001' -> 'ABC01CT001' (unit prefix and '-XX00' sub-part dropped); else None."""
+    m = _PLANT_TAG.match(compact(s))
+    return m.group(2) if m else None
+
+
+def _xref():
+    try:
+        from . import db as dbm
+    except ImportError:
+        from dcdas import db as dbm
+    p = os.environ.get("DCDAS_DEVICE_XREF") or dbm.config().get("device_xref")
+    if not p:
+        return None
+    if p in _XREF:
+        return _XREF[p]
+    x = None
+    if os.path.exists(p):
+        with open(p, "r", encoding="utf-8") as f:
+            entries = json.load(f).get("entries", [])
+        by_key, by_body, by_logic = {}, {}, {}
+        for i, e in enumerate(entries):
+            for t in set(e.get("forms") or []) | {e.get("tag") or ""}:
+                if t:
+                    by_key.setdefault(compact(t), set()).add(i)
+            for k in list(e.get("kks") or []) + [o.get("kks", "") for o in e.get("old_kks") or []]:
+                b = plant_tag_body(k)
+                if b:
+                    by_body.setdefault(b, set()).add(i)
+            for n in e.get("logic") or []:
+                c, _, bare = n.rpartition(".")
+                by_key.setdefault(compact(bare), set()).add(i)
+                by_logic.setdefault(bare.upper(), set()).add((i, (c or "?")[:1].upper()))
+        x = {"entries": entries, "by_key": by_key, "by_body": by_body, "by_logic": by_logic, "path": p}
+    _XREF[p] = x
+    return x
+
+
+def unit_plant_tag(tag, ctrl):
+    """A list that prints one unit's plant tag for all sister units ('U11ABC01CT001', note U11=U12=...) read on
+    controller U12 -> 'U12ABC01CT001'. Only when the prefix and the controller name are both letter+2 digits and share
+    the letter; anything else is returned as printed."""
+    m = re.match(r"^([A-Z])(\d{2}|\1)(?=[A-Z]{3}\d{2})", tag or "")       # 'U11…', or a generic 'XX…' / 'YY…'
+    if m and ctrl and re.fullmatch(r"[A-Z]\d{2}", ctrl) and m.group(0) != ctrl and \
+            (ctrl[0] == m.group(1) or m.group(2) == m.group(1)):
+        return ctrl + tag[len(m.group(0)):]
+    return tag
+
+
+def _xref_brief(e, ctrl=None):
+    s = (e.get("src") or [{}])[0]
+    return {"tag": e.get("tag"), "kks": [unit_plant_tag(k, ctrl) for k in e.get("kks") or []], "service": e.get("service") or "",
+            "logic": e.get("logic") or [], "src": " ".join(x for x in (s.get("doc"), s.get("loc")) if x),
+            "old_kks": [o.get("kks") for o in e.get("old_kks") or []], "conflict": e.get("conflict") or ""}
+
+
+def xref_lookup(term):
+    """Cross-reference entries for any spelling of a device: drawing tag, logic name or plant tag."""
+    x = _xref()
+    if not x or not term:
+        return []
+    ids = set(x["by_key"].get(compact(term), ()))
+    b = plant_tag_body(term)
+    if b:
+        ids |= x["by_body"].get(b, set())
+    return [x["entries"][i] for i in sorted(ids)]
+
+
+def _xref_vars(conn, entries, ctrl=None, cols="id, ctrl, full_name, datatype, description, alias, decl_connection"):
+    """Variables named by these entries' logic lists. Matched by bare name and controller family letter, so a file
+    built from one site's index also serves a sister site (U11.X found as U21.X)."""
+    want = {}
+    for e in entries:
+        for n in e.get("logic") or []:
+            c, _, bare = n.rpartition(".")
+            want.setdefault(bare.upper(), set()).add((c or "?")[:1].upper())
+    if not want:
+        return []
+    names = sorted(want)
+    sql = f"SELECT {cols}, ctrl AS _c, name AS _n FROM variable WHERE upper(name) IN ({','.join('?' * len(names))})"
+    args = list(names)
+    if ctrl:
+        sql += " AND ctrl=?"
+        args.append(ctrl)
+    out = []
+    for r in _rows(conn, sql + " ORDER BY ctrl, name", args):
+        c, n = r.pop("_c"), r.pop("_n")
+        fams = want.get(n.upper(), set())
+        if "?" in fams or c[:1].upper() in fams:
+            out.append(r)
+    return out
+
+
+def xref_for_var(v):
+    """Entries whose logic names include this variable (bare name, same controller family letter)."""
+    x = _xref()
+    if not x:
+        return []
+    hits = x["by_logic"].get((v["name"] or "").upper(), ())
+    fam = (v["ctrl"] or "?")[:1].upper()
+    return [x["entries"][i] for i, f in sorted(hits) if f in (fam, "?")]
 
 
 # ------------------------------------------------------------------------------------------------- helpers
@@ -266,6 +391,19 @@ def resolve_signal(conn, key):
     if len(ids) > 1:
         cands = [_var_by_id(conn, i) for i in ids]
         return None, _ambiguous(key, cands, "io device_tag")
+    # the same name written with separators ('AB-CD-1' -> ABCD1), then the device cross-reference's logic names
+    ck = compact(key)
+    if ck and ck != key.upper():
+        cands = _rows(conn, "SELECT * FROM variable WHERE name=? COLLATE NOCASE ORDER BY ctrl", (ck,))
+        if len(cands) == 1:
+            return cands[0], None
+        if len(cands) > 1:
+            return None, _ambiguous(key, cands, "name without separators")
+    cands = _xref_vars(conn, xref_lookup(key), cols="*")
+    if len(cands) == 1:
+        return cands[0], None
+    if len(cands) > 1:
+        return None, _ambiguous(key, cands, "device xref")
     # array element 'NAME[3]' -> base
     if key.endswith("]") and "[" in key:
         return resolve_signal(conn, key[:key.index("[")])
@@ -354,6 +492,9 @@ def _def_section(conn, v):
     vo = _value_override(conn, v["ctrl"], v["name"])
     if vo:
         d["value_override"] = vo
+    xr = xref_for_var(v)
+    if xr:
+        d["xref"] = [_xref_brief(e, v["ctrl"]) for e in xr]
     return d
 
 
@@ -1035,6 +1176,18 @@ def find(conn, pattern, ctrl=None, kind="var", limit=40):
     if kind == "var":
         found = OrderedDict()
         wild = bool(_WILD.search(pattern))
+        alts, xref = [], ([] if wild else xref_lookup(pattern))
+        if not wild:
+            ck = compact(pattern)
+            if ck and ck != pattern.upper():
+                alts.append(ck)         # 'AB-CD-1' also finds ABCD1, a_abcd1, ...
+            b = plant_tag_body(pattern)
+            if b and b != ck:
+                alts.append(b)          # 'U11ABC01CT001' also finds an alias written 'ABC01CT001'
+        xrows = _xref_vars(conn, xref, ctrl)
+        for r in xrows:
+            found.setdefault(r["id"], r)
+        xnames = [r["full_name"] for r in xrows]
         if not wild:
             try:
                 sql = """SELECT v.id, v.ctrl, v.full_name, v.datatype, v.description, v.alias, v.decl_connection FROM variable_fts f
@@ -1048,21 +1201,30 @@ def find(conn, pattern, ctrl=None, kind="var", limit=40):
                     found.setdefault(r["id"], r)
             except sqlite3.OperationalError as e:      # no FTS5 / empty index
                 out["fts_error"] = str(e)
-        sql = """SELECT id, ctrl, full_name, datatype, description, alias, decl_connection FROM variable
-                 WHERE (name LIKE ? ESCAPE '\\' OR alias LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')"""
-        lk = _like(pattern)
-        args = [lk, lk, lk]
-        if ctrl:
-            sql += " AND ctrl=?"
-            args.append(ctrl)
-        sql += " ORDER BY length(name), full_name LIMIT %d" % (limit * 3 + 1)
-        for r in _rows(conn, sql, args):
-            found.setdefault(r["id"], r)
+        for pat in [pattern] + alts:
+            sql = """SELECT id, ctrl, full_name, datatype, description, alias, decl_connection FROM variable
+                     WHERE (name LIKE ? ESCAPE '\\' OR alias LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')"""
+            lk = _like(pat)
+            args = [lk, lk, lk]
+            if ctrl:
+                sql += " AND ctrl=?"
+                args.append(ctrl)
+            sql += " ORDER BY length(name), full_name LIMIT %d" % (limit * 3 + 1)
+            for r in _rows(conn, sql, args):
+                found.setdefault(r["id"], r)
         rows = list(found.values())
-        # exact / prefix name hits first
-        pl = pattern.lower()
-        rows.sort(key=lambda r: (0 if r["full_name"].lower().split(".", 1)[-1] == pl else
-                                 1 if pl in r["full_name"].lower() else 2, len(r["full_name"]), r["full_name"]))
+        # exact name hits (any spelling, or a cross-referenced logic name) first, then name contains, then the rest
+        keys = {pattern.lower()} | {a.lower() for a in alts}
+        xset = set(xnames)
+        rows.sort(key=lambda r: (0 if r["full_name"].lower().split(".", 1)[-1] in keys or r["full_name"] in xset else
+                                 1 if any(k in r["full_name"].lower() for k in keys) else 2, len(r["full_name"]), r["full_name"]))
+        out["alts"] = alts
+        unit = re.match(r"^([A-Z]\d{2})(?=[A-Z]{3}\d{2})", compact(pattern)) if plant_tag_body(pattern) else None
+        out["xref"] = []
+        for e in xref:
+            b = _xref_brief(e, unit.group(1) if unit else None)
+            b["logic"] = [r["full_name"] for r in _xref_vars(conn, [e], ctrl, cols="full_name")]    # as found in this index
+            out["xref"].append(b)
         out["more"] = max(0, len(rows) - limit)
         for r in rows[:limit]:
             r["flags"] = _var_flags(conn, r)
@@ -1117,6 +1279,8 @@ def io(conn, key, ctrl=None):
     cwhere, cargs = ("AND p.ctrl=? ", [ctrl]) if ctrl else ("", [])
     tries = [
         ("device_tag", "WHERE p.device_tag=? COLLATE NOCASE " + cwhere, [key] + cargs),
+        ("device_tag without separators",
+         "WHERE replace(replace(replace(upper(p.device_tag),'-',''),'/',''),' ','')=? " + cwhere, [compact(key)] + cargs),
         ("connection", "WHERE p.connection=? COLLATE NOCASE " + cwhere, [key] + cargs),
         ("module", "WHERE m.name=? COLLATE NOCASE " + cwhere, [key] + cargs),
         ("cabinet", "WHERE m.cabinet=? COLLATE NOCASE " + cwhere, [key] + cargs),
@@ -1132,6 +1296,11 @@ def io(conn, key, ctrl=None):
         if v:
             rows = _io_rows(conn, var_id=v["id"])
             how = "variable"
+    if not rows:
+        for xv in _xref_vars(conn, xref_lookup(key), ctrl, cols="id"):
+            rows += _io_rows(conn, var_id=xv["id"])
+        if rows:
+            how = "device xref"
     if not rows:
         lk = _like(key)
         rows = _io_rows(conn, where="WHERE (p.device_tag LIKE ? ESCAPE '\\' OR p.name LIKE ? ESCAPE '\\' "

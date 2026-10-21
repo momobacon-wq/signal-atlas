@@ -78,14 +78,17 @@ docs/<site>/                   子站（例 docs/u2/）：index.html（帶 <meta
 
 ## `names/<CTRL>.json` — 搜尋索引（每控制器一檔，前端依選取懶載入；「全部」逐檔載入並顯示進度）
 
-`{"ctrl":"G11","rows":[[name, desc, flags, alias, datatype], ...]}`；`flags` 位元見 manifest。搜尋在前端做：
-名稱 / 別名 / 說明 子字串（`-`、`_`、`.` 保留），排序 exact name > name prefix > alias > desc。
+`{"ctrl":"G11","rows":[[name, desc, flags, alias, datatype, xref?], ...]}`；`flags` 位元見 manifest。第 6 欄 `xref`（選用）＝
+本機設備對照檔（`config.json` 的 `device_xref`）連到這個訊號的圖面編號與位號，空白分隔；沒有就省略（列仍是 5 欄）。搜尋在前端做：
+名稱 / 別名（含 xref）/ 說明 子字串（`_`、`.` 保留），排序 exact name > name prefix > alias > desc；查詢字帶 `-`、`/` 時另比一次
+兩邊都去掉 `-`、`/`、空白的版本（`AB-CD-1` 命中 `ABCD1`）。
 
 ## `var/<hhh>.json` — 訊號卡（shard = sha1(`CTRL.NAME`) 前 3 hex；空值/空陣列/0 的 `const`、`local` 一律省略）
 
 ```json
 {"v":{"G11.L27QE1_A":{
   "d":{"desc":"...","dt":"BOOL","addr":"01005DE1","val":"0","egd_page":"$Default","alias":"…","fs":"…","units":"…","lo":0,"hi":200,
+       "xref":[[drawing_tag, plant_tag, service, source]],            // 選用：本機設備對照檔連到這個訊號（位號依控制器換機組前綴）
        "const":1,"local":1,"decl":["LubeOil",null,"G11/Variables.xml",45234],"device_name":"G11","producer":"G11.X","ref":["EGD","LubeOil"],"screen":"…cim"},
   "w":[[ctrl, program, block_path, block_type, pin, src, line, kind]], // 寫入者（direction O）；kind 'b' = 一般方塊（含不透明巨集的回推／登錄腳），'t' = task／巨集介面腳（與內部寫入者同一條路徑，不算多寫入）
   "r":[[...]],                                                       // 讀取者（direction I/S）

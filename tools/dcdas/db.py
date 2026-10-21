@@ -8,7 +8,9 @@ Nothing site-specific lives in the repo. Local settings come from (in priority o
   env DCDAS_WEB_KEY       site passphrase       else config.json "web_key_file" (first line of that file)
   env DCDAS_SITE          site token            else config.json "site" (lowercase [a-z0-9_-]); empty = the default site
   config.json   {"src_root": "...", "web_key_file": "...", "manual_pdfs": ["...", ...],
-                 optional: "db_path", "print_db", "pei_dir", "site", "web_dir", "web_base", "site_label", "related"}
+                 optional: "db_path", "print_db", "pei_dir", "site", "web_dir", "web_base", "site_label", "related",
+                           "device_xref" (local JSON tying drawing tags / plant tags / logic names; see query._xref;
+                           env DCDAS_DEVICE_XREF overrides)}
 A non-default site keeps its hand-maintained CSVs in tools/sites/<site>/ and publishes to web_dir (default docs/<site>/)
 at web_base (default: the default site's base + "<site>/"). site_label and related go only into the encrypted
 manifest: they never appear in a repo file. The index records its site (meta "site", absent = the default site); the

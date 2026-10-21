@@ -103,6 +103,8 @@ def _show(o, r):
     _kv(o, "scope", d["scope"])
     _kv(o, "egd_page", d["egd_page"])
     _kv(o, "alias", d["alias"])
+    for x in d.get("xref") or []:
+        _kv(o, "device_xref", _xref_line(x))
     rng = []
     if d["units"]:
         rng.append(f"units {d['units']}")
@@ -323,6 +325,12 @@ def _find(o, r):
     o.head(f"FIND '{r['pattern']}' kind={what}" + (f" ctrl={r['ctrl']}" if r.get("ctrl") else "") + f"  {n} shown" + (f", +{r['more']} more (--limit)" if r.get("more") else ""))
     if r.get("fts_error"):
         o.line(f"  (fts unavailable: {r['fts_error']})")
+    if r.get("alts"):
+        o.line(f"  also searched: {', '.join(r['alts'])} (separators / unit prefix ignored)")
+    for x in r.get("xref") or []:
+        o.line(f"  device_xref  {_xref_line(x)}")
+        if x["logic"]:
+            o.line(f"               logic: {', '.join(x['logic'][:10])}" + (" ..." if len(x["logic"]) > 10 else ""))
     if what == "var":
         o.rows(r["rows"], lambda v: f"{v['full_name']:<38s} {_s(v['datatype']):<7s} {','.join(v['flags']) or '-':<14s} {_cut(v['description'], 60)}"
                + (f"  alias {v['alias']}" if v["alias"] else ""), total=n)
@@ -334,6 +342,16 @@ def _find(o, r):
         o.rows(r["rows"], lambda s: f"{s['screen']:<50s} points {s['n_points']}" + (f"  menu: {s['menu']}" if s.get("menu") else ""), total=n)
     if not r["rows"]:
         o.line("  none")
+
+
+def _xref_line(x):
+    """One device cross-reference entry: drawing tag = plant tag(s) service [first source] (+ other plant tags seen)."""
+    s = f"{x['tag']} = {'/'.join(x['kks']) or '(no plant tag)'}  {_cut(x['service'], 50)}"
+    if x.get("old_kks"):
+        s += f"  (also written {'/'.join(x['old_kks'][:3])})"
+    if x.get("conflict"):
+        s += f"  CONFLICT: {_cut(x['conflict'], 80)}"
+    return s + (f"  [{_cut(x['src'], 90)}]" if x.get("src") else "")
 
 
 def _io(o, r):

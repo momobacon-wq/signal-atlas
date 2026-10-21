@@ -43,6 +43,10 @@
     } else rows.push(D.kv('初始值', D.mono(D.val(d.val))));
     if (!D.blank(d.egd_page)) rows.push(D.kv('EGD 頁', D.mono(d.egd_page)));
     if (!D.blank(d.alias)) rows.push(D.kv('別名（KKS）', D.mono(d.alias)));
+    if (Array.isArray(d.xref)) for (const x of d.xref) { // 本機設備對照檔：圖面編號 ＝ 位號、說明、出處
+      rows.push(D.kv('設備對照', D.frag(D.mono(x[0] || ''), ' ＝ ', D.mono(x[1] || '—'), x[2] ? '  ' + x[2] : '',
+        x[3] ? D.h('div', { class: 'muted small', text: '出處 ' + x[3] }) : null)));
+    }
     if (!D.blank(d.units) || !D.blank(d.lo) || !D.blank(d.hi)) rows.push(D.kv('單位 / 量程', D.frag(D.val(d.units), '  ', D.mono(D.val(d.lo) + ' – ' + D.val(d.hi)))));
     if (!D.blank(d.fs)) rows.push(D.kv('格式（fs）', D.mono(d.fs)));
     rows.push(D.kv('常數 / 區域', D.frag(d.const ? D.tag('常數', 'warn') : '否', '  ', d.local ? D.tag('local') : null)));

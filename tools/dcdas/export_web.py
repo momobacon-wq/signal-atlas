@@ -28,6 +28,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from . import db as _db
+from . import query as _query
 from .db import get_meta
 
 KDF_ITER = 200_000
@@ -366,7 +367,11 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         if v["device_name"]: flags |= 64
         if enc: flags |= 128
         if v["sub_of"]: flags |= 256        # alarm sub-variable: the search page folds it under its parent
-        names[v["ctrl"]].append([v["name"], v["description"] or "", flags, v["alias"] or "", v["datatype"] or ""])
+        xr = [_query._xref_brief(e, v["ctrl"]) for e in _query.xref_for_var(v)]
+        nrow = [v["name"], v["description"] or "", flags, v["alias"] or "", v["datatype"] or ""]
+        if xr:      # local device cross-reference (config "device_xref"): drawing tag + plant tag, searched with the alias
+            nrow.append(" ".join(dict.fromkeys(t for x in xr for t in [x["tag"]] + x["kks"])))
+        names[v["ctrl"]].append(nrow)
         card = {
             "d": {"desc": v["description"], "dt": v["datatype"], "addr": v["address"], "val": v["value"],
                   "egd_page": v["egd_page"], "alias": v["alias"], "fs": v["format_spec"], "units": units,
@@ -382,6 +387,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         }
         if vid in vo_applied:
             card["d"]["vo"] = vo_applied[vid]
+        if xr:
+            card["d"]["xref"] = [[x["tag"], " / ".join(x["kks"]), x["service"], x["src"]] for x in xr]
         if v["sub_of"]:
             card["d"]["sub"] = v["sub_of"]
             if vid in mirror and mirror[vid].get("kind") == "I":

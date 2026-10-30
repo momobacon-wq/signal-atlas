@@ -559,10 +559,19 @@ def main(docs):
             tbad += 1
             if tbad <= 5:
                 err(f"task {tkey}: {vu_bad} vu entries disagree with DB")
+        # coverage: the diagram's "no downstream" rule needs a vu row for every output pin's variable of the task
+        want_vu = {r[0] for r in conn.execute(
+            """SELECT DISTINCT v.full_name FROM pin p JOIN block b ON b.id=p.block_id JOIN variable v ON v.id=p.var_id
+               WHERE b.task_id=? AND p.direction='O'""", (tid,))}
+        vu_missing = want_vu - set(ent.get("vu", {}))
+        if vu_missing:
+            tbad += 1
+            if tbad <= 5:
+                err(f"task {tkey}: {len(vu_missing)} of {len(want_vu)} output-pin variables missing from vu (re-export?)")
         if bad_len or got_vd != want_vd:
             tbad += 1
             if tbad <= 5:
-                err(f"task {tkey}: {bad_len} pins not 11 fields; vd {len(got_vd)} vs {len(want_vd)} expected")
+                err(f"task {tkey}: {bad_len} pins not 12 fields; vd {len(got_vd)} vs {len(want_vd)} expected")
     (ok if not tbad else err)(f"sampled 30 task entries, {tbad} mismatches")
     if (data / "block").exists():
         err("legacy data/block directory still present")

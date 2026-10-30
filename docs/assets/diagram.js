@@ -74,6 +74,9 @@
   // 方塊圖示：梯形圖方塊寬上限；執行順序小框字級（9px）相對量測字 11px 的寬度比
   const GLYPH_BOX_MAX = 520, EO_K = 9 / 11;
   const eoW = (n) => (n.eo != null ? dg.measure(String(n.eo)) * EO_K + 8 : 0);
+  // 標題列右側小徽章（n.badge，例「無下游」，灰底；有 eo 時排在 eo 左邊）：寬度同 eo 的量法；hdrW = 標題列右側徽章佔掉的總寬（名稱 fitText 與 size() 共用）
+  const ndW = (n) => (n.badge ? dg.measure(String(n.badge)) * EO_K + 8 : 0);
+  const hdrW = (n) => (n.eo != null ? eoW(n) + 6 : 0) + (n.badge ? ndW(n) + 6 : 0);
   dg.C = { PIN_H, TITLE_H, BODY_LH, BOX_MIN, BOX_MAX, BOX_MAX_B, BOX_MAX_D, SHEET_H, SHEET_H_FULL, TAG_H, TAG_H_D, VAR_H, VAR_H_D, DESC_LH, TAG_W_FULL, VAR_W_FULL };
   dg.MODES = MODES;
   dg.MODE_LABEL = { off: '關', brief: '精簡', full: '完整' };
@@ -320,7 +323,7 @@
       n.opqLine = n.opaque ? D.opaqueInfo(n).text : '';
       // 型別行只放型別；副標 n.sub（訊號圖的 Program/Task 路徑）另起行，boxW 定了之後再換行（n.subLines）
       const subW = n.sub ? Math.min(dg.measure(n.sub) * TYPE_K, SUB_W_MAX) : 0;
-      let need = Math.max(dg.measure(n.name) + 16 + (n.eo != null ? eoW(n) + 6 : 0), dg.measure(n.type || '') * TYPE_K + 16 + (n.opaque ? LOCK_W : 0), subW + 16, bd ? dmeasure(bd) + 16 : 0, n.opqLine ? dmeasure(n.opqLine) + 16 : 0);
+      let need = Math.max(dg.measure(n.name) + 16 + hdrW(n), dg.measure(n.type || '') * TYPE_K + 16 + (n.opaque ? LOCK_W : 0), subW + 16, bd ? dmeasure(bd) + 16 : 0, n.opqLine ? dmeasure(n.opqLine) + 16 : 0);
       const anyPinDesc = full && n.left.concat(n.right).some((p) => p.desc);
       let maxL = 0, maxR = 0;
       for (let i = 0; i < rows; i++) {
@@ -582,7 +585,7 @@
     const cls = ['node', n.kind === 'ub' ? 'blk ub' : n.kind === 'block' ? 'blk' : n.kind, n.cls || ''].join(' ').trim();
     const g = D.svg('g', { class: cls, 'data-id': n.id, 'data-key': n.key || null, 'data-var': n.kind === 'var' ? n.varFull : null, tabindex: '0', transform: 'translate(' + r1(n.x) + ' ' + r1(n.y) + ')' });
     const tt = [n.key || n.name || '', n.type ? '[' + n.type + ']' : '', n.sub || '', n.opaque ? '不透明：' + (n.opqLine || D.opaqueInfo(n).text) : '',
-      n.eo != null ? '執行順序 ' + n.eo + (n.pc ? '（' + D.pvText(n.pc) + '）' : '') : '', n.glyph && n.glyph.title ? n.glyph.title : '', n.desc || ''].filter(Boolean).join('\n');
+      n.eo != null ? '執行順序 ' + n.eo + (n.pc ? '（' + D.pvText(n.pc) + '）' : '') : '', n.glyph && n.glyph.title ? n.glyph.title : '', n.note || '', n.desc || ''].filter(Boolean).join('\n');
     g.appendChild(D.svg('title', { text: tt }));
     const bx = n.tagL;
     if (n.kind === 'comment') {
@@ -604,12 +607,18 @@
     const mode = graph.descMode || (graph.showDesc ? 'full' : 'off');
     g.appendChild(D.svg('rect', { class: 'box', x: r1(bx), y: 0, width: r1(n.boxW), height: r1(n.h), rx: 4 }));
     if (n.kind === 'ub') g.appendChild(D.svg('rect', { class: 'box2', x: r1(bx + 3), y: 3, width: r1(n.boxW - 6), height: r1(n.h - 6), rx: 3 }));
-    g.appendChild(D.svg('text', { class: 'name', x: r1(bx + 7), y: 12, text: dg.fitText(n.name || '', n.boxW - 14 - (n.eo != null ? eoW(n) + 6 : 0)) }));
+    g.appendChild(D.svg('text', { class: 'name', x: r1(bx + 7), y: 12, text: dg.fitText(n.name || '', n.boxW - 14 - hdrW(n)) }));
     // 執行順序（列印圖標題旁的紅底黃字小框）：標題列右側
     if (n.eo != null) {
       const w = eoW(n), x = bx + n.boxW - 4 - w;
       g.appendChild(D.svg('g', { class: 'eo' }, D.svg('title', { text: '執行順序 ' + n.eo + (n.pc ? '\n' + D.pvText(n.pc) : '') }),
         D.svg('rect', { x: r1(x), y: 3, width: r1(w), height: 12, rx: 1.5 }), D.svg('text', { x: r1(x + w / 2), y: 12.5, 'text-anchor': 'middle', text: String(n.eo) })));
+    }
+    // 小徽章 .nd（n.badge，例「無下游」；n.note 為說明）：標題列右側，有 eo 時排在 eo 左邊
+    if (n.badge) {
+      const w = ndW(n), x = bx + n.boxW - 4 - (n.eo != null ? eoW(n) + 4 : 0) - w;
+      g.appendChild(D.svg('g', { class: 'nd' }, D.svg('title', { text: n.note || n.badge }),
+        D.svg('rect', { x: r1(x), y: 3, width: r1(w), height: 12, rx: 1.5 }), D.svg('text', { x: r1(x + w / 2), y: 12.5, 'text-anchor': 'middle', text: String(n.badge) })));
     }
     // 不透明方塊：型別前小鎖頭（描邊 path，無 emoji）＋型別下一行介面說明 .opq（size() 算好 n.opqLine）
     if (n.opaque) g.appendChild(D.svg('path', { class: 'lock', d: D.LOCK_D, transform: 'translate(' + r1(bx + 7) + ' 14.5) scale(0.8)' }));
@@ -733,6 +742,7 @@
     save: 'M12 3v12M7 10l5 5 5-5M4 21h16', close: 'M6 6l12 12M18 6L6 18', block: 'M4 5h16v14H4zM4 10h16', pins: 'M4 7h6M4 12h6M4 17h6M14 7h6M14 12h6M14 17h6', cm: 'M4 5h16v10H8l-4 4z',
     desc: 'M4 6h16M4 11h10M4 16h13M17 11h3', pin: 'M4 6h16M4 12h11a3 3 0 0 1 0 6h-4M4 18h4M11 15l-3 3 3 3',
     legend: 'M4 6h4M4 12h4M4 18h4M11 6h9M11 12h9M11 18h9', fan: 'M4 12h6M10 12l9-7M10 12h10M10 12l9 7',
+    dead: 'M3 3l18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.9 5.2A10.4 10.4 0 0 1 12 5c5 0 8.5 3.5 10 7a13 13 0 0 1-2.7 3.7M6.6 6.6A13.5 13.5 0 0 0 2 12c1.5 3.5 5 7 10 7a10 10 0 0 0 3.4-.6',
   };
   /** 圖例（#legend-pop；auth.js 的閘門會把它設 inert）：線型／方塊／徽章的意義。swatch 用同一套 .dg-svg 規則（class 'dg-svg sw'），不畫箭頭（marker 在主圖 defs） */
   function legendPop(onClose) {
@@ -758,7 +768,9 @@
         item(sw(D.svg('g', { class: 'gl' }, D.svg('rect', { class: 'gl-s', x: '8.5', y: '0.5', width: '22', height: '13', rx: '2' }), D.svg('text', { class: 'gl-t gl-op', x: '19.5', y: '12', 'text-anchor': 'middle', text: '≥' }))),
           '方塊內圖示 = 列印邏輯圖的畫法（比較符號取自 FUNC；參數接變數時不畫數值）'),
         item(sw(D.svg('g', { class: 'eo' }, D.svg('rect', { x: '10', y: '1', width: '20', height: '12', rx: '1.5' }), D.svg('text', { x: '20', y: '10.5', 'text-anchor': 'middle', text: '83' }))),
-          '紅底黃字 = 執行順序（取自列印邏輯圖；沒有列印圖的方塊不標）')),
+          '紅底黃字 = 執行順序（取自列印邏輯圖；沒有列印圖的方塊不標）'),
+        item(sw(D.svg('g', { class: 'node dead' }, D.svg('rect', { class: 'box', x: '3', y: '1.5', width: '34', height: '11', rx: '2' }))),
+          '虛框灰字 = 無下游（輸出腳在索引中無任何去向；? 為方向推斷；警報／控制器狀態方塊 ANALOG_ALARM、APP_STATE、TEMP_STATUS 不判定）')),
       D.h('p', { class: 'dg-legend-badges' },
         D.orgBadge('d'), ' 回推（可能不完整） ', D.orgBadge('x'), ' 人工登錄 ', D.orgBadge('g'), ' 圖面'),
       D.h('p', { class: 'muted small dg-legend-foot', text: '腳位旁字母 = 方向來源：U/T/C 明文或查表；L/H/R/M 推斷（虛框）；G 圖面。' }));
@@ -1095,6 +1107,10 @@
   const EXPORT_CSS = `
 svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
 .node .box{fill:var(--surface);stroke:var(--border-strong);stroke-width:1}
+.node.dead .box{stroke:var(--muted);stroke-dasharray:2 2}
+.node.dead .name{fill:var(--muted)}
+.nd rect{fill:var(--surface-3);stroke:var(--muted);stroke-width:.8}.nd text{fill:var(--muted);font-size:9px;font-weight:700}
+.node.dead-inf .nd text{fill:var(--warn)}
 .node.ub .box2{fill:none;stroke:var(--border-strong);stroke-width:1}
 .node.opaque .box{fill:url(#dg-hatch);stroke-dasharray:4 3}
 .hatch{stroke:var(--border);stroke-width:1}
@@ -1171,6 +1187,7 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
     }
     const heads = D.h('div', { class: 'dg-side-tags' }, n.type ? D.tag(n.type, 'lg') : null, ' ', D.tag(n.kind === 'ub' ? 'UserBlock' : (n.kindLabel || 'block')), n.opaque ? D.frag(' ', D.tag('不透明 opaque', 'warn')) : null, n.sub ? D.frag(' ', D.h('span', { class: 'muted small mono', text: n.sub })) : null);
     out.push(heads);
+    if (n.note) out.push(D.h('p', { class: 'small dg-side-dead', text: n.note })); // 無下游（dtask.js deadEnd）：逐支輸出腳的原因
     // 執行順序與列印圖位置（取自列印邏輯圖；沒有列印圖的方塊沒有這行）
     if (n.eo != null || n.pc) out.push(D.h('p', { class: 'small dg-side-eo' }, n.eo != null ? D.frag(D.h('span', { class: 'eo-chip', text: String(n.eo) }), ' 執行順序') : null,
       n.pc ? D.h('span', { class: 'muted mono', text: (n.eo != null ? ' · ' : '') + D.pvText(n.pc) }) : null));

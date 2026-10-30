@@ -340,6 +340,7 @@ body.wide .foot .foot-rev, body.wide .foot .foot-row.small { display: none; }
 .dg-side-body h4 { margin: 10px 0 4px; }
 .dg-side-tags { margin-bottom: 4px; }
 .dg-side-desc { margin: 4px 0 6px; }
+.dg-side-dead { margin: 4px 0 6px; color: var(--muted); white-space: pre-wrap; }
 .dg-side-desc .lines > div { white-space: pre-wrap; }
 .dg-side-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
 .dg-side-body table.mini { font-size: 11.5px; }
@@ -357,6 +358,13 @@ body.wide .foot .foot-rev, body.wide .foot .foot-row.small { display: none; }
 .dg-svg text { pointer-events: none; }
 .dg-svg .node { cursor: pointer; outline: none; }
 .dg-svg .node .box { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1; }
+/* 無下游方塊（dtask.js deadEnd）：虛框灰字＋標題列右側灰底小徽章 .nd；dead-inf（方向為推斷）徽章字用警示色。
+   放在 :hover／.sel／.pulse 之前（同特異度），選取與高亮仍優先；只用 token，深色主題自動跟上 */
+.dg-svg .node.dead .box { stroke: var(--muted); stroke-dasharray: 2 2; }
+.dg-svg .node.dead .name { fill: var(--muted); }
+.dg-svg .nd rect { fill: var(--surface-3); stroke: var(--muted); stroke-width: 0.8; }
+.dg-svg .nd text { fill: var(--muted); font-size: 9px; font-weight: 700; }
+.dg-svg .node.dead-inf .nd text { fill: var(--warn); }
 .dg-svg .node:hover .box { stroke: var(--accent-2); }
 .dg-svg .node.sel .box { stroke: var(--accent-2); stroke-width: 2.2; }
 .dg-svg .node:focus-visible .box { stroke: var(--accent-2); stroke-width: 2; stroke-dasharray: 3 2; }

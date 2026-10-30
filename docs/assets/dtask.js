@@ -1,5 +1,8 @@
-/* Signal Atlas — Task 邏輯圖 #/d/<CTRL>/<Program>/<Task>?ub=<block_path>&f=&pins=1&cm=0|1&sel=<CTRL.VAR>&b=<key>&page=k&all=1&desc=off|brief|full(0|1|2)&pin=cut|wrap|full(0|1|2)&fan=4|8|all
+/* Signal Atlas — Task 邏輯圖 #/d/<CTRL>/<Program>/<Task>?ub=<block_path>&f=&pins=1&cm=0|1&sel=<CTRL.VAR>&b=<key>&page=k&all=1&desc=off|brief|full(0|1|2)&pin=cut|wrap|full(0|1|2)&fan=4|8|all&dead=0|1
  * 由 task/<hhh>.json 的整份 task 記錄建圖（buildGraph，規則見 plan §二），交給 D.dg（diagram.js）排版／渲染／互動。
+ * 無下游方塊（deadEnd）：輸出腳在索引中沒有讀取者／I/O／EGD／HMI／警報／加密引用、也沒有被任何 L: 指到的方塊 → 虛框灰字＋徽章「無下游」（方向為推斷者「無下游?」）；
+ *   ?dead=0 隱藏（只影響本次；否則 localStorage atlas.dg.dead，預設 '1' 顯示）。不透明方塊、UserBlock、有 ? 方向腳位者、警報／控制器狀態方塊
+ *   （ANALOG_ALARM、APP_STATE、TEMP_STATUS：作用在輸入變數的警報與控制器狀態上，輸出腳看不到）不判定；vu 缺鍵 → 無資料（舊分片需重新匯出）。
  * 說明：腳位 tuple 第 11 欄 → port.desc；entry.vd[varFull] → port.varDesc / tag.desc / graph.varDesc（舊資料 10 欄／無 vd → 無描述）。
  * 宣告於腳位（ck 'A' 且有 varFull）：走線／標籤規則同 V；可見性依 entry.vu[varFull]=[nW,nR,flags]（除自己外還有人接、或 I/O／EGD／HMI／警報）或 PID 家族關鍵腳；?pins=1 全顯。
  * 回推腳（tuple 第 12 欄 org：'d' 由宣告變數、'l' 由 L: 連線；只在 opaque 方塊上）：'d' 的可見性同宣告於腳位（另加「同 scope 有夥伴」）；'l' 只在被同 scope 的 L 腳指到時畫；腳位名後加「推」徽章。
@@ -31,8 +34,95 @@
   const saveFan = (f) => { try { localStorage.setItem(FAN_LS, f); } catch (e) { /* ignore */ } };
   const fanCap = (f) => (f === 'all' ? Infinity : Number(f) || 8);
   D.dtask.fanPref = fanPref;
+  /** 無下游方塊顯示：?dead=0|1 只影響本次；否則 localStorage atlas.dg.dead；預設 '1'（顯示）。'0' = 隱藏 */
+  const DEAD_LS = 'atlas.dg.dead';
+  const normDead = (v) => { v = v == null ? '' : String(v); return v === '0' || v === '1' ? v : null; };
+  function deadPref(q) {
+    const d = normDead(q && q.dead);
+    if (d) return d;
+    try { const v = normDead(localStorage.getItem(DEAD_LS)); if (v) return v; } catch (e) { /* 私密模式 */ }
+    return '1';
+  }
+  const saveDead = (d) => { try { localStorage.setItem(DEAD_LS, d); } catch (e) { /* ignore */ } };
+  D.dtask.deadPref = deadPref;
   /** 變數腳：V，或宣告於腳位的 A（有 varFull） */
   const isVarPin = (ck, varFull) => !!varFull && (ck === 'V' || ck === 'A');
+  const nonEmpty = (v) => (Array.isArray(v) ? v.length > 0 : !!v);
+
+  /** 「無下游」判定（只看直接下游，不遞移）。scope 內每個非註解方塊，逐支 O 腳查索引裡有沒有任何去向。純函式：只讀 t.b、vu、mm，不碰 DOM。
+   *  不判定（skip，永不隱藏）：rec.opaque；型別在 SKIP_TYPES（ANALOG_ALARM／APP_STATE／TEMP_STATUS：作用是輸入變數上的警報或控制器狀態，
+   *    輸出腳全是 '-'／address-only 'A'，輸出腳規則看不到其作用）；kind 'userblock'（內部可能寫全域變數）；任一腳位方向 '?'（或缺）；沒有 O 腳；有 device／hmi。
+   *  每支 O 腳「有下游」（任一成立）：t.b 內（含 root 與 scope 外）任一 L 腳的 tgtKey/tgtPin 指到它（反向 L）；ck 為 L/P/D/N/E（保守）；
+   *    ck V、或 A 且有 varFull 時 vu[varFull]=[nW,nR,flags] 的 flags≠0 或 nR − 本方塊自讀（dir≠O 且同 varFull 的腳數）> 0；
+   *    鏡像變數（mm.get('key#pin') 的每個變數）flags≠0 或 nR>0。ck V 而 varFull 空（索引未解析出變數）保守算有下游。ck A 無 varFull／'-' 只有反向 L 能救。
+   *  V／A／鏡像查 vu 查不到 → 該腳「無資料」。腳位優先序：有下游 > 無資料 > 無下游。
+   *  方塊：任一腳無資料 → 不判定（nodata；分片是舊資料，需重新匯出）；否則所有 O 腳無下游 → 無下游。「推斷」= 任一 O 腳方向來源為 L/H/R/M。
+   *  @param t task 記錄 {b, vu, …}；rootKey 未用於計算（保留給呼叫端）；memberKeys scope 的方塊 key；mm Map('key#pin' → [鏡像變數…]) 或 null；vu 省略時取 t.vu
+   *  @returns {dead: Map(key → {inferred, pins: [[pin, 原因]…], note}), skip: Map(key → 'opaque'|'type'|'userblock'|'device'|'dirq'|'noout'), nodata: Set(key),
+   *            nDead, nDeadInferred, nDeadNoData, nDeadSkip} */
+  const INFER_SRC = new Set(['L', 'H', 'R', 'M']);
+  const CONSERVATIVE_CK = new Set(['L', 'P', 'D', 'N', 'E']);
+  /** 型別豁免（精確比對 rec.type，不用樣式：MOVE_STATUS／CALC_STATUS 等是一般運算方塊，輸出腳有真變數，不可一併豁免）。
+   *  ANALOG_ALARM 的作用是 IN 變數上的 .H/.L/.BQ 警報子變數，輸出腳一律 '-'；APP_STATE／TEMP_STATUS 的輸出腳是 address-only 'A'：
+   *  輸出腳規則對它們一律判「無下游」，但它們有作用，故不判定。 */
+  const SKIP_TYPES = new Set(['ANALOG_ALARM', 'APP_STATE', 'TEMP_STATUS']);
+  function deadEnd(t, rootKey, memberKeys, mm, vu) {
+    const b = (t && t.b) || {};
+    vu = vu || (t && t.vu) || {};
+    const rev = new Set(); // 'tgtKey#tgtPin'：被任何 L 腳指到的腳
+    for (const k in b) for (const p of b[k].pins || []) if (p[3] === 'L' && p[6] && p[7]) rev.add(p[6] + '#' + p[7]);
+    const out = { dead: new Map(), skip: new Map(), nodata: new Set(), nDead: 0, nDeadInferred: 0, nDeadNoData: 0, nDeadSkip: 0 };
+    const skip = (k, why) => { out.skip.set(k, why); out.nDeadSkip++; };
+    const hasReader = (u) => u[2] !== 0 || u[1] > 0;
+    for (const k of memberKeys || []) {
+      const rec = b[k];
+      if (!rec || isComment(rec)) continue;
+      const pins = rec.pins || [];
+      if (rec.opaque) { skip(k, 'opaque'); continue; }
+      if (SKIP_TYPES.has(rec.type)) { skip(k, 'type'); continue; }
+      if (rec.kind === 'userblock') { skip(k, 'userblock'); continue; }
+      if (nonEmpty(rec.device) || nonEmpty(rec.hmi)) { skip(k, 'device'); continue; }
+      if (pins.some((p) => !p[1] || p[1] === '?')) { skip(k, 'dirq'); continue; }
+      const outs = pins.filter((p) => p[1] === 'O');
+      if (!outs.length) { skip(k, 'noout'); continue; }
+      let inferred = false, anyNoData = false, alive = false;
+      const reasons = [];
+      for (const p of outs) {
+        const [pin, , src, ck, , varFull] = p;
+        if (INFER_SRC.has(src)) inferred = true;
+        // ck V 但索引沒解析出變數（varFull 空）：腳位確有變數名、只是看不到 → 保守視為有下游，不可誤判成無下游
+        if (rev.has(k + '#' + pin) || CONSERVATIVE_CK.has(ck) || (ck === 'V' && !varFull)) { alive = true; break; }
+        let noData = false, why;
+        if (isVarPin(ck, varFull)) {
+          const u = vu[varFull];
+          if (!u) noData = true;
+          else {
+            const selfReads = pins.filter((q) => q[1] !== 'O' && q[5] === varFull).length;
+            if (u[2] !== 0 || u[1] - selfReads > 0) { alive = true; break; }
+            why = pin + ' → 變數 ' + shortVar(varFull) + '：索引中無讀取者' + (selfReads ? '（僅本方塊自讀）' : '') + '、無 I/O／EGD／HMI／警報／加密引用';
+          }
+        } else why = pin + '：腳位無變數且無 L: 連線';
+        const mir = (mm && mm.get(k + '#' + pin)) || null; // 鏡像：任何 ck 都查
+        if (mir && mir.length) {
+          let mAlive = false;
+          const mDead = [];
+          for (const mv of mir) { const u = vu[mv]; if (!u) noData = true; else if (hasReader(u)) { mAlive = true; break; } else mDead.push(shortVar(mv)); }
+          if (mAlive) { alive = true; break; }
+          if (mDead.length) why = (why || pin) + '；發佈為 ' + mDead.join('、') + ' 亦無讀取者';
+        }
+        if (noData) { anyNoData = true; continue; }
+        reasons.push([pin, why]);
+      }
+      if (alive) continue;
+      if (anyNoData) { out.nodata.add(k); out.nDeadNoData++; continue; }
+      out.nDead++;
+      if (inferred) out.nDeadInferred++;
+      out.dead.set(k, { inferred, pins: reasons, note: '無下游：' + reasons.map((r) => r[1]).join('\n') + (inferred ? '\n（方向為推斷值）' : '') });
+    }
+    return out;
+  }
+  D.dtask.deadEnd = deadEnd;
+  D.dtask.DEAD_SKIP_TYPES = SKIP_TYPES;
 
   /** 建圖：t = task 記錄 {n,b}；rootKey = task key 或 ?ub= 的 userblock key；q = {pins, cm, f} */
   function buildGraph(t, ctrl, rootKey, q) {
@@ -48,11 +138,17 @@
     const members = [];
     let idx = 0;
     for (const k in b) if (k.startsWith(prefix) && k.indexOf('/', prefix.length) < 0) members.push([k, b[k], idx++]);
+    // 無下游判定在建節點前算好；?dead=0（或偏好）時把無下游方塊從 members 移除再建圖：寫入者得到正常的 out 標籤、註解黏到下一個方塊
+    const de = deadEnd(t, rootKey, members.map((m) => m[0]), mm, vu);
+    const deadHidden = deadPref(q) === '0';
+    const hiddenDead = new Set();
+    if (deadHidden) for (let i = members.length - 1; i >= 0; i--) if (de.dead.has(members[i][0])) { hiddenDead.add(members[i][0]); members.splice(i, 1); }
     const memberSet = new Set(members.map((m) => m[0]));
     const nodes = new Map(), edges = [], tags = [], warn = [];
-    const meta = { title: rootKey.slice(rootKey.indexOf('|') + 1), warn, nComment: 0, nHiddenComment: 0, nHiddenPins: 0, nDeclared: 0, nRecovered: 0, nDrawn: 0, nFanCapped: 0 };
+    const meta = { title: rootKey.slice(rootKey.indexOf('|') + 1), warn, nComment: 0, nHiddenComment: 0, nHiddenPins: 0, nDeclared: 0, nRecovered: 0, nDrawn: 0, nFanCapped: 0,
+      nDead: de.nDead, nDeadInferred: de.nDeadInferred, nDeadNoData: de.nDeadNoData, nDeadSkip: de.nDeadSkip, deadHidden };
     // 宣告於腳位的變數腳可見性：有人接（nW+nR>1）／有 I/O、EGD、HMI、警報旗標／PID 家族關鍵腳
-    const declaredShown = (rec, pin, varFull) => { const u = vu[varFull]; return !!(u && (u[0] + u[1] > 1 || u[2] !== 0)) || (String(rec.type || '').startsWith('PID') && PID_PINS.has(pin)); };
+    const declaredShown = (rec, pin, varFull) => { const u = vu[varFull]; return !!(u && (u[0] + u[1] > 1 || (u[2] & 30) !== 0)) || (String(rec.type || '').startsWith('PID') && PID_PINS.has(pin)); }; // flags 只看 2/4/8/16（32/128 是無下游判定用，不得讓每個上 EGD 的宣告腳都畫出來）
     // 同 scope 內同一變數接在別的方塊上（回推腳的可見性：同 task 有寫入者／讀取者才畫，免得不透明巨集一次冒出上百支腳）
     const scopeVar = new Map(); // varFull → Set(blockKey)
     for (const [k, rec] of members) for (const p of rec.pins || []) if (p[5] && (p[3] === 'V' || p[3] === 'A')) { if (!scopeVar.has(p[5])) scopeVar.set(p[5], new Set()); scopeVar.get(p[5]).add(k); }
@@ -60,6 +156,12 @@
     // 被同 scope 的 L 腳指到的目標腳（即使只有位址也要畫出來）
     const needed = new Map();
     for (const [, rec] of members) for (const p of rec.pins || []) if (p[3] === 'L' && p[6] && memberSet.has(p[6]) && p[7]) { if (!needed.has(p[6])) needed.set(p[6], new Set()); needed.get(p[6]).add(p[7]); }
+    // 被隱藏的無下游方塊以 L: 指到的存活方塊腳（連線多記在讀取端的輸入腳上）：照樣畫出來，並補一個「已隱藏的無下游方塊」標籤，寫入者才不會看起來沒有輸出
+    const hiddenRef = new Map(); // 'key#pin' → ['隱藏方塊名.腳'…]
+    for (const hk of hiddenDead) for (const p of b[hk].pins || []) if (p[3] === 'L' && p[6] && memberSet.has(p[6]) && p[7]) {
+      if (!needed.has(p[6])) needed.set(p[6], new Set()); needed.get(p[6]).add(p[7]);
+      const id = p[6] + '#' + p[7]; if (!hiddenRef.has(id)) hiddenRef.set(id, []); hiddenRef.get(id).push((b[hk].name || hk.slice(hk.lastIndexOf('/') + 1)) + '.' + p[0]);
+    }
     const rootVar = new Map();
     for (const p of root.pins || []) if (p[5]) rootVar.set(p[0], p[5]);
     const comments = [];
@@ -75,6 +177,8 @@
       }
       const node = { id: k, kind: rec.kind === 'userblock' ? 'ub' : 'block', key: k, name, type: rec.type || (rec.kind === 'userblock' ? 'UserBlock' : ''), desc: rec.desc || '', attrs: rec.attrs, pins: rec.pins || [], ord, left: [], right: [], body: [], opaque: !!rec.opaque, rc: rec.rc || null, cls: rec.opaque ? 'opaque' : '', kindLabel: rec.kind,
         eo: rec.eo != null ? rec.eo : null, pc: rec.pc || null, glyph: D.glyph ? D.glyph.of(rec.type, rec.pins || []) : null };
+      const dd = de.dead.get(k); // 無下游（顯示模式）：虛框灰字＋徽章；推斷者徽章加 ?；note 進 <title> 與側欄
+      if (dd) { node.cls = (node.cls ? node.cls + ' ' : '') + 'dead' + (dd.inferred ? ' dead-inf' : ''); node.badge = dd.inferred ? '無下游?' : '無下游'; node.note = dd.note; }
       const need = needed.get(k);
       const eaten = new Set(node.glyph && !q.pins ? node.glyph.eat : []); // 圖示已畫出的常數腳（FUNC、EQN…）不另畫成腳位；?pins=1 照畫
       for (const p of rec.pins || []) {
@@ -111,6 +215,7 @@
     const addEdge = (e) => { if (edgeIds.has(e.id)) return; edgeIds.add(e.id); edges.push(e); };
     const covered = new Set();
     const portOf = (nodeId, pin) => { const n = nodes.get(nodeId); if (!n) return null; return n.left.find((p) => p.pin === pin) || n.right.find((p) => p.pin === pin) || null; };
+    const graph_port = (pid) => { const i = pid.indexOf('#'); return i < 0 ? null : portOf(pid.slice(0, i), pid.slice(i + 1)); };
     const ifaceTag = (node, port, tgtPin) => {
       const v = rootVar.get(tgtPin) || null;
       tags.push({ port: port.id, side: port.dir === 'O' ? 'R' : 'L', text: '⟨' + tgtPin + '⟩' + (v ? ' = ' + shortVar(v) : ''), varFull: v, desc: (v && vd[v]) || null, cls: 'iface', title: '介面腳 ' + tgtPin + (v ? '（' + v + '）' : '') });
@@ -137,6 +242,7 @@
           covered.add(port.id); covered.add(other.id);
           continue;
         }
+        if (tk && hiddenDead.has(tk)) { tags.push({ port: port.id, side: port.dir === 'O' ? 'R' : 'L', text: stripK(port.conn), cls: 'ext-l', title: '已隱藏的無下游方塊腳：' + tk + '.' + tp }); covered.add(port.id); continue; }
         if (tk && b[tk]) { tags.push({ port: port.id, side: port.dir === 'O' ? 'R' : 'L', text: stripK(port.conn), cls: 'ext-l', title: 'scope 外的方塊腳：' + tk + '.' + tp }); covered.add(port.id); continue; }
         tags.push({ port: port.id, side: port.dir === 'O' ? 'R' : 'L', text: '? ' + stripK(port.conn), cls: 'warn', title: '未解析：' + (port.conn || '') });
         warn.push(n.name + '.' + port.pin + ' 未解析 ' + (port.conn || ''));
@@ -161,6 +267,16 @@
       const dv = vd[v] || null;
       for (const p of g.W) if (!wired.has(p.id)) tags.push({ port: p.id, side: 'R', text: shortVar(v), varFull: v, desc: dv, cls: 'out', title: v });
       for (const p of g.R) if (!wired.has(p.id)) tags.push({ port: p.id, side: 'L', text: shortVar(v), varFull: v, desc: dv, cls: 'in', title: v });
+    }
+    // 只被隱藏的無下游方塊接走的腳（沒有走線也沒有標籤）：補 ext-l 標籤「→ 已隱藏」，title 列出被隱藏的方塊腳
+    if (hiddenRef.size) {
+      const has = new Set(tags.map((tg) => tg.port));
+      for (const e of edges) if (e.kind !== 'sticky') { has.add(e.from); has.add(e.to); }
+      for (const [pid, refs] of hiddenRef) {
+        if (has.has(pid)) continue;
+        const port = graph_port(pid); if (!port) continue;
+        tags.push({ port: pid, side: port.dir === 'O' ? 'R' : 'L', text: (port.dir === 'O' ? '→ ' : '← ') + '已隱藏 ' + refs.length, cls: 'ext-l', title: '已隱藏的無下游方塊腳：' + refs.join('、') });
+      }
     }
     // 腳位值鏡像（entry.vm）：該腳位已有標籤 → 標籤加一行「發佈為 …」（full 模式放在描述卡首行；其他密度只進 tooltip）；
     // 腳位走內部走線 → 走線標籤下加一行；都沒有（N/E 常數等）→ 只有這一行的小標籤。不新增節點。點該行可開鏡像訊號頁（decorateMirrors）。
@@ -333,7 +449,7 @@
     const rootKey = q.ub ? ctrl + '|' + q.ub : tkey;
     const rootPath = rootKey.slice(rootKey.indexOf('|') + 1);
     const cur = { ctrl, program, task, tkey, rootKey };
-    const href = (patch) => D.hrefD(ctrl, program, task, Object.assign({ ub: q.ub, f: q.f, pins: q.pins, cm: q.cm, page: q.page, all: q.all, desc: q.desc, fan: q.fan }, patch));
+    const href = (patch) => D.hrefD(ctrl, program, task, Object.assign({ ub: q.ub, f: q.f, pins: q.pins, cm: q.cm, page: q.page, all: q.all, desc: q.desc, fan: q.fan, dead: q.dead }, patch));
     D.setTitle('邏輯圖 ' + rootPath + ' (' + ctrl + ')');
     const crumbs = [D.link('#/', '搜尋'), ' › ', D.mono(ctrl), ' › ', D.link(D.hrefP(ctrl, program), program, 'lk mono'), ' › ', D.link(D.hrefB(ctrl, program + '/' + task), task, 'lk mono'), ' › 邏輯圖'];
     if (q.ub) crumbs.push(' › ', D.mono(q.ub.split('/').slice(2).join('/'), 'b'));
@@ -368,6 +484,13 @@
     inst.addTool(D.dg.tool('fan', '扇出：' + FAN_LABEL[fanMode], () => { saveFan(fanNext); D.go(href({ fan: fanNext })); },
       { title: '同一變數在本 task 內畫成走線的讀取者上限（寫入者上限 2）：4 → 8 → 全部 循環；超過者改用腳位旁標籤。?fan=4|8|all', pressed: fanMode === 'all' }));
     inst.addTool(D.dg.tool('cm', '註解', () => D.go(href({ cm: full.meta.cmOn ? 0 : 1 })), { pressed: full.meta.cmOn, title: '顯示／隱藏 _COMMENT（' + full.meta.nComment + '）' }));
+    // 無下游方塊：顯示 ⇄ 隱藏（?dead=0|1，偏好記在 localStorage）；沒有無下游方塊時停用
+    const dm = full.meta;
+    const deadBtn = D.dg.tool('dead', (dm.deadHidden ? '顯示無下游 ' : '隱藏無下游 ') + dm.nDead, () => { const nx = dm.deadHidden ? '1' : '0'; saveDead(nx); D.go(href({ dead: nx })); },
+      { pressed: dm.deadHidden, title: '無下游方塊：輸出腳在索引中沒有讀取者、I/O、EGD 消費者、HMI、警報、也沒有加密引用的方塊；方向為推斷者另計；不透明方塊、UserBlock、有 ? 方向腳位者不判定；警報／控制器狀態方塊（ANALOG_ALARM、APP_STATE、TEMP_STATUS）不判定。?dead=0 隱藏'
+        + (dm.nDeadNoData ? '\n' + dm.nDeadNoData + ' 個方塊因分片無用量資料未判定（需重新匯出）' : '') });
+    if (!dm.nDead) deadBtn.disabled = true;
+    inst.addTool(deadBtn);
     inst.addTool(D.dg.tool('block', '方塊頁', null, { href: D.hrefB(ctrl, rootPath), title: '開此 ' + (q.ub ? 'UserBlock' : 'Task') + ' 的方塊頁' }));
     if (q.ub) inst.addTool(D.dg.tool(null, '回 Task', null, { href: href({ ub: null, page: null }), title: '回到 Task 圖' }));
     if (q.f) inst.addTool(D.dg.tool('close', '清除篩選 ' + q.f, () => D.go(href({ f: null, page: null })), { title: '清除 ?f= 篩選' }));
@@ -399,7 +522,9 @@
       banner = D.h('div', { class: 'dg-banner warn' }, D.int(N) + ' 個方塊全部繪製 — 可能很慢；', D.link(href({ all: null, page: 1 }), '改用分頁', 'lk'));
     }
     if (!graph.nodes.size) {
-      inst.setMessage(D.errorBox('沒有可畫的方塊', q.f ? '篩選「' + q.f + '」沒有符合的方塊。' : '此 ' + (q.ub ? 'UserBlock' : 'Task') + ' 沒有子方塊。'), q.f ? D.h('p', null, D.link(href({ f: null }), '清除篩選', 'btn')) : null);
+      const allDead = full.meta.deadHidden && full.meta.nDead && !q.f; // ?dead=0 把全部方塊都藏起來了
+      inst.setMessage(D.errorBox('沒有可畫的方塊', q.f ? '篩選「' + q.f + '」沒有符合的方塊。' : allDead ? '已隱藏 ' + full.meta.nDead + ' 個無下游方塊，此 ' + (q.ub ? 'UserBlock' : 'Task') + ' 沒有其他方塊。' : '此 ' + (q.ub ? 'UserBlock' : 'Task') + ' 沒有子方塊。'),
+        q.f ? D.h('p', null, D.link(href({ f: null }), '清除篩選', 'btn')) : allDead ? D.h('p', null, D.link(href({ dead: 1 }), '顯示無下游', 'btn')) : null);
       inst.status('抓取 ' + (D.fetchCount - f0) + ' 個分片 · 0 個方塊');
       return;
     }
@@ -415,6 +540,8 @@
     if (full.meta.nRecovered) st.push('回推腳位 ' + full.meta.nRecovered);
     if (full.meta.nDrawn) st.push('圖面腳位 ' + full.meta.nDrawn);
     if (full.meta.nFanCapped) st.push(full.meta.nFanCapped + ' 個變數超過扇出上限改用標籤');
+    if (full.meta.nDead) st.push((full.meta.deadHidden ? '已隱藏無下游 ' : '無下游 ') + full.meta.nDead + (full.meta.nDeadInferred ? '（推斷 ' + full.meta.nDeadInferred + '）' : ''));
+    if (full.meta.nDeadNoData) st.push(full.meta.nDeadNoData + ' 個方塊無用量資料');
     if (nMirror) st.push('發佈為 ' + nMirror);
     if (full.meta.filter) st.push('篩選「' + full.meta.filter + '」' + full.meta.nMatched + ' 個');
     if (full.meta.warn.length) st.push('警告 ' + full.meta.warn.length);

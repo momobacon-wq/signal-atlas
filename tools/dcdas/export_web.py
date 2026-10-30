@@ -13,6 +13,9 @@ Layout (all JSON compact, UTF-8, no local absolute paths — the exporter aborts
   alarm/<CTRL>.json             {ctrl, rows:[[name, desc, cls, def, area, urgency]]}
 flags bits in names rows: 1=has_writer 2=has_io 4=has_egd 8=has_hmi 16=has_alarm 32=const 64=egd_copy 128=in_encrypted 256=alarm_sub
 has_alarm = alarm_id set, or an alarm sub-variable (sub_of) with an AlarmClass (the .H/.HH/.BQ... flags).
+vu rows (task shards; their own bit space): [nW, nR, flags] for every variable on a declared-at-pin / recovered pin, on a
+direction 'O' pin or mirrored by a pin of the task; flags 2=I/O point 4=EGD consumed by another indexed controller 8=HMI point
+16=alarm (or parent of an alarm sub-variable) 32=EGD produced, no indexed controller consumer 128=referenced where no pin is visible.
 """
 import base64
 import gzip
@@ -343,6 +346,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         if src and sp[2] in vo_applied:
             row.append(1)       # the source value is a manual correction (see the source's card d.vo)
         subs_of[(r[0], r[1])].append(row)
+    hidden_ref = set()      # var ids whose card lists enc / hid (referenced where the index has no visible pin)
     for r in conn.execute("SELECT " + ",".join(cols) + " FROM variable ORDER BY ctrl,name"):
         v = dict(zip(cols, r))
         vid = v["id"]
@@ -395,6 +399,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
                 hid = []        # a set-point mirror: the tool lists the constant's programs, not a hidden reference
         if hid:
             card["hid"] = hid
+        if enc or hid:
+            hidden_ref.add(vid)     # task shards' vu flag 128 (a use the index cannot see)
         if vid in mirror:
             card["d"]["m"] = mirror[vid]
         if (v["ctrl"], v["name"]) in subs_of:
@@ -422,9 +428,13 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     task_items = defaultdict(list)     # tkey -> ['"key":{record}', ...] in document order (root first)
     task_n = defaultdict(int)
     task_vars = defaultdict(set)       # tkey -> var ids referenced anywhere in the task
-    task_avars = defaultdict(set)      # tkey -> var ids on declared-at-pin pins (need usage counts)
+    task_uvars = defaultdict(set)      # tkey -> var ids that get a usage row in `vu` (see u_vars_by_block)
     task_vm = defaultdict(dict)        # tkey -> {mirror_full_name: pin name}
     mirrors_by_block = defaultdict(dict)  # block_id -> {mirror_full: pin name}
+    # block_id -> var ids with a `vu` usage row: declared-at-pin (A + var) and recovered pins (the diagram's visibility
+    # rule), every direction 'O' pin's variable and every pin mirror on the block (the diagram's "no downstream" rule
+    # needs to know whether an output's variable has any reader / I/O / EGD / HMI / alarm / hidden reference)
+    u_vars_by_block = defaultdict(set)
     pin_block = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT id, block_id, name FROM pin WHERE id IN (SELECT pin_id FROM pin_mirror)")}
     for pid, vids in mirror_by_pin.items():
         if pid in pin_block:
@@ -432,10 +442,10 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
             for v in vids:
                 if v in var_name:
                     mirrors_by_block[bid_][var_name[v]] = pname_
+                    u_vars_by_block[bid_].add(v)
     has_layout = bool(conn.execute("SELECT 1 FROM pragma_table_info('block') WHERE name='layout'").fetchone())
     pins_by_block = defaultdict(list)
     block_vars = defaultdict(set)      # block_id -> var ids referenced by its pins (for the per-task description map)
-    a_vars_by_block = defaultdict(set)   # block_id -> var ids on declared-at-pin (A + var) pins
     rc_by_block = {}                   # block_id -> [nDecl, nLink, nPair, nXref, nVote, nPrint] for opaque macros with recovered interface pins
     # where each pin promoted from the printed sheets is drawn: task key -> {"<block key>#<pin>": [pdf, page, cell]}
     task_pv = defaultdict(dict)
@@ -457,16 +467,20 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
             rc_by_block.setdefault(r[0], [0, 0, 0, 0, 0, 0])[{"decl": 0, "link": 1, "pair": 2, "xref": 3, "vote": 4}.get(r[12], 5)] += 1
         if r[6] is not None:
             block_vars[r[0]].add(r[6])
-            if (r[4] or "-") == "A" or r[12]:
-                a_vars_by_block[r[0]].add(r[6])
+            if (r[4] or "-") == "A" or r[12] or r[2] == "O":
+                u_vars_by_block[r[0]].add(r[6])
         # (pin id is not selected here; mirrors are attached below by block+pin name)
     var_desc = {r[0]: r[1].split("\n")[0].strip() for r in conn.execute(
         "SELECT id, description FROM variable WHERE description IS NOT NULL AND description<>''") if r[1].strip()}
-    # usage counts per variable for the diagram's visibility rule on declared-at-pin (A + var) pins
+    # usage counts per variable for the diagram's visibility rule on declared-at-pin (A + var) pins and for its
+    # "no downstream" rule on output pins (vu = [nW, nR, flags]; the flag bits are vu's own space, not names' flags)
     var_nw = {r[0]: r[1] for r in conn.execute("SELECT var_id,count(*) FROM pin WHERE var_id IS NOT NULL AND direction='O' GROUP BY var_id")}
     var_nr = {r[0]: r[1] for r in conn.execute("SELECT var_id,count(*) FROM pin WHERE var_id IS NOT NULL AND direction<>'O' GROUP BY var_id")}
     var_ext = defaultdict(int)
     for r in conn.execute("SELECT DISTINCT var_id FROM io_point WHERE var_id IS NOT NULL"): var_ext[r[0]] |= 2
+    # local I/O channels (LocalIOVariables.xml of exciters, drives and some controllers): the application writes them to the
+    # firmware (Direction=Write) or reads what the firmware wrote; neither side is a block, so an output into one is a real sink
+    for r in conn.execute("SELECT id FROM variable WHERE decl_file LIKE '%LocalIOVariables.xml'"): var_ext[r[0]] |= 2
     # EGD counts as "used" only when another controller actually consumes it (every HMI-page variable is produced)
     for r in conn.execute("SELECT DISTINCT producer_var_id FROM egd_consumed WHERE producer_var_id IS NOT NULL "
                           "AND consumer_ctrl IN (SELECT name FROM controller)"): var_ext[r[0]] |= 4
@@ -474,6 +488,19 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
                           "AND consumer_ctrl IN (SELECT name FROM controller)"): var_ext[r[0]] |= 4
     for r in conn.execute("SELECT DISTINCT var_id FROM hmi_point WHERE var_id IS NOT NULL"): var_ext[r[0]] |= 8
     for r in conn.execute("SELECT id FROM variable WHERE alarm_id IS NOT NULL OR (sub_of IS NOT NULL AND alarm_class IS NOT NULL)"): var_ext[r[0]] |= 16
+    # the parent of an alarm sub-variable (variable.sub_of = parent name, same controller) is alarmed through it
+    for r in conn.execute("""SELECT DISTINCT p.id FROM variable s JOIN variable p ON p.ctrl=s.ctrl AND p.name=s.sub_of
+                             WHERE s.alarm_class IS NOT NULL AND s.alarm_class<>''"""): var_ext[r[0]] |= 16
+    # 32 = produced on EGD (same source as the names flag 4: egd_p) but no indexed controller consumes it: the
+    # subscribers may be HMI / server nodes, whose ConsumedData is deliberately not indexed ("no controller consumer"
+    # is not "unused"); a variable with a controller consumer carries 4 instead
+    for v in egd_p:
+        if not egd_c.get(v):
+            var_ext[v] |= 32
+    # 128 = a reference the index cannot see: ReferencedIn names an encrypted program, or a plaintext program in which
+    # the variable has no visible pin / mirror (the card's `enc` / `hid` lists; collected in the variable loop above)
+    for v in hidden_ref:
+        var_ext[v] |= 128
     attrs = defaultdict(dict)
     for r in conn.execute("SELECT block_id,name,value FROM block_attr"):
         attrs[r[0]][r[1]] = r[2]
@@ -497,8 +524,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         task_n[tkey] += 1
         if bid in block_vars:
             task_vars[tkey].update(block_vars[bid])
-        if bid in a_vars_by_block:
-            task_avars[tkey].update(a_vars_by_block[bid])
+        if bid in u_vars_by_block:
+            task_uvars[tkey].update(u_vars_by_block[bid])
         if bid in mirrors_by_block:
             task_vm[tkey].update(mirrors_by_block[bid])
         if tid is not None:
@@ -508,7 +535,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     sizes = []
     for tkey, items in task_items.items():
         vd = {var_name[v]: var_desc[v] for v in task_vars.get(tkey, ()) if v in var_desc and v in var_name}
-        vu = {var_name[v]: [var_nw.get(v, 0), var_nr.get(v, 0), var_ext.get(v, 0)] for v in task_avars.get(tkey, ()) if v in var_name}
+        vu = {var_name[v]: [var_nw.get(v, 0), var_nr.get(v, 0), var_ext.get(v, 0)] for v in task_uvars.get(tkey, ()) if v in var_name}
         pv = (',"pv":' + _dump(task_pv[tkey])) if task_pv.get(tkey) else ""
         body = '{"n":%d,"vd":%s,"vu":%s,"vm":%s%s,"b":{%s}}' % (task_n[tkey], _dump(vd), _dump(vu), _dump(task_vm.get(tkey, {})), pv, ",".join(items))
         sizes.append(len(body))
@@ -519,7 +546,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     if sizes:
         log(f"    {len(sizes)} task entries  p50 {sizes[len(sizes)//2]/1e3:.0f} KB  p95 {sizes[int(len(sizes)*.95)]/1e3:.0f} KB  "
             f"max {sizes[-1]/1e6:.2f} MB  layout column: {has_layout}")
-    del task_items, tshards, pins_by_block, block_vars, task_vars, var_desc, task_avars, a_vars_by_block, var_nw, var_nr, var_ext
+    del task_items, tshards, pins_by_block, block_vars, task_vars, var_desc, task_uvars, u_vars_by_block, var_nw, var_nr, var_ext, hidden_ref
     tasks_by_prog = defaultdict(list)
     for r in conn.execute("SELECT id,program_id,name,block_type,logic_drg,is_task,line_no FROM task ORDER BY program_id,id"):
         tasks_by_prog[r[1]].append({"name": r[2], "type": r[3], "drg": r[4], "is_task": r[5], "line": r[6],

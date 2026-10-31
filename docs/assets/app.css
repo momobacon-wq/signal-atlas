@@ -365,6 +365,8 @@ body.wide .foot .foot-rev, body.wide .foot .foot-row.small { display: none; }
 .dg-svg .nd rect { fill: var(--surface-3); stroke: var(--muted); stroke-width: 0.8; }
 .dg-svg .nd text { fill: var(--muted); font-size: 9px; font-weight: 700; }
 .dg-svg .node.dead-inf .nd text { fill: var(--warn); }
+/* 展開下游加入的 task 外方塊（dtask.js mergeDown）：虛線藍框；同樣放在 :hover／.sel 之前、.opaque 之前（不透明方塊的斜紋底優先） */
+.dg-svg .node.ext .box { fill: var(--accent-soft); stroke: var(--accent-2); stroke-dasharray: 5 3; }
 .dg-svg .node:hover .box { stroke: var(--accent-2); }
 .dg-svg .node.sel .box { stroke: var(--accent-2); stroke-width: 2.2; }
 .dg-svg .node:focus-visible .box { stroke: var(--accent-2); stroke-width: 2; stroke-dasharray: 3 2; }

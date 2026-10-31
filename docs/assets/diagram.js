@@ -479,12 +479,16 @@
         ns.sort((a, b) => (a.ord == null ? 1e9 : a.ord) - (b.ord == null ? 1e9 : b.ord));
         for (const n of ns) g.setNode(n.id, { width: n.w, height: n.h });
         const set = new Set(members);
-        let k = 0;
+        // 同一對節點的邊併成一條再交給 dagre（權重相加，同 dagre 自己 simplify 的算法）：平行邊加上 2-cycle 會讓 dagre 丟例外、整個群組疊成一欄；排版只看節點，走線另由 route 算
+        const pairs = new Map();
         for (const e of graph.edges) {
           const a = nodeOf(e.from), b = nodeOf(e.to);
           if (!set.has(a) || !set.has(b) || a === b) continue;
-          g.setEdge(a, b, { weight: e.kind === 'L' ? 2 : 1, minlen: 1 }, 'e' + (k++));
+          const key = a + '\n' + b, w = e.kind === 'L' ? 2 : 1, p = pairs.get(key);
+          if (p) p[2] += w; else pairs.set(key, [a, b, w]);
         }
+        let k = 0;
+        for (const [a, b, w] of pairs.values()) g.setEdge(a, b, { weight: w, minlen: 1 }, 'e' + (k++));
         try { dagre.layout(g); } catch (err) { console.warn('dagre', err); ns.forEach((n, i) => { n.x = 0; n.y = i * 40; }); }
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (const n of ns) {
@@ -770,7 +774,9 @@
         item(sw(D.svg('g', { class: 'eo' }, D.svg('rect', { x: '10', y: '1', width: '20', height: '12', rx: '1.5' }), D.svg('text', { x: '20', y: '10.5', 'text-anchor': 'middle', text: '83' }))),
           '紅底黃字 = 執行順序（取自列印邏輯圖；沒有列印圖的方塊不標）'),
         item(sw(D.svg('g', { class: 'node dead' }, D.svg('rect', { class: 'box', x: '3', y: '1.5', width: '34', height: '11', rx: '2' }))),
-          '虛框灰字 = 無下游（輸出腳在索引中無任何去向；? 為方向推斷；警報／控制器狀態方塊 ANALOG_ALARM、APP_STATE、TEMP_STATUS 不判定）')),
+          '虛框灰字 = 無下游（輸出腳在索引中無任何去向；? 為方向推斷；警報／控制器狀態方塊 ANALOG_ALARM、APP_STATE、TEMP_STATUS 不判定）'),
+        item(sw(D.svg('g', { class: 'node ext' }, D.svg('rect', { class: 'box', x: '3', y: '1.5', width: '34', height: '11', rx: '2' }))),
+          '虛線藍框 = 展開下游加入、原本不在這張圖上的方塊（別的 task、別頁，或已隱藏的無下游方塊）')),
       D.h('p', { class: 'dg-legend-badges' },
         D.orgBadge('d'), ' 回推（可能不完整） ', D.orgBadge('x'), ' 人工登錄 ', D.orgBadge('g'), ' 圖面'),
       D.h('p', { class: 'muted small dg-legend-foot', text: '腳位旁字母 = 方向來源：U/T/C 明文或查表；L/H/R/M 推斷（虛框）；G 圖面。' }));
@@ -967,21 +973,28 @@
       if (drag && drag.moved < 4) tap(e, drag.target);
       drag = null;
     }
+    // 變數的單擊會打開側欄、畫布變窄、變數被移開，第二下就點不到同一個東西：有雙擊動作時，單擊的高亮延到雙擊視窗過後才做（鍵盤 Enter／空白鍵照舊立即）
+    let singleTimer = 0;
+    const later = (e, fn) => {
+      if (!opts.onDblVar || e.type === 'keydown') { fn(); return; }
+      singleTimer = setTimeout(() => { singleTimer = 0; if (root.isConnected) fn(); }, 300);
+    };
     function tap(e, target) {
       const hit = hitOf(target);
       const now = performance.now();
       const dbl = hit && lastTap.id === hit.id && now - lastTap.t < 300;
       lastTap = { t: dbl ? 0 : now, id: hit ? hit.id : '' };
+      if (singleTimer) { clearTimeout(singleTimer); singleTimer = 0; }
       if (!hit) { if (!dbl) inst.clear(); return; }
       if (hit.kind === 'node') {
         const n = inst.graph.nodes.get(hit.nodeId);
-        if (n.kind === 'var' && n.varFull) { if (dbl && opts.onDblVar) opts.onDblVar(n.varFull, { node: n }, inst); else inst.highlight(n.varFull, { node: n }); return; }
+        if (n.kind === 'var' && n.varFull) { if (dbl && opts.onDblVar) opts.onDblVar(n.varFull, { node: n }, inst); else later(e, () => inst.highlight(n.varFull, { node: n })); return; }
         if (dbl && opts.onDblNode) opts.onDblNode(n, inst); else inst.select(hit.nodeId);
         return;
       }
       if (hit.kind === 'var') {
         const ctx = { port: hit.port ? inst.graph.ports.get(hit.port) : null, el: hit.el };
-        if (dbl && opts.onDblVar) opts.onDblVar(hit.varFull, ctx, inst); else inst.highlight(hit.varFull, ctx);
+        if (dbl && opts.onDblVar) opts.onDblVar(hit.varFull, ctx, inst); else later(e, () => inst.highlight(hit.varFull, ctx));
       }
     }
     function hitOf(target) {
@@ -1111,6 +1124,7 @@ svg{background:var(--bg);font:11px var(--mono);color:var(--text)}
 .node.dead .name{fill:var(--muted)}
 .nd rect{fill:var(--surface-3);stroke:var(--muted);stroke-width:.8}.nd text{fill:var(--muted);font-size:9px;font-weight:700}
 .node.dead-inf .nd text{fill:var(--warn)}
+.node.ext .box{fill:var(--accent-soft);stroke:var(--accent-2);stroke-dasharray:5 3}
 .node.ub .box2{fill:none;stroke:var(--border-strong);stroke-width:1}
 .node.opaque .box{fill:url(#dg-hatch);stroke-dasharray:4 3}
 .hatch{stroke:var(--border);stroke-width:1}

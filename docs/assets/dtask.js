@@ -8,7 +8,12 @@
  * 回推腳（tuple 第 12 欄 org：'d' 由宣告變數、'l' 由 L: 連線；只在 opaque 方塊上）：'d' 的可見性同宣告於腳位（另加「同 scope 有夥伴」）；'l' 只在被同 scope 的 L 腳指到時畫；腳位名後加「推」徽章。
  * 圖面腳（org 'g'，列印邏輯圖）：ck V／L／N／E 一律畫（不受 vu／夥伴限制），徽章「圖」；port.pv = entry.pv['key#pin']（出處）；src-g 樣式由 diagram.js 依 org／src 決定。
  * 扇出：同變數走線的讀取者上限 4／8／全部（?fan=、localStorage atlas.dg.fan，預設 8；寫入者上限 2），超過者改標籤並在狀態列計數。
- * 規模分級：≤300 方塊全畫；301–1000 依連通群組分頁；>1000 拒絕並提供篩選／型別 chips／分頁。 */
+ * 規模分級：≤300 方塊全畫；301–1000 依連通群組分頁；>1000 拒絕並提供篩選／型別 chips／分頁。
+ * 展開下游：方塊／變數側欄「展開下游」、雙擊變數 pill → 重用 dsignal.js 的 BFS（D.dsignal，一次一層，上限 D.dsignal.LIM.XDOWN 節點（預設 1000，整頁累計、含被觸及的圖上原有方塊、不含葉節點；與訊號圖上限各自獨立），含跨 task／EGD），mergeDown 把結果併進新建的 buildGraph 結果：
+ *   已在圖上的方塊重映到既有節點（只補走線與隱藏的腳），其他方塊畫成 .ext（虛線藍框，副標 Program/Task）；動作清單 XDOWN 依根 scope 記在分頁記憶體（不進 URL），工具列切換重建頁面後自動重播；
+ *   規模分級拒畫或空圖時不展開；加密／不透明／EGD 沒有控制器消費者等葉一律保留，不過濾；追不到的地方畫成葉並在提示說明，「下游都已在圖中」只在確實有接線且都已畫出時才說。
+ *   展開或重播失敗（抓取錯誤）：S 丟棄、由清單重建；重建成功只提示「展開失敗」（先前的展開照畫）；重建也失敗時照畫基底圖並提示略過，清單保留（下次切換或展開重試）。
+ *   圖面沒有變化（xsig 相同且未新撞上限）：不重排，視窗與選取不動，只給提示。展開後的視窗見 expandView（縮放下限 MIN_ZOOM；放不下時以起點為錨點）。 */
 'use strict';
 (function () {
   const D = window.DC;
@@ -397,6 +402,132 @@
   }
   const nBlocks = (graph) => Array.from(graph.nodes.values()).filter((n) => n.kind !== 'comment').length;
 
+  /** 展開下游的動作清單：rootKey → [['b', blockKey] | ['v', varFull]…]（分頁記憶體，不進 URL；比照 dsignal 的 HIDDEN） */
+  const XDOWN = new Map();
+  const xTitle = () => '往下游展開一層（跨 task／EGD，一次一層，上限 ' + D.dsignal.LIM.XDOWN + ' 節點）；工具列「已展開」可全部收合'; // dsignal.js 載入在本檔之後，只能在執行時讀
+  const isExt = (n) => /(^|\s)ext(\s|$)/.test((n && n.cls) || '');
+  const MIN_ZOOM = 0.3; // 展開後自動縮放的下限：每個 SVG 單位至少 0.3 CSS px，再小就讀不到字
+  /** 展開後的視窗（純函式，不碰 DOM）：v = 目前 viewBox、show = 起點與新長的節點、start = 起點節點（pill 已收掉時沒有）、cw = 畫布 CSS 寬（0 = 量不到，不設下限）。回傳新 viewBox；都在視窗內 → null。
+   *  目前縮放放得下 → 只移過去；要縮小才放得下 → 縮小，但不低於下限。到下限仍放不下 → 視窗就用下限（原本低於下限的總覽也放大到下限，否則大展開後只剩看不到字的細條），起點放在視窗左側約 1/4、垂直置中，看得到起點與它旁邊新長的部分；沒有起點時取最左的新節點 */
+  function expandView(v, show, start, cw) {
+    if (!show.length) return null;
+    const PAD = 24;
+    const x0 = Math.min(...show.map((x) => x.x)) - PAD, y0 = Math.min(...show.map((x) => x.y)) - PAD;
+    const x1 = Math.max(...show.map((x) => x.x + x.w)) + PAD, y1 = Math.max(...show.map((x) => x.y + x.h)) + PAD;
+    if (x0 >= v.x && y0 >= v.y && x1 <= v.x + v.w && y1 <= v.y + v.h) return null;
+    const k = Math.max(1, (x1 - x0) / v.w, (y1 - y0) / v.h);
+    const kMax = cw > 0 ? cw / MIN_ZOOM / v.w : Infinity; // < 1 = 目前已低於下限
+    if (k === 1 || k <= kMax) { const w = v.w * k, h = v.h * k; return { x: (x0 + x1) / 2 - w / 2, y: (y0 + y1) / 2 - h / 2, w, h }; }
+    const a = start || show.reduce((p, x) => (x.x < p.x ? x : p));
+    const w = v.w * kMax, h = v.h * kMax;
+    return { x: a.x + a.w / 2 - w / 4, y: a.y + a.h / 2 - h / 2, w, h };
+  }
+  D.dtask.expandView = expandView;
+  /** 把 D.dsignal.finalize(S, newIds) 的結果 frag 併進 graph（buildGraph／subgraph 的結果、尚未 render）。純函式（不碰 DOM）：frag 只讀（S 的節點會被重用，節點／腳位／邊一律複製），graph 就地修改。
+   *  方塊 'b:'+key 已在 graph → 重映到既有節點，只有存活的邊用到的腳才補進 left/right（可見性規則隱藏、?pins 未開的腳）；其餘節點照加，方塊保留 id 並加 cls 'ext'（沒有存活邊的 ext 方塊不加：換分頁重播時不留孤立方塊）；ord 接在 graph 之後（dsignal 的 ord 從 0 起，否則群組排序會被打亂）。
+   *  邊：重映後依 id 去重（L 邊兩個方向都看）；pill → 既有腳位若已有同變數的直接 V 邊 → 丟掉（已畫），但 pill 有 graph 外的寫入者時保留（否則那個寫入者與讀取者的關係畫不出來）。
+   *  bridge：graph 上有該變數寫入腳（dir 'O'，含鏡像 → 邊標「發佈為」；iface 標籤指到該變數的輸出腳 → 邊標「介面腳 X」，不算多寫入者）→ 補一條 port → pill 的 V 邊（標籤上的變數展開時 frag 沒有上游）；pill 的 V 入邊 >1 → multi。
+   *  收尾：沒有出邊（葉也是出邊）、未達上限的 pill 連同入邊拿掉：已往下游展開者是「下游全在圖中」；還沒展開、寫入腳在圖上（且沒有圖外寫入者）者由該方塊的「展開下游」繼續，不另畫。其餘未展開的 pill（寫入者是 ext 方塊）是可繼續展開的前緣，保留。
+   *  標籤：腳位已接上同變數的走線 → 移除 in／out 標籤；帶「發佈為」的標籤改成只有這一行的 mirrorOnly 標籤（走線太密時 labelXY 為空，放在走線上會消失）；iface、warn、ext-l 不動。不動 meta.nDead／members。
+   *  @returns {nAdded, nBlocks, nVars, nLeaves, nEdges} 實際留在圖上的新增節點數與新增邊數（S 的新節點可能全被重映掉，不可用 newIds 計數） */
+  function mergeDown(graph, frag) {
+    const nodes = graph.nodes;
+    const inGraph = (fn) => (fn.kind === 'block' || fn.kind === 'ub') && nodes.has(fn.key);
+    const owner = new Map(); // frag 腳位 id → frag 節點
+    for (const n of frag.nodes.values()) for (const p of n.left.concat(n.right)) owner.set(p.id, n);
+    const mapPort = (pid) => { const fn = owner.get(pid); return inGraph(fn) ? fn.key + pid.slice(fn.id.length) : pid; };
+    const base = new Set(graph.edges.map((e) => e.id));
+    const direct = new Set(); // '<腳位>|<變數>'：graph 已有接到此腳的直接 V 邊
+    for (const e of graph.edges) if (e.kind === 'V' && e.varFull) direct.add(e.to + '|' + e.varFull);
+    const extWriter = new Set(), gWriter = new Set(); // 有 graph 外／graph 內寫入者的 pill
+    for (const e of frag.edges) { const a = owner.get(e.from), b = owner.get(e.to); if (a && b && b.kind === 'var') (inGraph(a) ? gWriter : extWriter).add(b.id); }
+    // 邊：重映、去重
+    const merged = new Map(); // 新邊 id → 邊
+    const fragPort = new Map(); // 重映後腳位 id → frag 腳位（補腳用）
+    for (const e of frag.edges) {
+      const a = owner.get(e.from), b = owner.get(e.to);
+      if (!a || !b) continue;
+      const from = mapPort(e.from), to = mapPort(e.to), id = from + '>' + to;
+      if (base.has(id) || merged.has(id) || (e.kind === 'L' && base.has(to + '>' + from))) continue;
+      if (a.kind === 'var' && inGraph(b) && direct.has(to + '|' + a.varFull) && !extWriter.has(a.id)) continue;
+      merged.set(id, Object.assign({}, e, { id, from, to }));
+      fragPort.set(from, e.from); fragPort.set(to, e.to);
+    }
+    // bridge：圖上的寫入腳 → pill
+    const writers = new Map(); // 變數 → [[腳位 id, 邊的額外欄位]…]
+    const addW = (v, pid, extra) => { if (!writers.has(v)) writers.set(v, []); writers.get(v).push([pid, extra]); };
+    for (const [pid, p] of graph.ports) if (p.dir === 'O') { if (p.varFull) addW(p.varFull, pid); for (const m of p.mirror || []) if (m !== p.varFull) addW(m, pid, { label: '發佈為' }); }
+    for (const n of frag.nodes.values()) if ((n.kind === 'block' || n.kind === 'ub') && !inGraph(n)) for (const p of n.left.concat(n.right)) if (p.dir === 'O' && p.varFull) addW(p.varFull, p.id); // ext 方塊的輸出腳：宣告腳沒建邊時 pill 可能來自別的動作
+    for (const t of graph.tags || []) { // 輸出腳接到介面腳：buildGraph 已由容器腳查出變數（iface 標籤）
+      const p = t.cls === 'iface' && t.varFull ? graph.ports.get(t.port) : null;
+      if (p && p.dir === 'O') addW(t.varFull, t.port, { label: '介面腳 ' + p.tgtPin, iface: true });
+    }
+    for (const n of frag.nodes.values()) {
+      if (n.kind !== 'var') continue;
+      for (const [pid, extra] of writers.get(n.varFull) || []) {
+        const id = pid + '>' + n.left[0].id;
+        if (!merged.has(id)) merged.set(id, Object.assign({ id, from: pid, to: n.left[0].id, kind: 'V', varFull: n.varFull }, extra));
+      }
+    }
+    // 收尾：下游全部已在圖中的 pill；未展開但寫入腳就在圖上的 pill（方塊自己的「展開下游」可繼續）
+    const hasOut = new Set();
+    for (const e of merged.values()) { const a = owner.get(e.from); if (a) hasOut.add(a.id); }
+    const gone = new Set();
+    for (const n of frag.nodes.values()) if (n.kind === 'var' && !n.capped && !hasOut.has(n.id) && (n.expanded.has('down') || (gWriter.has(n.id) && !extWriter.has(n.id)))) gone.add(n.id);
+    const touchesGone = (e) => { const a = owner.get(e.from), b = owner.get(e.to); return !!((a && gone.has(a.id)) || (b && gone.has(b.id))); };
+    const edges = Array.from(merged.values()).filter((e) => !touchesGone(e));
+    // 節點
+    let ord0 = 0;
+    for (const n of nodes.values()) if (n.ord != null && n.ord > ord0) ord0 = n.ord;
+    const stat = { nAdded: 0, nBlocks: 0, nVars: 0, nLeaves: 0, nEdges: edges.length };
+    const copyPort = (p) => Object.assign({}, p);
+    const live = new Set(); // 存活的邊碰到的 frag 節點
+    for (const e of edges) for (const pid of [e.from, e.to]) { const o = owner.get(pid); if (o) live.add(o.id); }
+    for (const n of frag.nodes.values()) {
+      if (gone.has(n.id) || inGraph(n)) continue;
+      const block = n.kind === 'block' || n.kind === 'ub';
+      if (block && !live.has(n.id)) continue;
+      nodes.set(n.id, Object.assign({}, n, { ord: ord0 + 1 + (n.ord || 0), left: n.left.map(copyPort), right: n.right.map(copyPort), body: (n.body || []).slice(), cls: block ? (n.cls ? n.cls + ' ' : '') + 'ext' : n.cls }));
+      stat.nAdded++;
+      if (block) stat.nBlocks++; else if (n.kind === 'var') stat.nVars++; else stat.nLeaves++;
+    }
+    // 既有節點補腳（只補存活的邊用到的腳）
+    const touched = new Set();
+    for (const e of edges) for (const pid of [e.from, e.to]) {
+      const src = fragPort.get(pid);
+      const fn = src != null ? owner.get(src) : null;
+      if (!fn || !inGraph(fn) || graph.ports.has(pid)) continue;
+      const fp = (fn.left.find((p) => p.id === src) || fn.right.find((p) => p.id === src));
+      const n = nodes.get(fn.key);
+      const port = Object.assign({}, fp, { id: pid, mirror: null });
+      (fn.left.indexOf(fp) >= 0 ? n.left : n.right).push(port);
+      graph.ports.set(pid, port);
+      touched.add(n);
+    }
+    for (const n of touched) {
+      const idx = new Map((n.pins || []).map((t, i) => [t[0], i]));
+      const at = (p) => (idx.has(p.pin) ? idx.get(p.pin) : 1e6);
+      n.left.sort((a, b) => at(a) - at(b)); n.right.sort((a, b) => at(a) - at(b));
+    }
+    // 邊與標籤
+    const wired = new Map(); // '<腳位>|<變數>' → 接到此腳的新邊
+    for (const e of edges) if (e.varFull) { if (!wired.has(e.from + '|' + e.varFull)) wired.set(e.from + '|' + e.varFull, e); if (!wired.has(e.to + '|' + e.varFull)) wired.set(e.to + '|' + e.varFull, e); }
+    graph.tags = (graph.tags || []).map((t) => {
+      if ((t.cls !== 'in' && t.cls !== 'out') || t.mirrorOnly || !wired.has(t.port + '|' + t.varFull)) return t;
+      if (!t.mirror || !t.mirror.length) return null;
+      return Object.assign({}, t, { text: t.mirrorLine, varFull: t.mirror[0], desc: null, title: t.mirrorLine + '\n' + t.mirror.join('\n'), mirrorOnly: true });
+    }).filter(Boolean);
+    const nIn = new Map();
+    for (const e of edges) if (e.kind === 'V' && !e.iface) nIn.set(e.to, (nIn.get(e.to) || 0) + 1);
+    for (const e of edges) if (e.kind === 'V' && !e.iface && nIn.get(e.to) > 1 && (owner.get(e.to) || {}).kind === 'var') e.multi = true;
+    graph.edges = graph.edges.concat(edges);
+    graph.varDesc = Object.assign({}, graph.varDesc, frag.varDesc); // graph.varDesc 就是快取中的 t.vd，不可就地改
+    D.dg.prepare(graph);
+    return stat;
+  }
+  D.dtask.mergeDown = mergeDown;
+  D.dtask.buildGraph = buildGraph;
+
   /** 雙擊變數標籤：輸入 → 寫入者所在 task；輸出 → 讀取者 task 清單 */
   async function expandVar(varFull, ctx, inst, cur) {
     const side = ctx && ctx.port ? ctx.port.side : (ctx && ctx.el && ctx.el.classList.contains('out') ? 'R' : 'L');
@@ -449,6 +580,12 @@
     const rootKey = q.ub ? ctrl + '|' + q.ub : tkey;
     const rootPath = rootKey.slice(rootKey.indexOf('|') + 1);
     const cur = { ctrl, program, task, tkey, rootKey };
+    // 展開下游：S = 無根 BFS 狀態（第一次展開或有清單要重播時建立）；xs = 最近一次 mergeDown 的統計；canExpand = 圖已畫出（規模分級拒畫／空圖時為 false）
+    let S = null, xs = null, busy = false, canExpand = false;
+    const xlist = () => XDOWN.get(rootKey) || [];
+    const onXErr = (e) => { console.warn(e); D.toast('展開失敗'); };
+    /** ext 方塊所在的 Task 圖；巢狀 UserBlock 內的方塊要開父層的 ?ub= 才選得到 */
+    const extHref = (n) => { const segs = n.key.slice(n.key.indexOf('|') + 1).split('/'); return D.hrefD(n.ctrl, n.program, n.task, segs.length > 3 ? { ub: segs.slice(0, -1).join('/'), b: n.key } : { b: n.key }); };
     const href = (patch) => D.hrefD(ctrl, program, task, Object.assign({ ub: q.ub, f: q.f, pins: q.pins, cm: q.cm, page: q.page, all: q.all, desc: q.desc, fan: q.fan, dead: q.dead }, patch));
     D.setTitle('邏輯圖 ' + rootPath + ' (' + ctrl + ')');
     const crumbs = [D.link('#/', '搜尋'), ' › ', D.mono(ctrl), ' › ', D.link(D.hrefP(ctrl, program), program, 'lk mono'), ' › ', D.link(D.hrefB(ctrl, program + '/' + task), task, 'lk mono'), ' › 邏輯圖'];
@@ -457,9 +594,20 @@
       crumbs, title: rootPath, fileName: ctrl + '_' + rootPath.replace(/\//g, '_'),
       descMode: D.dg.descPref(q), // ?desc=off|brief|full（0|1|2）只影響本次；否則 localStorage／預設 full
       pinMode: D.dg.pinPref(q), // ?pin=cut|wrap|full（0|1|2）腳位名顯示；同上
-      varHint: '雙擊變數標籤：輸入 → 展開到寫入者所在 task；輸出 → 讀取者所在 task。',
-      onDblVar: (v, ctx, i) => { expandVar(v, ctx, i, cur).catch((e) => console.warn(e)); },
-      nodeActions: (n) => (n.kind === 'ub' && !n.opaque ? D.link(href({ ub: n.key.slice(n.key.indexOf('|') + 1), page: null, f: null }), '展開內部', 'btn sm') : null),
+      varHint: '雙擊變數標籤：輸入 → 展開到寫入者所在 task；輸出 → 讀取者所在 task。雙擊變數 pill 或按「展開下游」：在這張圖上再展一層下游。',
+      onDblVar: (v, ctx, i) => {
+        if (ctx && ctx.node && ctx.node.kind === 'var') { expandDown(['v', v]).catch(onXErr); return; } // 展開下游畫出的 pill：再展一層
+        expandVar(v, ctx, i, cur).catch((e) => console.warn(e));
+      },
+      nodeActions: (n) => {
+        const ext = isExt(n);
+        const canX = canExpand && (n.kind === 'block' || n.kind === 'ub') && !(n.opaque && !(n.pins || []).length);
+        return D.frag(
+          n.kind === 'ub' && !n.opaque && !ext ? D.link(href({ ub: n.key.slice(n.key.indexOf('|') + 1), page: null, f: null }), '展開內部', 'btn sm') : null,
+          ext && n.program && n.task ? D.link(extHref(n), '開啟 Task 邏輯圖', 'btn sm') : null,
+          canX ? D.h('button', { type: 'button', class: 'btn sm', text: '展開下游', title: xTitle(), onclick: () => expandDown(['b', n.key]).catch(onXErr) }) : null);
+      },
+      varActions: (v) => (canExpand ? D.h('button', { type: 'button', class: 'btn sm', text: '展開下游', title: xTitle(), onclick: () => expandDown(['v', v]).catch(onXErr) }) : null),
     });
     inst.setLoading('載入 task 檔與排版引擎…');
     const f0 = D.fetchCount;
@@ -491,6 +639,9 @@
         + (dm.nDeadNoData ? '\n' + dm.nDeadNoData + ' 個方塊因分片無用量資料未判定（需重新匯出）' : '') });
     if (!dm.nDead) deadBtn.disabled = true;
     inst.addTool(deadBtn);
+    const xBtn = D.dg.tool(null, '已展開 0', () => collapseDown(), { cls: 'txt-only', title: '全部收合：清除這個分頁在此圖上的「展開下游」' });
+    xBtn.style.display = 'none';
+    inst.addTool(xBtn);
     inst.addTool(D.dg.tool('block', '方塊頁', null, { href: D.hrefB(ctrl, rootPath), title: '開此 ' + (q.ub ? 'UserBlock' : 'Task') + ' 的方塊頁' }));
     if (q.ub) inst.addTool(D.dg.tool(null, '回 Task', null, { href: href({ ub: null, page: null }), title: '回到 Task 圖' }));
     if (q.f) inst.addTool(D.dg.tool('close', '清除篩選 ' + q.f, () => D.go(href({ f: null, page: null })), { title: '清除 ?f= 篩選' }));
@@ -498,7 +649,7 @@
     if (rootRec && rootRec.desc) inst.setTitle(rootPath + ' — ' + D.dg.trunc(rootRec.desc.split('\n')[0], 60));
 
     // 規模分級
-    let graph = full, banner = null;
+    let graph = full, banner = null, pageIds = null;
     const pages = N > PAGE_MAX ? pagesOf(full) : null;
     const pageNo = Math.max(1, parseInt(q.page, 10) || 0);
     const pageLinks = () => D.h('div', { class: 'dg-pages' }, pages.map((p, i) => D.link(href({ page: i + 1, all: null }), String(i + 1), 'chip-btn' + (i + 1 === pageNo && q.page ? ' on' : ''))));
@@ -516,7 +667,8 @@
     }
     if (pages && !q.all) {
       const k = Math.min(pageNo, pages.length);
-      graph = subgraph(full, pages[k - 1]);
+      pageIds = pages[k - 1];
+      graph = subgraph(full, pageIds);
       banner = D.h('div', { class: 'dg-banner' }, D.h('span', null, D.int(N) + ' 個方塊，依連通群組分 ' + pages.length + ' 頁（本頁 ' + nBlocks(graph) + '）：'), pageLinks(), pages.length > 1 && N <= REFUSE ? D.link(href({ all: 1, page: null }), '全部', 'chip-btn') : null);
     } else if (N > REFUSE) {
       banner = D.h('div', { class: 'dg-banner warn' }, D.int(N) + ' 個方塊全部繪製 — 可能很慢；', D.link(href({ all: null, page: 1 }), '改用分頁', 'lk'));
@@ -528,25 +680,145 @@
       inst.status('抓取 ' + (D.fetchCount - f0) + ' 個分片 · 0 個方塊');
       return;
     }
+    canExpand = true;
+    /** 重建基底圖再併入 S：每次都從 buildGraph 開始（可見性補腳、標籤移除都是一次性的，不可在舊圖上累加） */
+    function composeGraph(newIds) {
+      const g0 = buildGraph(t, ctrl, rootKey, q);
+      const g = pageIds ? subgraph(g0, pageIds) : g0;
+      xs = S ? mergeDown(g, D.dsignal.finalize(S, newIds)) : null;
+      return g;
+    }
+    const applyAct = async (act) => {
+      const ds = D.dsignal;
+      S.note = null;
+      if (act[0] === 'b') { await ds.expandBlockDown(S, act[1]); return; }
+      const vn = ds.varNode(S, act[1], 'down');
+      if (vn) { vn.fresh = false; await ds.expandVarDown(S, vn); }
+    };
+    /** 由清單重播出 S（S 半套或沒有時）；抓取失敗 → S = null（照畫基底圖）、回傳 false；AbortError 往外丟 */
+    async function rebuild() {
+      S = null;
+      if (!xlist().length) return true;
+      S = D.dsignal.newState(null, signal);
+      try {
+        for (const act of xlist()) await applyAct(act);
+        await D.dsignal.fillDesc(S);
+        return true;
+      } catch (e) {
+        S = null;
+        if (e && e.name === 'AbortError') throw e;
+        console.warn(e);
+        return false;
+      }
+    }
+    const xsig = () => (xs ? xs.nAdded + '/' + xs.nEdges : '0/0'); // 圖面有沒有變
+    let drawn = null; // 畫面上那一張：{ g, tm, nMirror }
+    /** 畫完之後：decorateMirrors、banner（setGraph 會清掉畫布）、狀態列、「已展開 N」 */
+    function afterDraw(g, tm) {
+      const nMirror = decorateMirrors(inst, g);
+      if (banner) inst.canvas.prepend(banner);
+      drawn = { g, tm, nMirror };
+      statusBar();
+    }
+    /** 狀態列與「已展開 N」（描述 drawn）；沒有重畫時也用它蓋掉「展開下游…」 */
+    function statusBar() {
+      const { g, tm, nMirror } = drawn;
+      const nEdges = g.edges.filter((e) => e.kind !== 'sticky').length;
+      const st = ['抓取 ' + (D.fetchCount - f0) + ' 個分片', '方塊 ' + D.int(nBlocks(g) - (xs ? xs.nAdded : 0)) + (full.meta.nHiddenComment ? '（隱藏 ' + full.meta.nHiddenComment + ' 個註解）' : ''), '連線 ' + nEdges, '標籤 ' + g.tags.length, '群組 ' + tm.comps, '排版 ' + Math.round(tm.layout) + ' ms'];
+      if (xs && xs.nAdded) st.push('展開 ' + xs.nAdded + ' 個節點');
+      if (S && S.st.capped) st.push('已達 ' + S.max + ' 節點上限');
+      if (!S && xlist().length) st.push('展開未套用（載入失敗）');
+      if (full.meta.nDeclared) st.push('宣告於腳位 ' + full.meta.nDeclared);
+      if (full.meta.nRecovered) st.push('回推腳位 ' + full.meta.nRecovered);
+      if (full.meta.nDrawn) st.push('圖面腳位 ' + full.meta.nDrawn);
+      if (full.meta.nFanCapped) st.push(full.meta.nFanCapped + ' 個變數超過扇出上限改用標籤');
+      if (full.meta.nDead) st.push((full.meta.deadHidden ? '已隱藏無下游 ' : '無下游 ') + full.meta.nDead + (full.meta.nDeadInferred ? '（推斷 ' + full.meta.nDeadInferred + '）' : ''));
+      if (full.meta.nDeadNoData) st.push(full.meta.nDeadNoData + ' 個方塊無用量資料');
+      if (nMirror) st.push('發佈為 ' + nMirror);
+      if (full.meta.filter) st.push('篩選「' + full.meta.filter + '」' + full.meta.nMatched + ' 個');
+      if (full.meta.warn.length) st.push('警告 ' + full.meta.warn.length);
+      inst.status(st.join(' · '));
+      if (full.meta.warn.length) inst.statusEl.title = full.meta.warn.slice(0, 20).join('\n');
+      const n = xlist().length, lb = '已展開 ' + n;
+      xBtn.style.display = n ? '' : 'none';
+      xBtn.querySelector('.tb-txt').textContent = lb;
+      xBtn.setAttribute('aria-label', lb);
+    }
+    /** 展開一層：act = ['b', blockKey] | ['v', varFull]；圖面真的有變化才記進清單。重複判斷排在上限之後：撞上限的動作再按一次要說上限，不是「已展開」 */
+    async function expandOne(act) {
+      const ds = D.dsignal;
+      if (!S && xlist().length) { // 先前重建失敗：補回清單後先畫一次，下面若判定重複或已達上限才不會指著畫面上沒有的東西
+        if (!(await rebuild())) { D.toast('展開失敗，已略過'); return; }
+        const g0 = composeGraph(null);
+        await D.yieldMain();
+        if (!alive()) return;
+        afterDraw(g0, inst.setGraph(g0, { keepViewport: true }));
+      }
+      if (!S) S = ds.newState(null, signal);
+      if (ds.isFull(S)) { D.toast('已達 ' + S.max + ' 節點上限'); return; }
+      if (xlist().some((a) => a[0] === act[0] && a[1] === act[1])) { D.toast('此' + (act[0] === 'v' ? '變數' : '方塊') + '已展開；可雙擊虛線 pill 再往下一層'); return; }
+      inst.status('展開下游 ' + (act[0] === 'v' ? act[1] : act[1].slice(act[1].lastIndexOf('/') + 1)) + '…');
+      const before = new Set(S.nodes.keys()), sig0 = xsig(), prev = xs ? xs.nAdded : 0;
+      let failed = false;
+      try {
+        await applyAct(act);
+        await ds.fillDesc(S);
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw e;
+        console.warn(e);
+        failed = true;
+      }
+      if (!alive()) return;
+      const rebuilt = !failed || await rebuild(); // expandVar 在抓卡片前就標了 expanded：半套的 S 再展會回空，把「沒抓到」說成「都在圖中」
+      const g = composeGraph(failed ? null : new Set(Array.from(S.nodes.keys()).filter((id) => !before.has(id))));
+      const changed = failed || xsig() !== sig0 || S.st.capped; // 走到這裡 capped 必是這次新撞的：先前就撞過的話上面 isFull 已返回
+      if (!failed && changed) XDOWN.set(rootKey, xlist().concat([act]));
+      const tell = () => {
+        const added = xs.nAdded - prev, more = added > 0 ? '新增 ' + added + ' 個節點' : '';
+        D.toast(ds.isFull(S) ? '已達 ' + S.max + ' 節點上限' : S.note ? S.note + (more ? '；' + more : '') : more || '下游都已在圖中');
+      };
+      if (!changed) { statusBar(); tell(); return; } // 圖面沒變：不重排（xsig 要併完才知道，所以 composeGraph 省不掉；省的是 setGraph），視窗與選取不動
+      await D.yieldMain();
+      if (!alive()) return;
+      const had = new Set(inst.graph ? inst.graph.nodes.keys() : []); // setGraph 前的節點：之後多出來的就是這次新長的
+      const tm = inst.setGraph(g, { keepViewport: true });
+      afterDraw(g, tm);
+      if (failed) { D.toast(rebuilt ? '展開失敗' : '展開失敗，已略過'); return; } // 已略過 = 先前的展開也沒畫出來（清單保留）
+      // 排版整張重算：起點與新長的節點若有跑出視窗就移過去（expandView）
+      const n = g.nodes.get(act[0] === 'v' ? 'v:' + act[1] : g.nodes.has(act[1]) ? act[1] : 'b:' + act[1]), v = inst.vb;
+      const show = Array.from(g.nodes.values()).filter((x) => x === n || !had.has(x.id));
+      const nv = v ? expandView(v, show, n, inst.canvas.getBoundingClientRect().width) : null;
+      if (nv) { inst.vb = nv; inst.applyVB(); }
+      tell();
+    }
+    async function expandDown(act) {
+      if (!canExpand || busy) return;
+      busy = true;
+      try { await expandOne(act); } catch (e) { if (!e || e.name !== 'AbortError') throw e; } finally { busy = false; }
+    }
+    /** 全部收合：清單清空、回到基底圖 */
+    function collapseDown() {
+      if (busy) return;
+      XDOWN.delete(rootKey);
+      S = null;
+      inst.clear();
+      const g = composeGraph(null);
+      afterDraw(g, inst.setGraph(g));
+      D.toast('已全部收合');
+    }
+    // 工具列切換會重建頁面：有清單就先重播再畫（只排版一次）
+    if (xlist().length) {
+      inst.setLoading('重播展開下游（' + xlist().length + ' 個動作）…');
+      let ok = false;
+      try { ok = await rebuild(); } catch (e) { if (e && e.name === 'AbortError') return; throw e; }
+      if (!alive()) return;
+      graph = composeGraph(null);
+      if (!ok) D.toast('展開失敗，已略過');
+    }
     inst.setLoading('排版 ' + nBlocks(graph) + ' 個方塊…');
     await D.yieldMain();
     if (!alive()) return;
-    const tm = inst.setGraph(graph);
-    const nMirror = decorateMirrors(inst, graph);
-    if (banner) inst.canvas.prepend(banner);
-    const nEdges = graph.edges.filter((e) => e.kind !== 'sticky').length;
-    const st = ['抓取 ' + (D.fetchCount - f0) + ' 個分片', '方塊 ' + D.int(nBlocks(graph)) + (full.meta.nHiddenComment ? '（隱藏 ' + full.meta.nHiddenComment + ' 個註解）' : ''), '連線 ' + nEdges, '標籤 ' + graph.tags.length, '群組 ' + tm.comps, '排版 ' + Math.round(tm.layout) + ' ms'];
-    if (full.meta.nDeclared) st.push('宣告於腳位 ' + full.meta.nDeclared);
-    if (full.meta.nRecovered) st.push('回推腳位 ' + full.meta.nRecovered);
-    if (full.meta.nDrawn) st.push('圖面腳位 ' + full.meta.nDrawn);
-    if (full.meta.nFanCapped) st.push(full.meta.nFanCapped + ' 個變數超過扇出上限改用標籤');
-    if (full.meta.nDead) st.push((full.meta.deadHidden ? '已隱藏無下游 ' : '無下游 ') + full.meta.nDead + (full.meta.nDeadInferred ? '（推斷 ' + full.meta.nDeadInferred + '）' : ''));
-    if (full.meta.nDeadNoData) st.push(full.meta.nDeadNoData + ' 個方塊無用量資料');
-    if (nMirror) st.push('發佈為 ' + nMirror);
-    if (full.meta.filter) st.push('篩選「' + full.meta.filter + '」' + full.meta.nMatched + ' 個');
-    if (full.meta.warn.length) st.push('警告 ' + full.meta.warn.length);
-    inst.status(st.join(' · '));
-    if (full.meta.warn.length) inst.statusEl.title = full.meta.warn.slice(0, 20).join('\n');
+    afterDraw(graph, inst.setGraph(graph));
     if (q.sel) { if (inst.highlight(q.sel)) inst.centerVar(q.sel); else D.toast('圖中沒有 ' + q.sel); }
     else if (q.b) { if (inst.select(q.b)) inst.centerNode(q.b); else D.toast('圖中沒有這個方塊'); }
   });

@@ -1,16 +1,21 @@
 /* Signal Atlas — 訊號圖 #/g/<CTRL.NAME>?up=N&down=N（plan §五）
  * 鏡射 trace.js 的 BFS（pinsOf / expand）成一張圖：變數 pill（v:<full>）、方塊（b:<key>，多次觸及＝同一節點、腳位取聯集）、
  * 葉節點（現場 I/O、EGD、加密、常數、無寫入者…文案同 trace.js）；邊以 from>to 去重；EGD 邊虛線藍；多寫入者變數入邊 .multi；
- * L: 鏈沿同 task 方塊延伸（≤12、不算跳數）——含反向 L:（D.linkPeers：連線只記在對方腳上時，由輸出腳往下游找讀取端、由輸入腳往上游找寫入端）；上限 200 節點（未展開者 .capped）、深度截止（.cut）。交給 D.dg（diagram.js）排版／渲染／互動。
+ * L: 鏈沿同 task 方塊延伸（≤12、不算跳數）——含反向 L:（D.linkPeers：連線只記在對方腳上時，由輸出腳往下游找讀取端、由輸入腳往上游找寫入端）；上限 LIM（有根 GRAPH 預設 400、無根 XDOWN 預設 1000 節點，兩者各自獨立，trace.js 自己的 200 不受影響；可由 DC.dsignal.LIM 覆寫，建立狀態時讀入 S.max，下次進頁或全部收合後生效；未展開者 .capped）、深度截止（.cut）。交給 D.dg（diagram.js）排版／渲染／互動。
  * 雙擊變數：從該變數再展一層（依其所在側；根節點雙向），整圖重排但保留 viewBox 與選取，新節點 .new。
  * 隱藏分支（只是檢視，S 不動）：方塊／變數側欄「隱藏此分支」把節點加入隱藏集合，applyHidden 只畫仍與根連通的部分，被切斷的腳位接「⋯ 已隱藏」葉（h:<port><|>，同一腳上下游各一；.hid 虛線；點＝還原清單、雙擊＝還原）；
  *   「只看此路徑」＝ focusIds 把根↔該節點有向路徑上各節點的其他非葉鄰居加入隱藏（該節點後面那一支保留；根不當中繼，自鎖迴路不算路徑）；工具列「已隱藏 N」列全部可還原。集合依根訊號記在分頁內（HIDDEN），改跳數／展開後照樣套用。
+ * 展開下游（方塊）：expandBlockDown 由方塊的輸出腳（含 L: 鏈、反向 L:、介面腳、鏡像變數）往下游展一層；訊號圖方塊側欄「展開下游」與 Task 圖（dtask.js，重用本檔的 BFS，#/d/ 頁在同一張圖上原地展開）共用；newState(null, signal) = 沒有根變數的狀態。
+ *   S.xmode（無根狀態一律開；有根狀態只在 expandBlockDown 走方塊腳位時開，所以訊號圖的 BFS 不受影響）：宣告於腳位的輸出腳只畫有邏輯去向的（declUsed）、輸出介面腳往外追（ifaceDown）。
+ *   S.hmiKey（只在 expandBlockDown 走點選方塊的腳位時設定）：點選的方塊另畫只上 HMI 的宣告輸出腳與鏡像；BFS 途中的其他方塊不畫，否則每顆馬達／閥方塊多十幾顆 pill 就把上限吃光。
+ *   無根狀態的變數下游葉（downLeaves）：I/O、EGD 無控制器消費者、加密引用、方向未知的腳不論有沒有讀取者都畫（訊號圖維持 trace.js 的文案與條件）。追不到的地方由 closeBlock 畫成葉，S.note 給工具提示。
  * 說明：變數節點 desc 取自訊號卡 d.desc（已展開者；截止／上限節點在 fillDesc 補抓自身卡片，EGD 副本亦用自身卡片）；
  * 方塊腳位 desc 取 tuple 第 11 欄；graph.varDesc 供側欄腳位表；?desc=off|brief|full（0|1|2）/ localStorage 由 D.dg.descPref 解析（三段密度）；?pin=cut|wrap|full（0|1|2）腳位名顯示由 D.dg.pinPref 解析。 */
 'use strict';
 (function () {
   const D = window.DC;
-  const MAX_NODES = 200;   // 變數＋方塊節點上限（葉節點不計）
+  /** 變數＋方塊節點上限（整頁累計、含被觸及的圖上原有方塊、不含葉節點）：GRAPH = 訊號圖（有根，開頁就付全額，所以較小）、XDOWN = 展開下游（無根；全索引單按新增最多 800 節點，1000 時單按不撞上限）；可由 DC.dsignal.LIM 覆寫，newState 時讀入 S.max */
+  const LIM = { GRAPH: 400, XDOWN: 1000 };
   const MAX_CHAIN = 12;    // 同 task 內 L:Block.Pin 連鎖上限（不算跳數）
   const MAX_HOPS = 4;
   const LAYOUT = { ranksep: 60, nodesep: 14 };
@@ -24,14 +29,15 @@
 
   /* ------------------------------------------------------------------ 圖狀態 */
   function newState(full, signal) {
-    const S = { full, signal, nodes: new Map(), edges: [], edgeIds: new Set(), tags: [], ord: 0, st: { count: 0, capped: false, leaves: 0, vars: 0, blocks: 0 }, blockDone: new Set() };
+    const S = { full, signal, max: full == null ? LIM.XDOWN : LIM.GRAPH, nodes: new Map(), edges: [], edgeIds: new Set(), tags: [], ord: 0, st: { count: 0, capped: false, leaves: 0, vars: 0, blocks: 0 }, blockDone: new Set(), root: null, xmode: false, hmiKey: null, hmiVars: new Set(), note: null };
+    if (full == null) { S.xmode = true; return S; } // 無根狀態（Task 圖展開下游）：節點由 expandBlockDown／varNode 逐次加入
     S.root = varNode(S, full, null);
     S.root.root = true;
     S.root.fresh = false;
     S.root.depth = { up: 0, down: 0 };
     return S;
   }
-  const isFull = (S) => S.st.count >= MAX_NODES;
+  const isFull = (S) => S.st.count >= S.max;
   /** 變數節點（去重）；dir = 觸及方向；新節點 node.fresh = true（呼叫端負責排入 frontier）；達上限時回傳 null 並標 st.capped */
   function varNode(S, full, dir) {
     const id = 'v:' + full;
@@ -107,15 +113,18 @@
    *  from = 正在展開的變數（回推腳接到同一變數時不畫回自己）。新觸及的變數節點推入 out */
   async function pinsOf(S, bn, blk, dir, chain, out, only, from) {
     const up = dir === 'up';
-    const done = bn.id + '|' + dir + (only ? '|' + only : '');
+    const walked = bn.id + '|' + dir + (only ? '|' + only : '') + (S.xmode ? '|x' : ''); // xmode 走的腳位不同：訊號圖先走過的方塊按「展開下游」要再走一次
+    const hmi = S.hmiKey === bn.key, done = hmi ? walked + '|h' : walked; // 點選的方塊多走 HMI 腳：BFS 先走過也要再走一次；點選走過後 BFS 不必重走
     if (S.blockDone.has(done)) return out;
     S.blockDone.add(done);
+    if (hmi) S.blockDone.add(walked);
     for (const t of blk.pins || []) {
       if (S.signal.aborted) throw abortErr();
       const [name, pdir, , ck, conn, varFull, tgtKey, tgtPin] = t;
       const wanted = only ? name === only : (up ? (pdir === 'I' || pdir === 'S') : pdir === 'O'); // only = 只走這一支腳（介面腳來源，不論方向）
       if (!wanted) continue;
-      if ((ck === 'V' || ck === 'A') && varFull) {
+      const skipDecl = S.xmode && !up && isDecl(t) && !(await declUsed(S, bn.key, blk, varFull));
+      if ((ck === 'V' || ck === 'A') && varFull && !skipDecl) {
         if (from && varFull === from && D.orgOf(t)) continue; // 回推腳接到正在展開的變數本身 → 不畫自環
         const vn = varNode(S, varFull, dir);
         if (!vn) continue; // 上限
@@ -135,7 +144,9 @@
         const c2 = new Set(chain); c2.add(tgtKey);
         await pinsOf(S, tn, tb, dir, c2, out, null, from);
       } else if (ck === 'P') {
-        blockPort(S, bn, name, up ? 'L' : 'R', t).inline = '⟨' + (tgtPin || stripK(conn) || '介面腳') + '⟩';
+        const port = blockPort(S, bn, name, up ? 'L' : 'R', t);
+        port.inline = '⟨' + (tgtPin || stripK(conn) || '介面腳') + '⟩';
+        if (S.xmode && !up) await ifaceDown(S, port, tgtKey, tgtPin, chain, out, new Set());
       } else if (ck === 'N' || ck === 'E') {
         if (!(bn.glyph && bn.glyph.eat.indexOf(name) >= 0)) blockPort(S, bn, name, up ? 'L' : 'R', t).inline = stripK(conn); // 圖示已畫出的常數腳（FUNC、EQN…）不另畫
       }
@@ -151,17 +162,66 @@
     const peers = await D.linkPeers(bn.key, name, up, S.signal);
     if (!peers.length) return;
     const port = blockPort(S, bn, name, up ? 'L' : 'R', t);
-    for (const x of peers) {
-      if (S.signal.aborted) throw abortErr();
-      if (chain.has(x.key) || chain.size >= MAX_CHAIN) { leaf(S, port.id, dir, '↺ 同 task 方塊循環 ' + x.key.slice(x.key.lastIndexOf('/') + 1) + '.' + x.pin, 'cyc', D.hrefBKey(x.key)); continue; }
-      const tn = blockNode(S, x.key, x.blk);
-      if (!tn) continue; // 上限
-      const tp = blockPort(S, tn, x.pin, up ? 'R' : 'L', x.t);
-      if (up) addEdge(S, tp.id, port.id, 'L'); else addEdge(S, port.id, tp.id, 'L');
-      if (x.blk.opaque && opaqueStop(S, tn, x.blk, dir, up ? 'L' : 'R')) continue;
-      const c2 = new Set(chain); c2.add(x.key);
-      await pinsOf(S, tn, x.blk, dir, c2, out, null, from);
-    }
+    for (const x of peers) await linkPeer(S, port, x, dir, chain, out, from);
+  }
+  /** 一個 L: 夥伴 x = {key, blk, pin, t?}：方塊節點＋L 邊，再走該方塊的另一側 */
+  async function linkPeer(S, port, x, dir, chain, out, from) {
+    const up = dir === 'up';
+    if (S.signal.aborted) throw abortErr();
+    if (chain.has(x.key) || chain.size >= MAX_CHAIN) { leaf(S, port.id, dir, '↺ 同 task 方塊循環 ' + x.key.slice(x.key.lastIndexOf('/') + 1) + '.' + x.pin, 'cyc', D.hrefBKey(x.key)); return; }
+    const tn = blockNode(S, x.key, x.blk);
+    if (!tn) return; // 上限
+    const tp = blockPort(S, tn, x.pin, up ? 'R' : 'L', x.t);
+    if (up) addEdge(S, tp.id, port.id, 'L'); else addEdge(S, port.id, tp.id, 'L');
+    if (x.blk.opaque && opaqueStop(S, tn, x.blk, dir, up ? 'L' : 'R')) return;
+    const c2 = new Set(chain); c2.add(x.key);
+    await pinsOf(S, tn, x.blk, dir, c2, out, null, from);
+  }
+  /** xmode：宣告於腳位的腳（A＋變數，或回推 'd' 腳）值不值得畫成變數節點。PID 類方塊一顆約 50 支宣告輸出腳，大多只上 HMI 或根本沒人用，全畫會把節點上限吃光。
+   *  算數的去向 = 邏輯讀取者（nR 扣掉本方塊自讀）、I/O（2）、EGD 有控制器消費者（4）、加密／不可見引用（128）；點選的方塊（S.hmiKey）另加 HMI（8），記進 S.hmiVars。警報（16）、EGD 只送節點（32）不是邏輯下游；點選的方塊由 closeBlock 交代略過幾支。
+   *  vu 缺鍵（舊分片）→ 照畫，不憑缺資料藏東西 */
+  const USE_FLAGS = 2 | 4 | 128;
+  const isDecl = (t) => !!t[5] && (t[3] === 'A' || D.orgOf(t) === 'd');
+  async function vuOf(S, key, varFull) {
+    const tk = D.taskKeyOf(key);
+    if (!S.vus) S.vus = new Map();
+    if (!S.vus.has(tk)) { const t = await D.task(tk, S.signal); S.vus.set(tk, (t && t.vu) || null); }
+    const vu = S.vus.get(tk);
+    return (vu && vu[varFull]) || null;
+  }
+  async function declUsed(S, key, blk, varFull) {
+    const u = await vuOf(S, key, varFull);
+    if (!u) return true;
+    const selfReads = (blk.pins || []).filter((q) => q[1] !== 'O' && q[5] === varFull).length;
+    if (u[1] - selfReads > 0 || (u[2] & USE_FLAGS) !== 0) return true;
+    if (S.hmiKey !== key || !(u[2] & 8)) return false;
+    S.hmiVars.add(varFull);
+    return true;
+  }
+  /** xmode：輸出腳 ck P → 外層巨集／task 的介面腳 (ckey, cpin)，沿介面腳往外追。容器本身不畫成節點（?ub= 視圖裡容器就是圖的根）：
+   *  同層讀取者（別的方塊 P 指向同一介面腳的輸入腳）、外層 L: 反查、容器腳自己的接線（V／宣告 A → 變數節點，L → 方塊，P → 再往外一層）。
+   *  什麼都沒有時不畫葉：由 closeBlock 只替點選的方塊補，BFS 途中的讀取者不補 */
+  async function ifaceDown(S, port, ckey, cpin, chain, out, seen) {
+    const id = ckey + '#' + cpin;
+    if (!ckey || !cpin || seen.has(id) || seen.size >= MAX_CHAIN) return;
+    seen.add(id);
+    const tb = await D.block(ckey, S.signal);
+    if (!tb) { leaf(S, port.id, 'down', '方塊分片缺失 ' + cpin, 'warn', D.hrefBKey(ckey)); return; }
+    const peers = (await D.innerPins(ckey, cpin, false, S.signal)).concat(await D.linkPeers(ckey, cpin, false, S.signal));
+    for (const x of peers) await linkPeer(S, port, x, 'down', chain, out, null);
+    const t = (tb.pins || []).find((p) => p[0] === cpin);
+    if (!t) return;
+    const [, , , ck, , varFull, tgtKey, tgtPin] = t;
+    if ((ck === 'V' || ck === 'A') && varFull) {
+      const vn = varNode(S, varFull, 'down');
+      if (!vn) return; // 上限
+      addEdge(S, port.id, vn.left[0].id, 'V', { varFull, label: '介面腳 ' + cpin, iface: true });
+      if (vn.fresh) { vn.fresh = false; out.push(vn); }
+    } else if (ck === 'L' && tgtKey) {
+      const blk = await D.block(tgtKey, S.signal);
+      if (blk) await linkPeer(S, port, { key: tgtKey, blk, pin: tgtPin || '?' }, 'down', chain, out, null);
+      else leaf(S, port.id, 'down', '方塊分片缺失 ' + stripK(t[4]), 'warn', D.hrefBKey(tgtKey));
+    } else if (ck === 'P') await ifaceDown(S, port, tgtKey, tgtPin, chain, out, seen);
   }
 
   /** 腳位值鏡像（d.m，kind I）的上游：由鏡像腳位的接線來源接到本變數的入腳，邊標「腳位值 <pin>」——
@@ -197,6 +257,29 @@
     leaf(S, inP, dir, lbl + ' — 接線來源種類 ' + (s.k || '?') + ' 無法追蹤', 'muted', D.hrefB(mc, mpath));
   }
 
+  /** 只上 HMI 的變數（沒有讀取者、沒有控制器消費者）的葉：列畫面名（rec.hmi，最多 3 張）。這類變數幾乎都同時 EGD 只送節點，不能併進 downLeaves 的「無讀取者」分支，否則看不到畫面。沒有 rec.hmi → false */
+  function hmiLeaf(S, node, rec, outP) {
+    const names = Array.from(new Set((rec.hmi || []).map((h) => h[0]).filter(Boolean)));
+    if (!names.length) return false;
+    leaf(S, outP, 'down', 'HMI 畫面：' + names.slice(0, 3).join('、') + (names.length > 3 ? ' 等 ' + names.length + ' 張' : ''), 'muted', names.length === 1 ? D.hrefS(names[0]) : D.hrefV(node.varFull));
+    return true;
+  }
+  /** 無根狀態（Task 圖）：變數往下游的葉。圖上已有的讀取者會讓 pill 被收掉，所以現場輸出、加密引用、方向未知的腳不能只在「沒有讀取者」時才畫。文案同訊號圖；「無讀取者」只在真的沒有任何已知去向時才說 */
+  function downLeaves(S, node, rec, outP, hasRefs) {
+    const hrefV = D.hrefV(node.varFull), cons = D.egdCons(rec.egd);
+    const ioOut = (rec.io || []).filter((x) => x.dir === 'O');
+    const egdNoCons = !!(rec.egd && rec.egd.p && rec.egd.p.length && !cons.length);
+    const enc = rec.enc || [], hid = rec.hid || [], nU = (rec.u || []).length;
+    for (const x of ioOut) leaf(S, outP, 'down', '現場 I/O 輸出：' + (x.module || '') + ' ' + (x.point || '') + (x.tag ? ' ' + x.tag : ''), 'io', D.hrefIO(x.ctrl, x.module));
+    if (egdNoCons) leaf(S, outP, 'down', D.EGD_NO_CONS, 'muted');
+    const none = !hasRefs && !cons.length && !ioOut.length && !egdNoCons;
+    if (enc.length) leaf(S, outP, 'down', (none ? '無讀取者；' : '') + '出現在加密程式（' + enc.join('、') + '）— 無法追蹤', 'enc', hrefV);
+    if (hid.length) leaf(S, outP, 'down', (none && !enc.length ? '無讀取者；' : '') + '引用在加密方塊內（程式 ' + hid.join('、') + '）— 無法追蹤', 'enc', hrefV);
+    if (nU) leaf(S, outP, 'down', (none && !enc.length && !hid.length ? '無讀取者；' : '') + '有 ' + nU + ' 個方向未知的腳', 'warn', hrefV);
+    const hmi = !hasRefs && !cons.length && hmiLeaf(S, node, rec, outP);
+    if (none && !enc.length && !hid.length && !nU && !hmi) leaf(S, outP, 'down', (Number(rec.d && rec.d.flags) & 24) ? '無邏輯讀取者；上 HMI／警報' : '無讀取者', 'muted', hrefV);
+  }
+
   /** 展開一個變數節點的一側（訊號卡 w/r → 方塊 → 另一側腳位）；回傳新觸及的變數節點（depth 已設） */
   async function expandVar(S, node, dir) {
     const up = dir === 'up';
@@ -227,7 +310,8 @@
         seen(vn);
       }
     }
-    if (!refs.length && !mirrorIn) {
+    if (!up && !S.root) downLeaves(S, node, rec, outP, refs.length > 0);
+    else if (!refs.length && !mirrorIn) {
       if (up) {
         const ioIn = (rec.io || []).filter((x) => x.dir === 'I');
         if (ioIn.length) for (const x of ioIn) leaf(S, inP, dir, '現場 I/O 輸入：' + (x.module || '') + ' ' + (x.board || '') + ' ' + (x.point || '') + (x.tag ? ' ' + x.tag : ''), 'io', D.hrefIO(x.ctrl, x.module));
@@ -249,6 +333,7 @@
         let any = cons.length > 0;
         if (ioOut.length) { any = true; for (const x of ioOut) leaf(S, outP, dir, '現場 I/O 輸出：' + (x.module || '') + ' ' + (x.point || '') + (x.tag ? ' ' + x.tag : ''), 'io', D.hrefIO(x.ctrl, x.module)); }
         if (rec.egd && rec.egd.p && rec.egd.p.length && !cons.length) { any = true; leaf(S, outP, dir, D.EGD_NO_CONS, 'muted'); }
+        if (S.hmiVars.has(node.varFull) && !cons.length && hmiLeaf(S, node, rec, outP)) any = true; // 訊號圖的「展開下游」按鈕畫出的 HMI 腳；BFS 走到的變數不在 hmiVars，文案不變
         if (!any) leaf(S, outP, dir, rec.enc && rec.enc.length ? '無讀取者；出現在加密程式（' + rec.enc.join('、') + '）— 無法追蹤' : '無讀取者', rec.enc && rec.enc.length ? 'enc' : 'muted', D.hrefV(node.varFull));
       }
     }
@@ -280,6 +365,94 @@
     const d = node.depth[dir] + 1;
     for (const vn of out) if (vn.depth[dir] > d) vn.depth[dir] = d;
     return out;
+  }
+
+  /** 往下游展開一個變數節點一層；達上限時標 capped（圖面看得出這裡沒展完）；回傳新觸及的變數節點 */
+  async function expandVarDown(S, vn) {
+    if (isFull(S)) { S.st.capped = true; if (!vn.expanded.has('down')) vn.capped = true; return []; }
+    vn.dirs.add('down');
+    if (vn.depth.down === Infinity) vn.depth.down = 0;
+    const kids = await expandVar(S, vn, 'down');
+    if (S.st.capped) vn.capped = true; // 展到一半撞上限：expandVar 跳過的讀取者不會有節點，不可讀成「沒有下游」
+    return kids;
+  }
+  /** 方塊 bn（含 L: 鏈接到的方塊）輸出腳已接上、但還沒往下游展開的變數節點：pinsOf 有 blockDone 防重入，先前走過的方塊再按一次時由邊回推 */
+  function downFrontier(S, bn) {
+    const owner = portOwners(S.nodes), byFrom = new Map();
+    for (const e of S.edges) { const a = owner.get(e.from); if (!byFrom.has(a)) byFrom.set(a, []); byFrom.get(a).push(e); }
+    const seen = new Set([bn.id]), q = [bn.id], out = [];
+    while (q.length) {
+      for (const e of byFrom.get(q.pop()) || []) {
+        const n = S.nodes.get(owner.get(e.to));
+        if (!n || seen.has(n.id)) continue;
+        if (e.kind === 'L' && n.kind !== 'var' && n.kind !== 'leaf') { seen.add(n.id); q.push(n.id); }
+        else if (e.kind === 'V' && n.kind === 'var') { seen.add(n.id); if (!n.expanded.has('down')) out.push(n); }
+      }
+    }
+    return out;
+  }
+  /** 方塊的鏡像變數（輸出側的腳；輸入腳的鏡像只是來源的副本，不是本方塊的下游）：接成 port → 變數節點的 V 邊。鏡像表每 task 只建一次（S.mirrors） */
+  async function mirrorsOf(S, bn, blk, out) {
+    if (!D.mirrorMap) return;
+    const tk = D.taskKeyOf(bn.key);
+    if (!S.mirrors) S.mirrors = new Map();
+    if (!S.mirrors.has(tk)) { const t = await D.task(tk, S.signal); S.mirrors.set(tk, (t && D.mirrorMap(t, bn.ctrl)) || null); }
+    const mm = S.mirrors.get(tk);
+    if (!mm) return;
+    for (const t of blk.pins || []) {
+      if (t[1] === 'I' || t[1] === 'S') continue;
+      for (const mv of mm.get(bn.key + '#' + t[0]) || []) {
+        if (mv === t[5] || !(await declUsed(S, bn.key, blk, mv))) continue; // 腳位本身接的變數 pinsOf 已接；沒有邏輯去向的鏡像同宣告腳，不畫
+        const vn = varNode(S, mv, 'down');
+        if (!vn) continue; // 上限
+        addEdge(S, blockPort(S, bn, t[0], 'R', t).id, vn.left[0].id, 'V', { varFull: mv, label: '發佈為' });
+        if (vn.fresh) { vn.fresh = false; out.push(vn); }
+      }
+    }
+  }
+  /** 點選的方塊走完腳位後的交代：追不到的地方畫成葉（圖面留下證據，不可讓「沒有新節點」被讀成「下游都看完了」）；回傳給提示用的一句話，沒有要交代的 → null */
+  async function closeBlock(S, bn, blk) {
+    const pins = blk.pins || [], notes = [], href = D.hrefBKey(bn.key);
+    const froms = new Set(S.edges.map((e) => e.from));
+    const say = (label, cls) => { leaf(S, blockPort(S, bn, '下游', 'R').id, 'down', label, cls, href); notes.push(label); };
+    let nIface = 0, nDecl = 0, nEgdNode = 0;
+    for (const t of pins) {
+      if (t[1] !== 'O') continue;
+      const id = bn.id + '#' + t[0];
+      if (t[3] === 'P' && !froms.has(id)) { nIface++; leaf(S, id, 'down', '止於介面腳 ' + (t[7] || stripK(t[4]) || t[0]) + '（外層沒有變數或接線）', 'muted', href); }
+      else if (isDecl(t) && !bn.right.some((p) => p.id === id) && !(await declUsed(S, bn.key, blk, t[5]))) { nDecl++; if ((await vuOf(S, bn.key, t[5]))[2] & 32) nEgdNode++; }
+    }
+    if (nIface) notes.push(nIface + ' 支輸出止於介面腳');
+    const q = pins.filter((t) => (!t[1] || t[1] === '?') && (t[5] || t[3] === 'L' || t[3] === 'P'));
+    if (q.length) say(q.length + ' 支方向未知的腳未追蹤：' + q.slice(0, 4).map((t) => t[0]).join('、') + (q.length > 4 ? '…' : ''), 'warn');
+    if (nDecl) say('另有 ' + nDecl + ' 支宣告輸出腳只有警報或無人用，未畫' + (nEgdNode ? '（其中 ' + nEgdNode + ' 支 EGD 只送節點，訂閱未索引，不等於沒人用）' : ''), 'muted');
+    if (blk.opaque) { leaf(S, blockPort(S, bn, '內部', 'R').id, 'down', '不透明 ' + (blk.name || '') + ' — 內部無法追蹤，回推腳位可能不完整', 'enc', href); notes.push('不透明方塊，內部無法追蹤'); }
+    if (!notes.length && !bn.right.some((p) => froms.has(p.id))) say('索引中此方塊沒有已接線的輸出腳', 'muted');
+    return notes.length ? notes.join('；') : null;
+  }
+  /** 方塊往下游展開一層：輸出腳 → 變數（含 L: 鏈、反向 L:、介面腳、鏡像；只有本方塊含只上 HMI 的宣告腳）→ 各變數的讀取者。不透明且無腳位 → 「無法追蹤內部」葉；達上限 → []。回傳新觸及的變數節點；S.note = 追不到的交代（closeBlock） */
+  async function expandBlockDown(S, key, blk) {
+    S.note = null;
+    blk = blk || await D.block(key, S.signal);
+    if (!blk) { S.note = '方塊分片缺失'; return []; }
+    const bn = blockNode(S, key, blk);
+    if (!bn) return []; // 上限
+    if (blk.opaque && opaqueStop(S, bn, blk, 'down', 'R')) { S.note = '不透明方塊，內部無法追蹤'; return []; }
+    const out = [], xmode = S.xmode;
+    S.xmode = true;
+    S.hmiKey = key;
+    try {
+      await pinsOf(S, bn, blk, 'down', new Set([key]), out, null, null);
+      await mirrorsOf(S, bn, blk, out);
+      S.note = await closeBlock(S, bn, blk);
+    } finally { S.xmode = xmode; S.hmiKey = null; }
+    const touched = out.slice();
+    const todo = out.concat(downFrontier(S, bn).filter((n) => out.indexOf(n) < 0));
+    for (const vn of todo) {
+      if (S.signal.aborted) throw abortErr();
+      touched.push(...await expandVarDown(S, vn));
+    }
+    return touched;
   }
 
   /** BFS：frontier = [[node, dir]…]；lim(dir) 為該側跳數；onLevel(level, st) 每展開一個節點呼叫；達上限後未展開的 frontier 標 capped */
@@ -546,12 +719,25 @@
       hideBtn.setAttribute('aria-label', lb);
     }
 
-    /** 雙擊變數：再展一層（依其所在側；根節點雙向）；受 200 上限；保留 viewBox 與選取；新節點 .new */
+    /** 展開後重畫：保留 viewBox 與選取；新節點 .new；提示新增數 */
+    async function afterExpand(before, f0, t0) {
+      const newIds = new Set(Array.from(S.nodes.keys()).filter((id) => !before.has(id)));
+      const g = viewGraph(newIds);
+      const bfsMs = performance.now() - t0;
+      await D.yieldMain();
+      if (!alive()) return;
+      const tm = inst.setGraph(g, { keepViewport: true, layout: LAYOUT });
+      statusLine(D.fetchCount - f0, bfsMs, tm);
+      syncHideBtn();
+      if (S.st.capped) D.toast('已達 ' + S.max + ' 節點上限');
+      else D.toast(newIds.size ? '新增 ' + newIds.size + ' 個節點' : '沒有新的節點');
+    }
+    /** 雙擊變數：再展一層（依其所在側；根節點雙向）；受 S.max 上限；保留 viewBox 與選取；新節點 .new */
     async function expandNode(varId) {
       if (!S || !inst || !inst.graph) return;
       const n = S.nodes.get(varId);
       if (!n || n.kind !== 'var') { D.toast('圖中沒有此變數節點'); return; }
-      if (isFull(S)) { D.toast('已達 ' + MAX_NODES + ' 節點上限'); return; }
+      if (isFull(S)) { D.toast('已達 ' + S.max + ' 節點上限'); return; }
       const dirs = n.root ? ['up', 'down'] : Array.from(n.dirs);
       const todo = dirs.filter((d) => !n.expanded.has(d));
       if (!todo.length) { D.toast('此節點已展開'); return; }
@@ -563,16 +749,21 @@
         await fillDesc(S);
       } catch (e) { if (e && e.name === 'AbortError') return; throw e; }
       if (!alive()) return;
-      const newIds = new Set(Array.from(S.nodes.keys()).filter((id) => !before.has(id)));
-      const g = viewGraph(newIds);
-      const bfsMs = performance.now() - t0;
-      await D.yieldMain();
+      await afterExpand(before, f0, t0);
+    }
+    /** 方塊側欄「展開下游」：由方塊的輸出腳往下游展一層（expandBlockDown）；其餘同雙擊變數 */
+    async function expandBlock(n) {
+      if (!S || !inst || !inst.graph) return;
+      if (isFull(S)) { D.toast('已達 ' + S.max + ' 節點上限'); return; }
+      const before = new Set(S.nodes.keys());
+      inst.status('展開 ' + (n.name || n.key) + ' 的下游…');
+      const f0 = D.fetchCount, t0 = performance.now();
+      try {
+        await expandBlockDown(S, n.key);
+        await fillDesc(S);
+      } catch (e) { if (e && e.name === 'AbortError') return; throw e; }
       if (!alive()) return;
-      const tm = inst.setGraph(g, { keepViewport: true, layout: LAYOUT });
-      statusLine(D.fetchCount - f0, bfsMs, tm);
-      syncHideBtn();
-      if (S.st.capped) D.toast('已達 ' + MAX_NODES + ' 節點上限');
-      else D.toast(newIds.size ? '新增 ' + newIds.size + ' 個節點' : '沒有新的節點');
+      await afterExpand(before, f0, t0);
     }
     function statusLine(fetched, bfsMs, tm) {
       lastFetched = fetched; lastBfs = bfsMs;
@@ -580,7 +771,7 @@
       const parts = ['抓取 ' + fetched + ' 個分片', '節點 ' + D.int(st.count) + '（變數 ' + st.vars + ' · 方塊 ' + st.blocks + ' · 葉 ' + st.leaves + '）', '連線 ' + S.edges.length, 'BFS ' + Math.round(bfsMs) + ' ms'];
       if (tm) parts.push('排版 ' + Math.round(tm.layout) + ' ms');
       if (stat.hidden) parts.push('隱藏 ' + stat.hidden + ' 個（畫面少 ' + stat.removed + ' 個節點）');
-      if (st.capped) parts.push('已達 ' + MAX_NODES + ' 節點上限' + (stat.hidden ? '（隱藏的節點仍佔名額）' : ''));
+      if (st.capped) parts.push('已達 ' + S.max + ' 節點上限' + (stat.hidden ? '（隱藏的節點仍佔名額）' : ''));
       inst.status(parts.join(' · '));
     }
 
@@ -600,6 +791,8 @@
           hideActions(S.nodes.get('v:' + v)))),
       nodeActions: (n) => D.frag(
         (n.kind === 'block' || n.kind === 'ub') && n.program && n.task ? D.link(D.hrefD(n.ctrl, n.program, n.task, { b: n.key }), '開啟 Task 邏輯圖', 'btn sm') : null,
+        (n.kind === 'block' || n.kind === 'ub') && drawn(n.id) && !(n.opaque && !(n.pins || []).length)
+          ? D.h('button', { type: 'button', class: 'btn sm', text: '展開下游', title: '由此方塊的輸出腳往下游展開一層（跨 task／EGD；上限 ' + S.max + ' 節點）', onclick: () => expandBlock(n).catch((e) => console.warn(e)) }) : null,
         hideActions(n)),
       // 點選：「⋯ 已隱藏」標記 → 那幾個節點的還原清單；其餘照預設面板
       onSelect: (n, it) => {
@@ -660,7 +853,7 @@
     syncHideBtn();
     if (stat.hidden) D.toast('沿用這個分頁先前的隱藏：' + stat.hidden + ' 個（工具列「已隱藏」可還原）');
     if (S.root.desc) inst.setTitle(full + ' — ' + D.dg.trunc(S.root.desc.split('\n')[0], 60));
-    if (S.st.capped) D.toast('已達 ' + MAX_NODES + ' 節點上限，部分分支未展開');
+    if (S.st.capped) D.toast('已達 ' + S.max + ' 節點上限，部分分支未展開');
     // 同 task 方塊 hover 同色高亮（.tk-hl）
     let hovTk = null;
     const setTk = (tk) => {
@@ -683,5 +876,5 @@
     inst.restoreIds = restoreIds;
   });
 
-  D.dsignal = { MAX_NODES, MAX_CHAIN, buildSignalGraph, applyHidden, focusIds, HIDDEN };
+  D.dsignal = { LIM, MAX_CHAIN, buildSignalGraph, applyHidden, focusIds, HIDDEN, newState, varNode, blockNode, expandVar, expandVarDown, expandBlockDown, fillDesc, finalize, isFull };
 })();

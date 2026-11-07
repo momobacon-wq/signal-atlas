@@ -120,7 +120,9 @@
         D.h('h1', { class: 'home-title', text: 'Signal Atlas ' + (lab ? lab + ' ' : '') + '訊號邏輯查詢' }),
         D.h('p', { class: 'muted home-sub', text: '查一個訊號在哪裡被寫、被讀、接在哪個端子、送到哪個控制器、出現在哪張畫面。' }),
         D.h('div', { class: 'bigsearch' }, input),
-        chips, fchips, prog, status, results, hint, browseRow()));
+        chips, fchips, prog, status, results, hint,
+        D.sfcAvail && D.sfcAvail() ? D.h('p', { class: 'home-links' }, D.link('#/q', '序列（SFC）與啟動鏈', 'btn sm'), ' ', D.link('#/s', 'HMI 畫面清單', 'btn sm')) : null,
+        browseRow()));
 
     let sets = null;
     let loadSeq = 0;

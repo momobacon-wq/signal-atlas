@@ -612,3 +612,6 @@ table.mini tr.sq-flash td { animation: sq-flash 1.6s ease-out; }
   table.mini.sq-trans, table.mini.sq-steps { min-width: 680px; }
   table.mini.sq-list, table.mini.sq-ind { min-width: 560px; }
 }
+
+/* 首頁常用入口（序列、畫面清單）：不必展開「瀏覽」 */
+.home-links { margin: 4px 0 12px; display: flex; flex-wrap: wrap; gap: 8px; }

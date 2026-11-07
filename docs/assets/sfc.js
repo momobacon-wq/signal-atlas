@@ -355,7 +355,7 @@
       const es = data.edges.filter((e) => !e.d && eScope(e) && eMatch(e, q));
       const wasOpen = indDet ? indDet.open : ind0;
       const body = es.length ? D.table(['來源序列', '步驟／轉移', '目標序列（RUN）', '方塊數', '標記'], es.map((e) => [seqLink(e.f), D.frag(B.sk(e.sk), ' ', D.mono(e.s, 'b')), seqLink(e.t),
-        String(nBlocks(e.p)), D.frag(e.inf ? B.inf() : null, e.op ? [' ', B.op()] : null, ' ', D.h('span', { class: 'muted small', text: gateTypes(e.p).join('、') }))]), 'sq-ind')
+        String(nBlocks(e.p)), D.frag(e.inf ? B.inf() : null, e.op ? [' ', B.op()] : null, e.sv != null ? [' ', B.sv(e.sv)] : null, ' ', D.h('span', { class: 'muted small', text: gateTypes(e.p).join('、') }))]), 'sq-ind')
         : D.empty(q ? '沒有符合「' + q + '」的間接關聯' : '此範圍沒有間接關聯');
       indDet = D.section('間接關聯（不一定代表啟動）', D.frag(D.h('p', { class: 'muted small', text: '路徑經過 RUNG、LATCH、計時器、比較器等方塊才到另一個序列的 RUN：可能是許可、重置或停止條件，本頁不判定作用。標記欄列出路徑上這些方塊的型別；逐跳路徑在各序列頁。方塊數不含 task／巨集介面。' }), body),
         { count: es.length, open: wasOpen });

@@ -11,6 +11,7 @@ Layout (all JSON compact, UTF-8, no local absolute paths — the exporter aborts
   io/<CTRL>.json                {ctrl, modules:[{name, id, cabinet, red, boards:[{name, hw, pos, points:[[name, dir, conn, tag, addr, type, lo, hi, screws]]}]}]}
   screen/<hh>.json              {s:{screen: {menu:[...], points:[[full_name, source]]}}}  shard = sha1(screen)[:2]
   alarm/<CTRL>.json             {ctrl, rows:[[name, desc, cls, def, area, urgency]]}
+  sfc.json                      {sfc:{tkey: {line, file, iface, steps, trans}}, edges:[...], cut:[...]}  SFC topology + start chain (tools/dcdas/sfc.py)
 flags bits in names rows: 1=has_writer 2=has_io 4=has_egd 8=has_hmi 16=has_alarm 32=const 64=egd_copy 128=in_encrypted 256=alarm_sub
 has_alarm = alarm_id set, or an alarm sub-variable (sub_of) with an AlarmClass (the .H/.HH/.BQ... flags).
 vu rows (task shards; their own bit space): [nW, nR, flags] for every variable on a declared-at-pin / recovered pin, on a
@@ -599,6 +600,11 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     screen_index = sorted((s, len(d["points"]), d["menu"][0] if d["menu"] else "") for s, d in scr.items())
     w.write("screens.json", _dump({"rows": screen_index}))
 
+    # ---------------------------------------------------------------- SFC tasks (steps, transitions, start chain)
+    log("  writing sfc")
+    from . import sfc as _sfc
+    w.write("sfc.json", _dump(_sfc.export(conn, log)))
+
     # ---------------------------------------------------------------- manifest
     log("  writing manifest")
     counts = {}
@@ -639,7 +645,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
         "encrypted_programs": enc_programs,
         "block_types": btypes,
         "related": cfg.get("related") or [],
-        "files": {"names": [f"names/{c}.json" for c in cnames]},
+        "files": {"names": [f"names/{c}.json" for c in cnames], "sfc": "sfc.json"},
     }
     if cfg.get("site_label"):                # human label of a non-default site: local config + encrypted manifest only
         man["site_label"] = str(cfg["site_label"])

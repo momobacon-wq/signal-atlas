@@ -17,7 +17,7 @@ tools/stamp_assets.py          index.html 資產加 ?v=<hash>、version.json
 docs/index.html                單頁 App（vanilla JS，無 build step，CSP script-src 'self'，noindex）
 docs/robots.txt                Disallow: /
 docs/assets/                   boot.js、auth.js（員工代號閘門）、app.css、core.js、search.js、signal.js、trace.js、block.js、io.js、browse.js、
-                               glyph.js（方塊圖示 D.glyph：列印圖畫法的符號與 RUNG 梯形圖）、diagram.js（方塊圖引擎 D.dg）、dtask.js（Task 圖）、dsignal.js（訊號圖）、dagre.min.js（vendored 3.1.1，MIT，圖頁才載入）
+                               sfc.js（序列頁 `#/q`：序列總覽、啟動鏈、單一序列的步驟／轉移圖）、glyph.js（方塊圖示 D.glyph：列印圖畫法的符號與 RUNG 梯形圖）、diagram.js（方塊圖引擎 D.dg）、dtask.js（Task 圖）、dsignal.js（訊號圖）、dagre.min.js（vendored 3.1.1，MIT，圖頁才載入）
 docs/data/                     export-web 的輸出（下）
 docs/<site>/                   子站（例 docs/u2/）：index.html（帶 <meta name="atlas-site" content="<site>">，程式讀 ../assets/、
                                閘門設定讀 ../auth-config.json）、自己的 data/ 與 version.json；不放 assets/、404.html、robots.txt
@@ -172,11 +172,31 @@ task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 
   第 4 欄 `card` 只在 `st` = 1 且卡片名稱與 `full_point` 不同時出現（畫面點以 KKS 別名或不同大小寫對到變數）：連結一律指向 `card`，否則指向 `full_point`。
 - `alarm`: `{"ctrl","rows":[[name, desc, cls, def, area, urgency]]}`
 
+## `sfc.json` — 序列（SFC task）拓撲與啟動鏈（`tools/dcdas/sfc.py`；manifest `files.sfc = "sfc.json"`，舊匯出沒有此鍵）
+
+```json
+{"sfc":{"WSC1|Prog/Task":{"line":11021,"file":"WSC1/_Prog.xml",
+   "iface":{"RUN":"WSC1.Task.RUN","RESET":"…","STATUS":"…","COMPLETE":"…","MODE":"…","Steps":"…","Transitions":"…"},
+   "steps":[{"i":4,"n":"S0_S1","line":14897,"flag":"WSC1.Task.S0_S1_Active_Flag","a":[{"n":"Action1","q":"E:P","w":["WSC1.X"]}]}],
+   "trans":[{"i":2,"n":"S0_S1_Complete","line":11149,"f":[4],"t":[6],"flag":"…","c":"Transition_Condition_1","r":[["WSC1.SeqStateS1","T"]]}]}},
+ "edges":[{"f":"WSC1|Prog/Task","s":"S0_S1","sk":"s","t":"WSC1|Prog2/Task2","d":1,"inf":0,"op":1,"w":"1",
+           "p":[{"v":"WSC1.X"},{"k":"WSC1|Prog/Task/AND_1","pin":"IN1","type":"AND","ds":"I/T","at":"WSC1/_Prog.xml:16591"},{"egd":5,"to":"H11"},…]}],
+ "cut":[["G11|Prog/Task","StepName"]]}
+```
+- 序列 = 直接子方塊有 `Evaluate_Transitions` userblock 的 task；鍵同 task 分片鍵 `CTRL|Program/Task`（不跳脫）。步驟／轉移的方塊鍵 = `<sfc 鍵>/Perform_Step_Actions/<n>`、`<sfc 鍵>/Evaluate_Transitions/<n>`，條件方塊 = 轉移鍵 + `/<c>`；細節（RUNG `EQN`、COMPARE `FUNC`、常數）在 task 分片，前端以 `D.task()` 讀。
+- 步驟 `i` = 包裝方塊 `Enable` 接的 `Steps[i]`（0 = 初始步）；轉移 `i` = `Transitions[i]`。轉移的 `f`／`t` = 包裝方塊 `Configuration` 腳值解碼的來源步／目的步索引（`<筆數>,(型別,索引,值)*`：型別 1 = Steps 陣列，值 0 = 來源、1 = 目的；型別 2 = Transitions 陣列、3 = Transitions_Progression_Status；
+  型別 4 只見於沒有目的步的轉移、而且都是 `4,0,1`，意義未查證，解碼時忽略）；解不開時沒有 `f`／`t`，改帶 `bad:1`。
+- `flag` = 包裝方塊 `<名>_Active_Flag` 輸出腳的鏡像變數；`a` = 步驟內的動作 userblock：`q` 動作限定詞（`ACTION_CONTROL.Action_Qualifier` 原文）、`w` 動作內方塊輸出腳寫的變數；`r` = 轉移條件內方塊讀的變數與該腳方向來源字母。空值省略。
+- `edges` = 一個序列的步驟（`sk:"s"`）或轉移（`sk:"t"`，其 `flag`）發出的變數，往下游走到**另一個**序列的 `RUN` 介面變數的路徑 `p`（廣度優先先找到的一條；同一來源同一目標一條）。走法同 `query._Trace.down_var/down_block`：讀取腳（I/S）→ 方塊輸出 → 變數／宣告在腳位的變數／腳位鏡像／反向 `L:`、經 task 或巨集介面腳時進入接 `L:<pin>` 的內部腳、經 EGD 到消費端副本、不透明巨集照一般方塊經其回推／圖面腳走。**不經過名為 `RESET`／`PAUSE` 的介面腳**（序列介面巨集用它們把 RUN 寫成 False）。上限：每個來源 15,000 個方塊，超過的來源列在 `cut`（前端必須標「走訪超過上限，可能不完整」，而且因為任何來源都可能連到任何序列，每個序列的上游清單都要標）；搜尋深度 10 個方塊跳（進入介面腳也算一跳）在**變數**處檢查：到達變數時已滿 10 跳就不再往下，之後以 `L:` 直接接線的方塊仍會走完，所以路徑可能超過 10 個方塊；被深度擋下的關聯不列出、也不進 `cut`。每個來源的已走訪變數／方塊各分支共用，同一目標只留先找到的那條路徑，`d` 只依這一條判定。
+- 路徑元素：`{"v"}` 變數；`{"k","pin","type","ds","at"}` 經過的腳位（`ds` = 方向/來源字母，`at` = `file:line`），可帶 `ub:1`（task／巨集介面腳，邏輯在裡面）或 `op:1`（加密巨集，內部看不到）；`{"egd","to"}` EGD 交換號與消費控制器。
+- `d:1` = 路徑只經過 MOVE／AND／OR／PULSE 方塊、介面腳、加密巨集與 EGD；其他（RUNG、LATCH、計時器、比較器…）為 `d:0`（間接：可能是許可、重置或停止條件，前端不替它下結論）。`inf:1` = 路徑上有方向來源 L/H/R/M 或方向 `?` 的腳（推斷）。`op:1` = 路徑經過加密巨集。`w` = 路徑最後一個 MOVE 的 `SRC` 字面常數（原文，例如 `1`），不是常數時省略。`sv` = 來源步驟／轉移自己的 MOVE 寫進路徑起點變數的字面常數（原文；`0`／`False` 代表這一步把它清掉，前端標警示色），起點是 Active_Flag 或不是常數時省略。
+
 ## 前端路由（hash）
 
 `#/` 搜尋（`?q=&c=`）、`#/v/<CTRL.NAME>` 訊號、`#/t/<CTRL.NAME>?dir=up|down&hops=3` 追蹤、`#/b/<CTRL>/<block_path>` 方塊/Task、
 `#/p/<CTRL>?prog=` 程式瀏覽、`#/io/<CTRL>[/<module>]` I/O、`#/s` 畫面列表、`#/s/<screen.cim>` 畫面、`#/a/<CTRL>?q=` 警報清單、
-`#/d/<CTRL>/<Program>/<Task>?ub=&sel=&b=&f=&page=&all=&pins=&cm=` Task 方塊圖、`#/g/<CTRL.NAME>?up=N&down=N` 訊號方塊圖。
+`#/d/<CTRL>/<Program>/<Task>?ub=&sel=&b=&f=&page=&all=&pins=&cm=` Task 方塊圖、`#/g/<CTRL.NAME>?up=N&down=N` 訊號方塊圖、
+`#/q?c=<CTRL>&ind=1` 序列總覽（全部序列與啟動鏈）、`#/q/<CTRL>/<Program>/<Task>` 單一序列（步驟／轉移圖與表）。
 
 ## 方塊圖規則（`diagram.js` / `dtask.js` / `dsignal.js`）
 
@@ -232,5 +252,6 @@ task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 
 `prog_files` = DB 中 `file_path ≠ <ctrl>/_<program>.xml` 的程式；names 列數 = variable 數（沒有變數的控制器可缺檔）；抽樣卡的 `egd.c` 只有控制器且筆數 = DB、`egd.src.ctrl` ∈ 控制器 ∪ 節點；
 抽樣方塊 `file` = `program.file_path`（含至少一個 `prog_files` 例外程式的方塊）；抽樣畫面 `st`=1 ⇔ `hmi_point.var_id` 非空；每張訊號卡在正確分片；抽樣 200 卡 + 300 方塊與 SQLite 逐欄相等；
 抽樣 30 個 task entry 的 `vu`：前 10 列的 `nW`/`nR` = DB 計數，且該 task **所有方向 `O` 腳位的變數都在 `vu` 裡**（缺一個即該 task 不符，訊息寫明缺幾個）；無絕對路徑；
+`sfc.json`（有檔才查，舊匯出無檔無鍵則略過）：`manifest.files.sfc` = `sfc.json`、序列鍵 = DB 中直接子方塊為 `Evaluate_Transitions` userblock 的 task、步驟／轉移名 = `Perform_Step_Actions`／`Evaluate_Transitions` 的 userblock 子方塊（文件順序）、`i` = `Enable` 接線的 `[n]`、`f`／`t` 由 `Configuration` 重新解碼（解不開 ⇔ `bad:1`）、`iface`／`flag`／`a.w`／`r`／路徑 `v` 都是索引變數且有訊號卡、路徑 `k` 在其 task 分片 `b`、`at`／`ds`／`type`／`ub`／`op` = 該腳的檔案:行、方向/來源與方塊種類、EGD 跳在 `egd_consumed`、路徑終點 = 目標的 `RUN`、`d`／`inf`／`op`／`w` 依規則重算、`cut` 列是某序列的步驟或轉移；
 `manifest.build` 可重現且與 `meta.json` 一致；除 `meta.json` 外無明文 `.json`；磁碟總量；頁面 `atlas-site` = 設定的站台；子站頁 = 由主站頁推出的頁（不計 stamp）；
 延遲載入的程式都在共用 assets 且沒有以頁面為基準的 `'assets/'` 網址；整個 `docs/` < 1 GB；exit 0 才可 push。不帶參數時對帳設定的 `web_dir`。

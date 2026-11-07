@@ -75,7 +75,7 @@
     return null;
   }
 
-  D.page('b', async ({ route, view, signal }) => {
+  D.page('b', async ({ route, view, signal, alive }) => {
     const ctrl = route.segs[0] || '';
     const path = route.segs.slice(1).join('/');
     const key = ctrl + '|' + path;
@@ -97,6 +97,12 @@
         i === segs.length - 1 ? D.h('b', { text: s })
           : i === 0 ? D.h('a', { href: D.hrefP(ctrl, s), class: 'lk', text: s, title: '程式瀏覽' })
             : D.h('a', { href: D.hrefB(ctrl, segs.slice(0, i + 1).join('/')), class: 'lk', text: s }))));
+    // 所屬 Task 是序列（SFC）時連到序列頁（sfc.json 延遲載入，不擋方塊頁）
+    const seqBtn = D.h('span');
+    if (taskPath && D.sfcData) D.sfcData().then((sd) => {
+      const tk = ctrl + '|' + taskPath;
+      if (sd && sd.sfc[tk] && alive()) D.set(seqBtn, D.link(D.hrefSeq(tk), isTask ? '序列圖' : '所屬序列 ' + segs[1], 'btn'));
+    }).catch(() => {});
     const head = D.h('div', { class: 'ph' },
       D.h('div', { class: 'ph-kicker' }, D.link('#/', '搜尋'), ' › ', D.mono(ctrl), ' › 方塊'),
       D.h('h1', { class: 'ph-title mono' }, b.name || segs[segs.length - 1], ' ', b.type ? D.tag(b.type, 'lg') : null, ' ', D.tag(b.kind === 'task' ? 'Task' : (b.kind || 'block')), b.opaque ? D.frag(' ', D.tag('不透明 opaque', 'warn')) : null),
@@ -108,7 +114,7 @@
         taskPath && segs.length > 2 ? D.link(D.hrefB(ctrl, taskPath), '所屬 Task ' + segs[1], 'btn') : null,
         D.link(D.hrefP(ctrl, program), '程式 ' + program, 'btn'),
         segs.length > 1 ? D.link(D.hrefD(ctrl, program, segs[1], segs.length > 2 ? { b: key } : null), '邏輯圖', 'btn primary') : null,
-        D.h('button', { type: 'button', class: 'btn', text: '複製深連結', onclick: () => D.copy(location.href.split('#')[0] + D.hrefB(ctrl, path), '連結') })));
+        D.h('button', { type: 'button', class: 'btn', text: '複製深連結', onclick: () => D.copy(location.href.split('#')[0] + D.hrefB(ctrl, path), '連結') }), seqBtn));
     const entry = segs.length > 1 ? await taskEntry(ctrl, program, segs[1]).catch(() => null) : null;
     const meta = D.h('table', { class: 'kv' }, D.h('tbody', null,
       D.kv('原始檔', D.mono((b.file || '?') + ':' + (b.line == null ? '?' : b.line))),

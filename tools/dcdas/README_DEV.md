@@ -167,6 +167,22 @@ Full build of 19 controllers (+66 registered nodes) takes ~60 s (~25 min when th
   (controller 11 / safety 3 / exciter 3 / drive 2), nodes 66; G11 blocks 31,417 / tasks 1,018 / encrypted 20;
   S1 encrypted 88/92; WSC1 encrypted 10; hmi navcsv 17,321 after dedup; format_spec 3,069; egd_consumed 3,132.
 
+## sfc.py — SFC tasks (read-only; called by export-web, golden test checks it)
+
+- An SFC task = a task whose direct child is a userblock `Evaluate_Transitions`. Topology comes from the step wrappers'
+  `Enable` (`Steps[n]`) and the transition wrappers' `Configuration` pin value (decode in `parse_config`; verified on
+  `WSC1/_Plant_AutoSeqCommon_1.xml:11149`).
+- The start chain (`walk`) follows **the same hop rules as `query._Trace.down_var/down_block`** — change both together.
+  Deliberate differences: it is breadth-first (shortest path per target), it does not pass an interface pin named RESET or
+  PAUSE, and it stops at another SFC's `RUN` interface variable. `_Index` loads a (ctrl, path) map once (`ix_block_path`
+  exists; the map just saves a query per path lookup); everything else goes through indexed columns.
+- Known limits of the walk (none changes an edge in either site's export today; re-check before relying on them):
+  `MAX_HOPS` is tested only when a variable is dequeued, so `L:`-wired blocks after the last variable are still walked
+  (paths of 11 ordinary blocks exist) and a hop-limited walk is never listed in `cut` (only `MAX_NODES` is); visited sets are
+  shared by every branch of one source, so `d` is judged on the first path found, not on the best one; an encrypted macro is
+  walked through its outputs without the RESET / PAUSE name check that interface pins get.
+- Some sequences raise their command from a transition wrapper's `_Active_Flag` (not a step), so transitions are sources too.
+
 ## Sites (one index per site)
 
 * A site = one local config file (`db.py` docstring has the keys). Default site: `%LOCALAPPDATA%\dcdas\config.json`,

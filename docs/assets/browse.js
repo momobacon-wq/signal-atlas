@@ -4,7 +4,7 @@
   const D = window.DC;
 
   /* ------------------------------------------------------------------ 程式瀏覽 */
-  D.page('p', async ({ route, view }) => {
+  D.page('p', async ({ route, view, alive }) => {
     const ctrl = route.segs[0] || '';
     const want = route.query.prog || '';
     D.setTitle('程式 ' + ctrl + (want ? ' ' + want : ''));
@@ -36,11 +36,14 @@
     }
     filter.addEventListener('input', D.debounce(draw, 120));
     const nEnc = progs.filter((p) => p.enc).length;
+    // 序列（SFC）連結：sfc.json 延遲載入，有此控制器的序列才顯示，不擋程式樹
+    const seqLink = D.h('span');
+    if (D.sfcData) D.sfcData().then((d) => { const n = d && d.byCtrl.get(ctrl); if (n && alive()) D.set(seqLink, D.link('#/q?c=' + encodeURIComponent(ctrl), '序列 ' + n, 'btn sm')); }).catch(() => {});
     D.set(view, 
       D.h('div', { class: 'ph' }, D.h('div', { class: 'ph-kicker' }, D.link('#/', '搜尋'), ' › ', D.mono(ctrl), ' › 程式'),
         D.h('h1', { class: 'ph-title' }, '程式瀏覽 ', D.mono(ctrl, 'b')),
         D.h('p', { class: 'ph-sub' }, D.int(progs.length), ' 個程式', nEnc ? D.frag('（', D.h('span', { class: 'warn-text', text: nEnc + ' 個加密' }), '）') : null, ' · 點程式展開 task 與方塊'),
-        D.h('div', { class: 'ph-actions' }, filter)),
+        D.h('div', { class: 'ph-actions' }, filter, seqLink)),
       want && !progs.some((p) => p.name === want) ? D.h('p', { class: 'warn-text' }, '程式清單中沒有「' + want + '」（可能是 EGD / DistributedIO / P2P 等非程式的參照，或程式尚未匯出）。') : null,
       list);
     draw();

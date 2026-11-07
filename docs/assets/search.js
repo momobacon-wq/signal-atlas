@@ -91,9 +91,9 @@
   const hasIO = (c) => { const m = D.ctrlMap.get(c); return !m || m.n_io == null || Number(m.n_io) > 0; };
   function browseRow() {
     return D.h('details', { class: 'sec browse' },
-      D.h('summary', null, D.h('span', { class: 'sec-title', text: '瀏覽' }), D.h('span', { class: 'sec-note', text: '程式 / Task / 方塊、I/O 機櫃、警報清單、HMI 畫面' })),
+      D.h('summary', null, D.h('span', { class: 'sec-title', text: '瀏覽' }), D.h('span', { class: 'sec-note', text: '程式 / Task / 方塊、I/O 機櫃、警報清單、HMI 畫面、序列' })),
       D.h('div', { class: 'sec-body' },
-        D.h('p', null, D.link('#/s', 'HMI 畫面清單（screens.json）', 'btn sm')),
+        D.h('p', null, D.link('#/s', 'HMI 畫面清單（screens.json）', 'btn sm'), D.sfcAvail && D.sfcAvail() ? D.frag(' ', D.link('#/q', '序列（SFC）與啟動鏈', 'btn sm')) : null),
         D.h('div', { class: 'browse-grid' }, D.ctrls.map((c) => D.h('div', { class: 'browse-cell' }, D.mono(c, 'b'), ' ', D.link(D.hrefP(c), '程式'), hasIO(c) ? D.frag(' · ', D.link(D.hrefIO(c), 'I/O')) : null, ' · ', D.link(D.hrefA(c), '警報'))))));
   }
 

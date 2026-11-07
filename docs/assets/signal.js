@@ -214,7 +214,7 @@
       D.table(['子腳', '型別', '方向', '等級', '來源', 'EGD 頁', '別名'], rows)), { count: subs.length });
   }
 
-  D.page('v', async ({ route, view, signal }) => {
+  D.page('v', async ({ route, view, signal, alive }) => {
     const full = route.segs.join('/');
     if (!full) { D.set(view, D.errorBox('缺少訊號名')); return; }
     const [ctrl] = D.splitFull(full);
@@ -226,6 +226,15 @@
       return;
     }
     const d = rec.d || {};
+    // 序列（SFC）的介面變數或步驟／轉移 Active_Flag：連回序列頁（sfc.json 延遲載入，不擋訊號卡）
+    const seqBtn = D.h('span');
+    if (D.sfcData) D.sfcData().then((sd) => {
+      const hit = sd && sd.byVar.get(full);
+      if (!hit || !alive()) return;
+      const task = hit.key.slice(hit.key.indexOf('/') + 1);
+      const what = hit.role === 'step' ? '步驟 ' + hit.n + ' 的 Active_Flag' : hit.role === 'trans' ? '轉移 ' + hit.n + ' 的 Active_Flag' : hit.role + ' 介面變數';
+      D.set(seqBtn, D.h('a', { href: D.hrefSeq(hit.key), class: 'btn', text: '序列 ' + task, title: '此訊號是序列 ' + hit.key.replace('|', '/') + ' 的' + what + '：開啟序列頁' }));
+    }).catch(() => {});
     const head = D.h('div', { class: 'ph' },
       D.h('div', { class: 'ph-kicker' }, D.link('#/', '搜尋'), ' › ', D.mono(ctrl), ' › 訊號'),
       D.h('h1', { class: 'ph-title mono', text: full }),
@@ -235,7 +244,7 @@
         D.link(D.hrefT(full, 'down', 3), '追蹤下游', 'btn primary'),
         D.link(D.hrefG(full, 2, 2), '訊號圖', 'btn'),
         D.h('button', { type: 'button', class: 'btn', text: '複製深連結', onclick: () => D.copy(location.href.split('#')[0] + D.hrefV(full), '連結') }),
-        D.h('button', { type: 'button', class: 'btn', text: '複製名稱', onclick: () => D.copy(full, full) })));
+        D.h('button', { type: 'button', class: 'btn', text: '複製名稱', onclick: () => D.copy(full, full) }), seqBtn));
 
     const r = rec.r || [], u = rec.u || [];
     const secs = [

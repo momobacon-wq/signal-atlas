@@ -7,8 +7,9 @@ Written without importing export_web: it re-derives every expectation from CONTR
 Checks: manifest present & build reproducible; names rows == variable rows per controller; every variable's card is in
 the shard sha1(full_name)[:3]; 200 random cards match the DB field-by-field (def, writers, readers, io, egd, alarm);
 every block key in its shard and pin counts match; no local absolute path in any file; file sizes; screens/alarms counts;
-the page's atlas-site equals the configured site; a sub-site page equals the one derived from the root page (modulo
-stamps); the repo's whole docs/ stays under the GitHub Pages 1 GB limit.
+sfc.json (sequence keys, steps / transitions, Enable indexes, re-decoded Configuration, start-chain hops against the
+index and the task shards, d / inf / op / w flags); the page's atlas-site equals the configured site; a sub-site page
+equals the one derived from the root page (modulo stamps); the repo's whole docs/ stays under the GitHub Pages 1 GB limit.
 Exit 0 only when there are zero errors.
 """
 import hashlib
@@ -130,6 +131,229 @@ def check_pages(docs):
     if pages.exists():
         n = dir_size(pages)
         (ok if n < PAGES_LIMIT else err)(f"docs/ total {n/1e6:.0f} MB (GitHub Pages limit 1 GB)")
+
+
+SFC_PASS = {"MOVE", "AND", "OR", "PULSE"}
+SFC_INFER = set("LHRM")
+
+
+def sfc_config(val):
+    """Decode a transition wrapper's Configuration value (CONTRACT: '<nrec>,(type,index,value)*'; type 1 = Steps array,
+    value 0 = from-step, 1 = to-step) -> (from, to) step indexes, or None when it is not that format."""
+    if val is None or str(val).strip() == "":
+        return None
+    try:
+        nums = [int(x) for x in str(val).split(",")]
+    except ValueError:
+        return None
+    if len(nums) != 1 + 3 * nums[0]:
+        return None
+    recs = [nums[i:i + 3] for i in range(1, len(nums), 3)]
+    return [r[1] for r in recs if r[0] == 1 and r[2] == 0], [r[1] for r in recs if r[0] == 1 and r[2] == 1]
+
+
+def check_sfc(conn, man, fileset, task_entry, tkey_of, card):
+    """data/sfc.json (SFC topology + start chain) against the index, re-derived from CONTRACT.md without tools/dcdas/sfc.py.
+    `card(full)` returns the variable's card (or None); `task_entry(tkey)` the task shard entry."""
+    has_file, key = "sfc.json" in fileset, (man.get("files") or {}).get("sfc")
+    if not has_file and key is None:
+        ok("no sfc.json and no manifest files.sfc: sequence checks skipped (older export)")
+        return
+    if key != "sfc.json" or not has_file:
+        err(f"manifest files.sfc {key!r}, sfc.json {'present' if has_file else 'missing'}")
+        if not has_file:
+            return
+    doc = load(DATA_DIR / "sfc.json")
+    sfc, edges, cut = doc.get("sfc") or {}, doc.get("edges") or [], doc.get("cut") or []
+    bad = [0]
+
+    def fail(msg):
+        bad[0] += 1
+        if bad[0] <= 8:
+            err("sfc: " + msg)
+
+    # ---- key set: tasks whose direct child is a userblock named Evaluate_Transitions
+    want = {f"{r[0]}|{r[1]}" for r in conn.execute(
+        "SELECT t.ctrl, t.path FROM block e JOIN block t ON t.id=e.parent_id "
+        "WHERE e.kind='userblock' AND e.name='Evaluate_Transitions' AND t.kind='task'")}
+    if set(sfc) != want:
+        fail(f"keys != SFC tasks in DB: only in sfc.json {sorted(set(sfc) - want)[:3]}, only in DB {sorted(want - set(sfc))[:3]}")
+
+    def block_row(ctrl, path):
+        return conn.execute("SELECT b.id, b.line_no, b.kind, b.block_type, b.is_opaque, g.file_path, g.name FROM block b "
+                            "LEFT JOIN program g ON g.id=b.program_id WHERE b.ctrl=? AND b.path=?", (ctrl, path)).fetchone()
+
+    def file_of(ctrl, br):
+        return br[5] or f"{ctrl}/_{br[6] or ''}.xml"
+
+    def children(ctrl, path):
+        r = block_row(ctrl, path)
+        if not r:
+            return []
+        return conn.execute("SELECT id, name, line_no FROM block WHERE parent_id=? AND kind='userblock' "
+                            "ORDER BY coalesce(line_no, 0), id", (r[0],)).fetchall()
+
+    def pin_of(bid, name):
+        return conn.execute("SELECT connection, value FROM pin WHERE block_id=? AND name=? ORDER BY id", (bid, name)).fetchone()
+
+    def index_of(bid, rx):
+        en = pin_of(bid, "Enable")
+        m = re.search(rx, (en[0] or "") if en else "")
+        return int(m.group(1)) if m else None
+
+    vars_seen, vbad = set(), []
+
+    def need_var(full, where):
+        if full in vars_seen:
+            return
+        vars_seen.add(full)
+        if not conn.execute("SELECT 1 FROM variable WHERE full_name=?", (full,)).fetchone():
+            vbad.append(f"{where}: {full} not in the index")
+        elif card(full) is None:
+            vbad.append(f"{where}: {full} has no var card")
+
+    n_steps = n_trans = n_cfg = n_bad_cfg = 0
+    for k, t in sfc.items():
+        ctrl, base = k.split("|", 1)
+        tb = block_row(ctrl, base)
+        if tb is None:
+            continue                                  # reported by the key-set check
+        if t.get("line") != tb[1] or t.get("file") != file_of(ctrl, tb):
+            fail(f"{k}: line/file {t.get('line')} {t.get('file')!r} vs DB {tb[1]} {file_of(ctrl, tb)!r}")
+        for p, full in (t.get("iface") or {}).items():
+            need_var(full, f"{k} iface {p}")
+        ps = children(ctrl, base + "/Perform_Step_Actions")
+        steps = t.get("steps") or []
+        if [s.get("n") for s in steps] != [r[1] for r in ps]:
+            fail(f"{k}: steps {[s.get('n') for s in steps][:5]} vs Perform_Step_Actions userblocks {[r[1] for r in ps][:5]}")
+        else:
+            for s, r in zip(steps, ps):
+                n_steps += 1
+                i = index_of(r[0], r"\.Steps\[(\d+)\]")
+                if s.get("i") != i or s.get("line") != r[2]:
+                    fail(f"{k} step {s['n']}: i {s.get('i')} line {s.get('line')} vs Enable .Steps[{i}] line {r[2]}")
+        ts = children(ctrl, base + "/Evaluate_Transitions")
+        trans = t.get("trans") or []
+        if [x.get("n") for x in trans] != [r[1] for r in ts]:
+            fail(f"{k}: transitions {[x.get('n') for x in trans][:5]} vs Evaluate_Transitions userblocks {[r[1] for r in ts][:5]}")
+        else:
+            for x, r in zip(trans, ts):
+                n_trans += 1
+                i = index_of(r[0], r"\.Transitions\[(\d+)\]")
+                if x.get("i") != i or x.get("line") != r[2]:
+                    fail(f"{k} transition {x['n']}: i {x.get('i')} line {x.get('line')} vs Enable .Transitions[{i}] line {r[2]}")
+                cfg = pin_of(r[0], "Configuration")
+                dec = sfc_config(cfg[1] if cfg else None)
+                if dec is None:
+                    n_bad_cfg += 1
+                    if x.get("bad") != 1 or "f" in x or "t" in x:
+                        fail(f"{k} transition {x['n']}: Configuration {cfg and cfg[1]!r} not decodable but "
+                             f"bad={x.get('bad')} f={x.get('f')} t={x.get('t')}")
+                else:
+                    n_cfg += 1
+                    if [x.get("f"), x.get("t")] != list(dec) or "bad" in x:
+                        fail(f"{k} transition {x['n']}: f {x.get('f')} t {x.get('t')} vs Configuration {cfg[1]!r} -> {list(dec)}")
+        for s in steps + trans:
+            if s.get("flag"):
+                need_var(s["flag"], f"{k} {s.get('n')} flag")
+            for a in s.get("a") or []:
+                for w in a.get("w") or []:
+                    need_var(w, f"{k} {s.get('n')} action {a.get('n')}")
+            for rv in s.get("r") or []:
+                need_var(rv[0], f"{k} {s.get('n')} condition")
+
+    def source_ok(key, name, sk):
+        t = sfc.get(key) or {}
+        return any(s.get("n") == name for s in t.get("steps" if sk == "s" else "trans") or [])
+
+    # ---- start-chain edges: endpoints, sources, every hop against the index and the task shards, flags
+    n_hops = n_egd = n_d = 0
+    pin_cache, seen_edge = {}, set()
+    for e in edges:
+        tag = f"edge {e.get('f')} {e.get('s')} -> {e.get('t')}"
+        if e.get("f") not in sfc or e.get("t") not in sfc or e.get("f") == e.get("t"):
+            fail(f"{tag}: f/t not two distinct sfc keys")
+            continue
+        if e.get("sk") not in ("s", "t") or not source_ok(e["f"], e.get("s"), e.get("sk")):
+            fail(f"{tag}: source {e.get('sk')!r} {e.get('s')!r} is not a step/transition of {e['f']}")
+        ek = (e["f"], e.get("s"), e.get("sk"), e["t"])
+        if ek in seen_edge:
+            fail(f"{tag}: duplicate edge")
+        seen_edge.add(ek)
+        p = e.get("p") or []
+        run = (sfc[e["t"]].get("iface") or {}).get("RUN")
+        if not p or "v" not in p[0] or p[-1].get("v") != run:
+            fail(f"{tag}: path does not run from a variable to the target's RUN {run!r} (ends {p[-1] if p else None})")
+        for j, h in enumerate(p):
+            if "v" in h:
+                need_var(h["v"], tag)
+            elif "egd" in h:
+                n_egd += 1
+                prv = p[j - 1].get("v") if j else None
+                nxt = p[j + 1].get("v") if j + 1 < len(p) else None
+                hit = conn.execute("""SELECT 1 FROM egd_consumed c JOIN variable pv ON pv.id=c.producer_var_id
+                                      JOIN variable lv ON lv.id=c.local_var_id
+                                      WHERE c.exchange_id=? AND c.consumer_ctrl=? AND pv.full_name=? AND lv.full_name=?""",
+                                   (h.get("egd"), h.get("to"), prv, nxt)).fetchone()
+                if not hit:
+                    fail(f"{tag}: EGD hop {h} ({prv} -> {nxt}) not in egd_consumed")
+            elif "k" in h:
+                n_hops += 1
+                ctrl, path = h["k"].split("|", 1)
+                ent = task_entry(tkey_of(ctrl, path))
+                if not ent or h["k"] not in (ent.get("b") or {}):
+                    fail(f"{tag}: block {h['k']} not in its task shard")
+                ck = (h["k"], h.get("pin"))
+                if ck not in pin_cache:
+                    br = block_row(ctrl, path)
+                    rows = conn.execute("SELECT line_no, direction, dir_source FROM pin WHERE block_id=? AND name=?",
+                                        (br[0], h.get("pin"))).fetchall() if br else []
+                    pin_cache[ck] = (br, rows)
+                br, rows = pin_cache[ck]
+                if not br or not rows:
+                    fail(f"{tag}: pin {h['k']}.{h.get('pin')} not in the index")
+                    continue
+                ats = {f"{file_of(ctrl, br)}:{r[0]}" for r in rows}
+                if h.get("at") not in ats:
+                    fail(f"{tag}: {h['k']}.{h['pin']} at {h.get('at')!r} vs DB {sorted(ats)}")
+                if h.get("ds") not in {f"{r[1] or '?'}/{r[2] or '-'}" for r in rows}:
+                    fail(f"{tag}: {h['k']}.{h['pin']} ds {h.get('ds')!r} vs DB {[(r[1], r[2]) for r in rows]}")
+                want_op = 1 if br[4] else None
+                want_ub = 1 if not br[4] and br[2] != "block" else None
+                if h.get("type") != (br[3] or br[2]) or h.get("op") != want_op or h.get("ub") != want_ub:
+                    fail(f"{tag}: {h['k']} type/op/ub {h.get('type')!r}/{h.get('op')}/{h.get('ub')} "
+                         f"vs DB {br[3] or br[2]!r}/{want_op}/{want_ub}")
+            else:
+                fail(f"{tag}: unknown path element {h}")
+        typed = [h for h in p if "type" in h]
+        d = 1 if all(h.get("ub") or h.get("op") or h["type"] in SFC_PASS for h in typed) else 0
+        inf = 1 if any(h.get("ds", "").startswith("?") or h.get("ds", "").split("/")[-1] in SFC_INFER for h in typed) else 0
+        op = 1 if any(h.get("op") for h in typed) else None
+        n_d += d
+        if e.get("d") != d or e.get("inf") != inf or e.get("op") != op:
+            fail(f"{tag}: d/inf/op {e.get('d')}/{e.get('inf')}/{e.get('op')} vs path rule {d}/{inf}/{op}")
+        # w: the literal SRC of the last block passed, only when it is a MOVE whose SRC is an N:/E: constant
+        w = None
+        if typed and typed[-1]["type"] == "MOVE":
+            ctrl, path = typed[-1]["k"].split("|", 1)
+            br = block_row(ctrl, path)
+            src = conn.execute("SELECT conn_kind, connection FROM pin WHERE block_id=? AND name='SRC' ORDER BY id",
+                               (br[0],)).fetchone() if br else None
+            if src and src[0] in ("N", "E") and src[1]:
+                w = src[1].split(":", 1)[-1]
+        if e.get("w") != w:
+            fail(f"{tag}: w {e.get('w')!r} vs last MOVE SRC literal {w!r}")
+    for row in cut:
+        if len(row) != 2 or row[0] not in sfc or not (source_ok(row[0], row[1], "s") or source_ok(row[0], row[1], "t")):
+            fail(f"cut row {row} is not a step/transition of a sequence")
+    for m in vbad[:5]:
+        fail(m)
+    bad[0] += max(0, len(vbad) - 5)
+    (ok if not bad[0] else err)(
+        f"sfc.json: {len(sfc)} sequences == DB SFC tasks; {n_steps} steps / {n_trans} transitions == wrapper userblocks "
+        f"(Enable index; {n_cfg} Configurations re-decoded, {n_bad_cfg} undecodable flagged bad); {len(edges)} start-chain "
+        f"edges ({n_d} direct) with {n_hops} pin hops (task shard, file:line, ds, type) and {n_egd} EGD hops; "
+        f"{len(vars_seen)} variables in the index with cards; {len(cut)} cut sources; {bad[0]} mismatches")
 
 
 def main(docs):
@@ -625,6 +849,17 @@ def main(docs):
         if n_db != n_web:
             err(f"alarm {c}: db {n_db} web {n_web}")
     ok("alarm lists checked")
+
+    # ---- sequences (SFC tasks): data/sfc.json against the index
+    def card_of(full):
+        s_ = sh(full)
+        if s_ not in shard_cache:
+            try:
+                shard_cache[s_] = load(data / "var" / f"{s_}.json")["v"]
+            except FileNotFoundError:
+                shard_cache[s_] = {}
+        return shard_cache[s_].get(full)
+    check_sfc(conn, man, fileset, task_entry, tkey_of, card_of)
     print()
     print(f"{len(ERRORS)} error(s)" if ERRORS else "ALL OK")
     return 1 if ERRORS else 0

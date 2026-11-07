@@ -704,6 +704,39 @@ def main():
     else:
         print("skip glyph test (node not installed)")
 
+    # ---- SFC tasks (tools/dcdas/sfc.py, data/sfc.json): Configuration decode and the start chain between sequences
+    from dcdas import sfc as _sfc
+    check("sfc Configuration decode: 3 records -> from step 4, to step 6",
+          _sfc.parse_config("3,1,4,0,1,6,1,3,0,0") == ([4], [6]), str(_sfc.parse_config("3,1,4,0,1,6,1,3,0,0")))
+    check("sfc Configuration decode rejects a record count that does not match", _sfc.parse_config("2,1,4,0") is None)
+    cfg = one(conn, """SELECT p.value FROM pin p JOIN block b ON b.id=p.block_id WHERE b.ctrl='WSC1'
+                       AND b.path='Plant_AutoSeqCommon_1/Master_Plant_Seq/Evaluate_Transitions/S0_S1_Complete' AND p.name='Configuration'""")
+    check("WSC1 Master_Plant_Seq S0_S1_Complete Configuration decodes (step S0_S1 -> a later step)",
+          bool(cfg) and _sfc.parse_config(cfg) is not None and _sfc.parse_config(cfg)[0] == [4], str(cfg))
+    _sd = _sfc.export(conn, log=lambda *a: None)
+    check("sfc tasks 79 (G11 26 / G12 26 / H11 9 / H12 9 / WSC1 9)", len(_sd["sfc"]) == 79, str(len(_sd["sfc"])))
+    check("every SFC transition Configuration decodes and every step has an index",
+          not any(t.get("bad") for v in _sd["sfc"].values() for t in v["trans"])
+          and all(s["i"] is not None for v in _sd["sfc"].values() for s in v["steps"]))
+    direct = {(e["f"], e["s"], e["t"]) for e in _sd["edges"] if e["d"]}
+    M, B, A = "WSC1|Plant_AutoSeqCommon_1/Master_Plant_Seq", "WSC1|BOP_Autoseq_1/", "|Plant_AutoSeqHrsg_1/"
+    want = {(M, "S0_S1", B + "S0_S1_BOP_Start"), (M, "S1_S2", B + "S1_S2_BOP_Start"), (M, "S2_S3", B + "S2_S3_ST_Start"),
+            (M, "S3_S4_", B + "S3_S4_ST_Start"), (M, "S4_RS3", B + "S4_RS3_ST_STOP"), (M, "RS3_RS2", B + "RS3_RS2_GT_STOP"),
+            (M, "RS2_S1_", B + "RS2_S1_BOP_Stop")}
+    for h in ("H11", "H12"):
+        want |= {(M, s, h + A + "HRSG_Sequence") for s in ("S1_S2", "S2_S3", "S3_S4_", "S4_RS3", "RS3_RS2", "RS2_S1_")}
+        want |= {(h + A + "HRSG_Sequence", s, h + A + t) for s, t in (
+            ("H1_H2", "H1_H2_HRSG_START"), ("H2_H3", "H2_H3_GT_START"), ("H3_H4_", "H3_H4_GT_LOAD"),
+            ("H4_RH3", "H4_RH3_GT_UNLOAD"), ("RH3_RH2", "RH3_RH2_GT_STOP"), ("RH2_H1", "RH2_H1_HRSG_STOP"))}
+    check("sfc direct start chain = the 31 verified links (7 master->BOP, 2x6 master->HRSG, 2x6 HRSG->sub)",
+          direct == want, f"missing {sorted(want - direct)[:3]} extra {sorted(direct - want)[:3]}")
+    m2b = next((e for e in _sd["edges"] if e["f"] == M and e["s"] == "S0_S1" and e["d"]), None)
+    check("sfc chain path S0_S1 -> BOP passes WSC1/_BOP_Autoseq_1.xml:9572 (FNCTN_S0S1Interface/AND_1.IN2), no inferred hop",
+          bool(m2b) and any(h.get("at") == "WSC1/_BOP_Autoseq_1.xml:9572" for h in m2b["p"]) and m2b["inf"] == 0)
+    m2h = next((e for e in _sd["edges"] if e["f"] == M and e["s"] == "S1_S2" and e["t"] == "H11" + A + "HRSG_Sequence"), None)
+    check("sfc chain path S1_S2 -> H11 HRSG_Sequence crosses EGD and PULSE_12",
+          bool(m2h) and any("egd" in h for h in m2h["p"]) and any(h.get("k", "").endswith("/PULSE_12") for h in m2h["p"]))
+
     # ---- quality gates
     for c in ("G11", "H11", "WSC1"):
         tot = one(conn, "SELECT count(*) FROM pin p JOIN block b ON b.id=p.block_id WHERE b.ctrl=? AND p.conn_kind IN ('V','L','P','D')", c)

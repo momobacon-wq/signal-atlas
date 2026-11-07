@@ -644,6 +644,7 @@
     inst.addTool(xBtn);
     inst.addTool(D.dg.tool('block', '方塊頁', null, { href: D.hrefB(ctrl, rootPath), title: '開此 ' + (q.ub ? 'UserBlock' : 'Task') + ' 的方塊頁' }));
     if (q.ub) inst.addTool(D.dg.tool(null, '回 Task', null, { href: href({ ub: null, page: null }), title: '回到 Task 圖' }));
+    if (D.sfcData) D.sfcData().then((d) => { if (d && d.sfc[tkey] && alive()) inst.addTool(D.dg.tool(null, '序列圖', null, { href: D.hrefSeq(tkey), title: '此 Task 是序列（SFC）：步驟／轉移圖、上下游序列' })); }).catch(() => {});
     if (q.f) inst.addTool(D.dg.tool('close', '清除篩選 ' + q.f, () => D.go(href({ f: null, page: null })), { title: '清除 ?f= 篩選' }));
     const rootRec = t.b[rootKey];
     if (rootRec && rootRec.desc) inst.setTitle(rootPath + ' — ' + D.dg.trunc(rootRec.desc.split('\n')[0], 60));

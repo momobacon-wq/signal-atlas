@@ -758,26 +758,44 @@ def gate(path: Path, expect_ctrl: str, idx_conn, sample=8, waivers=None):
         doc.close()
         return out
 
-    # identity comes from the Device Name cell on a spread of pages, never the file name
-    step = max(1, doc.page_count // max(1, sample))
-    devs, vers, stamps = {}, set(), []
-    for pno in range(0, doc.page_count, step):
+    # Identity comes from the Device Name cell, never the file name. Only the logic sheets
+    # carry that cell. A combined export (device summary, variables, I/O ... around one block
+    # of logic sheets) has thousands of pages without it, so an even spread over the whole
+    # file can miss every logic sheet. Every page that carries the label is read instead, so
+    # a short run of another device's sheets cannot slip between samples.
+    # The cell sometimes picks up drawing text ('G11 TRUE', a block label): only the first
+    # word counts, and a word that is no controller name in the index is a misread, not a
+    # second device. Stamps that do not parse are misreads too; the most common pair wins.
+    # (`sample` only applies to the fallback for a print with no Device Name label at all.)
+    pages = [i for i in range(doc.page_count) if "Device Name" in doc[i].get_text()]
+    if not pages:
+        step = max(1, doc.page_count // max(1, sample))
+        pages = list(range(0, doc.page_count, step))
+    known = {r[0] for r in idx_conn.execute("SELECT name FROM controller")}
+    devs, vers = {}, {}
+    maj, mnr = ({}, {}), ({}, {})            # (parseable, raw) counts of each stamp
+    for pno in pages:
         pg = doc[pno]
-        d = (read_header(pg)["device"] or "").strip()
-        if d:
-            devs[d] = devs.get(d, 0) + 1
+        d = (read_header(pg)["device"] or "").split()
+        if d and d[0] in known:
+            devs[d[0]] = devs.get(d[0], 0) + 1
         v = tool_version(pg)
         if v:
-            vers.add(v)
-        if len(stamps) < 3:
-            a, b = revision_stamps(pg)
-            if a and b:
-                stamps.append((a, b))
+            vers[v] = vers.get(v, 0) + 1
+        for s, cnt in zip(revision_stamps(pg), (maj, mnr)):
+            if s:
+                c = cnt[0] if _parse_stamp(s) else cnt[1]
+                c[s] = c.get(s, 0) + 1
     doc.close()
+
+    def mode(cnt):
+        # a stamp that parses wins; a print whose stamp never parses (an empty Minor
+        # '000 00:00:00') keeps the raw text so the revision check can say so
+        c = cnt[0] or cnt[1]
+        return max(c, key=c.get) if c else ""
     out["device_name"] = max(devs, key=devs.get) if devs else ""
-    out["tool_version"] = sorted(vers)[0] if vers else ""
-    if stamps:
-        out["print_major"], out["print_minor"] = stamps[0]
+    out["tool_version"] = max(vers, key=vers.get) if vers else ""
+    out["print_major"], out["print_minor"] = mode(maj), mode(mnr)
 
     if not devs:
         out["gate_note"] = "no Device Name cell on any sampled page"

@@ -48,8 +48,12 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
    - 方向是推斷值。CLI 印 `O/T` 這種「方向/來源」字母：U=介面腳 Usage、T=手冊表、人工覆寫或工具查證、M=人工登錄但只是鏡射／推論、C=常數規則、L=連線投票、H=命名慣例、R=回推（不透明巨集）、G=列印邏輯圖（方塊左側入、右側出）、`?`=未知。來源是 L/H/R/M 時在回答裡寫「推斷」；G 是組態工具自己的圖面，不是推斷。
    - **加密 ≠ 未使用**。來源 XML 內加密的程式與巨集無法追蹤；CLI 印 `encrypted: not traceable`，照實轉述，不要編邏輯。
      但**組態工具列印出來的邏輯圖看得到加密內容**：不透明巨集的腳位與接線已由 `build` 的 `[print]` 階段寫進索引（origin `print`、
-     方向來源 `G`，網頁徽章「圖」，引用 `<CTRL>_P.pdf p<頁> <圖格>`）。加密**程式**本身的方塊不在索引裡（沒有 XML 方塊可掛），
-     仍只能用 `print-show` 看圖面，回答時另起一段說明。
+     方向來源 `G`，網頁徽章「圖」，引用 `<CTRL>_P.pdf p<頁> <圖格>`）。加密**程式**的方塊也由 `[print]` 依圖面建成索引列
+     （`block.drawn=1`，網頁方塊頁標「列印邏輯圖」）：`show`／`trace`／`block` 直接看得到，位置欄印的是 `<CTRL>_P.pdf p<頁> <圖格>`
+     而不是 `file:line`（XML 沒有這些方塊，`where` 也只給圖面位置）。回答時照樣引用圖面頁碼，並說明三件事：這是列印圖的內容、
+     不是 XML；圖上沒印腳名的腳以 `in~N`／`out~N`（該側由上而下第 N 支沒印名字的腳）表示，**不要**把它改寫成 IN1／SRC 之類的
+     真實腳名；圖面只畫出顯示的腳與有列印的 task，隱藏腳與沒印出來的程式仍然看不到（`show` 的 source 行會加註
+     `also referenced in encrypted program(s) with no drawn pin on it`，那些程式仍是 not traceable）。
    - CLI 印 `no controller consumer` 時照實說：沒有任何已索引控制器消費它；消費端可能是 HMI／伺服器節點（在 checkout 內但它們的
      訂閱刻意不索引）或 DCS 匯出頁。EGD 來源印 `producer is a <kind> node` 時，來源是登錄的非控制器節點（資料集中器、閘道、
      HMI 伺服器）：點名已知、沒有變數與邏輯，不是「checkout 外」。
@@ -104,6 +108,16 @@ checkout 資料夾 `CLAUDE.md` 與 `%LOCALAPPDATA%\dcdas\config.json`。
 - `print-check`／`print-show` 比對的是「**不含**圖面升格列」的索引（origin `print` 排除、來源 `G` 當 `?`），避免拿圖面跟自己比；
   `print-show` 在已升格的腳上註記 `promoted into the index from this drawing`。
 - 未標腳名的閘符號（AND/OR/NOT/LATCH/計時器）**不猜腳名**（依位置對 IN1/IN2/IN3 實測只有七成多），留空白。
+- **加密程式的方塊**（語料 `map_method='encrypted'`：程式在索引裡、XML 卻一顆方塊都沒有）由 `resolve._load_drawn` 在同一個 `[print]`
+  階段建成索引列，條件與升格相同（檔案過 gate、建置戳記相符或有效豁免）：每張圖的 Software Path `Program.Task[.UserBlock…]`
+  建一筆 task 與容器方塊，圖上每顆方塊一列（`block.drawn=1`、沒有 `line_no`，`block_cite` 記執行順序與頁／格），每支腳一列
+  （origin `print`、來源 `G`、`pin_cite`）。圖上不印方塊型別，只有標籤是「已知型別[_n]」時才填 `block_type`。沒印腳名的腳：
+  該方塊唯一一支沒印名字的輸出腳，取接到它的連線標示所寫的腳名（`NOT_1.NOT_A`）；其餘一律 `in~N`／`out~N`。接線：本機變數 → `V`，
+  同容器方塊的 `Block.PIN` → `L`，巢狀 UserBlock 圖頁上等於該實例腳名的標籤 → `P`，常數與 RUNG 方程式 → `N`，輸入腳上全大寫、不是變數、
+  同程式也沒有任何方塊寫它的字 → `E`（列舉值）；其餘名稱照印出的文字保留、不連變數——那是加密程式或巨集的**區域變數**，索引沒有它的列，
+  追蹤走到這裡就停（`show`／`block` 的連線欄只有名字、沒有 `CTRL.` 前綴）。回答時說明「區域名，索引沒有這個變數」，不要當成常數。`program.encrypted`／`block_count` 維持 XML 的事實；`print-scan` 解析圖頁時
+  不把這些列當成索引既有的方塊，`print-check`／`print-show` 也不拿它們跟圖面比（`print-show` 仍顯示 `drawing_only`，加註已進索引）。
+  沒有列印圖、被 gate 拒收或建置不符的控制器不會有這些列；重掃語料或 `xref-reload` 時整批重建。
 
 ## 路徑慣例
 

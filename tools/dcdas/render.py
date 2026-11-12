@@ -615,6 +615,8 @@ def _print_show(o, r):
                 flags = [x for x, on in (("opaque", r.get("is_opaque")), ("encrypted program", r.get("encrypted"))) if on]
                 o.line(f"  index {r.get('block_kind') or 'block'}: {r['block_path']} [{r.get('block_type') or '-'}]"
                        + (f"  ({', '.join(flags)})" if flags else ""))
+            elif r.get("matched_by_label") and r.get("in_index_from_drawing"):
+                o.line("  encrypted program: the index carries this block FROM these sheets (block.drawn); the drawing below is its only source")
             elif r.get("matched_by_label"):
                 o.line("  not an index block: matched by its drawn label on the sheets of its container")
             elif r.get("container"):

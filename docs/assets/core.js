@@ -560,10 +560,12 @@
   };
 
   /* ------------------------------------------------------------------ ref 列：CTRL/Program/Task/…/Block.Pin [Type] O/T  file:line */
-  /** ref = [ctrl, program, block_path, block_type, pin, src, line]；dir 由所在清單決定（w→O、r→I、u→?） */
+  /** ref = [ctrl, program, block_path, block_type, pin, src, line, kind, cite?]；dir 由所在清單決定（w→O、r→I、u→?）。
+   *  cite = [pdf, page, cell]：只有加密程式、取自列印邏輯圖的方塊才有（沒有 XML 行號，改引圖面位置） */
   D.refRow = function (ref, dir, opt) {
     opt = opt || {};
     const [ctrl, program, path, btype, pin, src, line] = ref;
+    const cite = ref[8];
     const file = D.progFile(ctrl, program);
     // block_path 已以 Program 開頭（Program/Task/…/Block）；舊格式（Task 開頭）才補上 Program
     const shown = String(path || '').startsWith(program + '/') || path === program ? path : program + '/' + path;
@@ -572,7 +574,8 @@
       D.h('span', { class: 'ref-pin mono', text: '.' + pin }),
       D.h('span', { class: 'ref-type', text: '[' + (btype || '?') + ']' }),
       D.dirBadge(dir), D.srcBadge(src),
-      D.h('span', { class: 'ref-file mono muted', text: file + ':' + (line == null ? '?' : line) }),
+      cite ? D.h('span', { class: 'ref-file mono muted', text: D.pvText(cite), title: '加密程式：此方塊只在組態工具的列印邏輯圖上，沒有 XML 行號' })
+        : D.h('span', { class: 'ref-file mono muted', text: file + ':' + (line == null ? '?' : line) }),
       opt.tail || null);
   };
 
@@ -655,7 +658,7 @@
           (D.man.controllers || []).map((c) => [c.name, D.KIND[c.kind] || c.kind, c.redundancy, c.product_version, revs[c.name] || '—', D.int(c.n_vars), D.int(c.n_blocks), D.int(c.n_programs), D.int(c.n_encrypted), D.int(c.n_io)]))),
       nodesLine(),
       D.h('div', { class: 'foot-row muted small' },
-        D.h('span', null, '腳位方向為推斷值（U/T/M/C/L/H/R/G，? 未知；G = 列印邏輯圖）；加密程式只索引宣告與 EGD；本站為匯出快照。'),
+        D.h('span', null, '腳位方向為推斷值（U/T/M/C/L/H/R/G，? 未知；G = 列印邏輯圖）；加密程式只索引宣告與 EGD，有列印邏輯圖的另取自圖面（方塊頁標「列印邏輯圖」）；本站為匯出快照。'),
         (D.man.related || []).map((r) => D.h('a', { class: 'lk', href: r.href, target: '_blank', rel: 'noopener', text: r.label }))));
   }
 

@@ -210,9 +210,14 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     except sqlite3.OperationalError:
         nodes = []
     log("  loading block index")
-    blk = {}   # block_id -> (ctrl, program, path, block_type, kind, opaque, line)
-    for r in conn.execute("SELECT id,ctrl,program_id,path,block_type,kind,is_opaque,line_no FROM block"):
-        blk[r[0]] = (r[1], prog_by_id.get(r[2], ("", ""))[1], r[3], r[4] or "", r[5], r[6], r[7])
+    blk = {}   # block_id -> (ctrl, program, path, block_type, kind, opaque, line, drawn)
+    for r in conn.execute("SELECT id,ctrl,program_id,path,block_type,kind,is_opaque,line_no,drawn FROM block"):
+        blk[r[0]] = (r[1], prog_by_id.get(r[2], ("", ""))[1], r[3], r[4] or "", r[5], r[6], r[7], r[8])
+    # blocks of encrypted programs exist only on the printed sheets (block.drawn): no XML line, so a reference to one of
+    # their pins carries where it is drawn instead
+    drawn_cite = {r[0]: [r[1], r[2], r[3]] for r in conn.execute(
+        "SELECT c.pin_id, c.pdf, c.page, c.cell FROM pin_cite c JOIN pin p ON p.id=c.pin_id JOIN block b ON b.id=p.block_id "
+        "WHERE b.drawn=1 AND p.var_id IS NOT NULL")}
     var_name = {}   # id -> full_name
     for r in conn.execute("SELECT id,full_name FROM variable"):
         var_name[r[0]] = r[1]
@@ -241,12 +246,14 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     log("  aggregating pins per variable")
     writers, readers, unknown = defaultdict(list), defaultdict(list), defaultdict(list)
     wmore, rmore = defaultdict(int), defaultdict(int)
-    for r in conn.execute("SELECT var_id,block_id,name,direction,dir_source,line_no,origin FROM pin WHERE var_id IS NOT NULL"):
-        vid, bid, pname, d, ds, ln, org = r
+    for r in conn.execute("SELECT var_id,block_id,name,direction,dir_source,line_no,origin,id FROM pin WHERE var_id IS NOT NULL"):
+        vid, bid, pname, d, ds, ln, org, pin_id = r
         b = blk.get(bid)
         if not b:
             continue
         ref = [b[0], b[1], b[2], b[3], pname, ds or "-", ln, "b" if (b[4] == "block" or org) else "t"]
+        if b[7] and pin_id in drawn_cite:
+            ref.append(drawn_cite[pin_id])       # [pdf, page, cell]: the 9th field, drawn blocks only
         if d == "O":
             if len(writers[vid]) < MAX_REFS:
                 writers[vid].append(ref)
@@ -358,7 +365,7 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
             lo = lo if lo is not None else flo
             hi = hi if hi is not None else fhi
         refd = [x for x in (v["referenced_in"] or "").split(",") if x]
-        enc = [p for p in refd if (v["ctrl"], p) in enc_set]
+        enc = [p for p in refd if (v["ctrl"], p) in enc_set and (vid, prog_id[(v["ctrl"], p)]) not in var_prog_seen]
         hid = [p for p in refd if p != "EGD" and (v["ctrl"], p) in prog_id and (v["ctrl"], p) not in enc_set
                and (vid, prog_id[(v["ctrl"], p)]) not in var_prog_seen]
         flags = 0
@@ -509,17 +516,22 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     task_blocks = defaultdict(list)                        # task_id -> [key,name,type,kind,opaque]
     n_blocks = 0
     lay_col = ",layout" if has_layout else ",NULL"
+    n_drawn = defaultdict(int)                             # program_id -> blocks known only from the printed sheets
     for r in conn.execute(f"""SELECT id,ctrl,program_id,task_id,path,name,block_type,kind,version,is_opaque,description,logic_drg,p_id,device,
-                                    hmi_linked_object,line_no{lay_col} FROM block ORDER BY ctrl,program_id,id"""):
-        bid, ctrl, pid, tid, path, name, btype, kind, ver, opq, desc, ldrg, p_id, dev, hlo, ln, lay = r
+                                    hmi_linked_object,line_no{lay_col},drawn FROM block ORDER BY ctrl,program_id,id"""):
+        bid, ctrl, pid, tid, path, name, btype, kind, ver, opq, desc, ldrg, p_id, dev, hlo, ln, lay, drawn = r
         prog = prog_by_id.get(pid, ("", ""))[1]
         key = f"{ctrl}|{path}"
         b = {"ctrl": ctrl, "program": prog, "path": path, "name": name, "type": btype, "kind": kind, "ver": ver,
              "opaque": opq, "desc": desc, "drg": ldrg, "pid": p_id, "device": dev, "hmi": hlo, "lay": lay,
              "attrs": attrs.get(bid, {}), "pins": pins_by_block.get(bid, []), "line": ln,
-             "file": prog_file.get(pid) or f"{ctrl}/_{prog}.xml", "rc": rc_by_block.get(bid)}
+             "file": prog_file.get(pid) or f"{ctrl}/_{prog}.xml", "rc": None if drawn else rc_by_block.get(bid)}
         if bid in bcite:
             b["eo"], b["pc"] = bcite[bid]
+        if drawn:
+            b["dr"] = 1                       # known only from the printed logic sheets (encrypted program): no XML line
+            if kind != "task":
+                n_drawn[pid] += 1
         tkey = task_key(ctrl, path)
         task_items[tkey].append(_dump(key) + ":" + _dump(_compact(b)))
         task_n[tkey] += 1
@@ -556,6 +568,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
     for r in conn.execute("SELECT id,ctrl,name,library_type,file_path,encrypted,help_file,block_count,task_count FROM program ORDER BY ctrl,name"):
         progs[r[1]].append({"name": r[2], "lib": r[3], "file": r[4], "enc": r[5], "help": r[6], "n_blocks": r[7],
                             "n_tasks": r[8], "tasks": tasks_by_prog.get(r[0], [])})
+        if n_drawn.get(r[0]):
+            progs[r[1]][-1]["dr"] = n_drawn[r[0]]   # blocks taken from the printed sheets (n_blocks stays the XML's 0)
     for c in cnames:
         w.write(f"program/{c}.json", _dump({"ctrl": c, "programs": progs.get(c, [])}))
     log(f"    {n_blocks} blocks, {time.time()-t0:.0f}s")
@@ -627,7 +641,8 @@ def run(conn, docs: Path, repo: Path, log=print, passphrase: str = None):
                                       GROUP BY l.def_name, l.pin_name ORDER BY l.def_name, l.usage, l.pin_name"""):
         lib_iface[bt].append([pn, {"Input": "I", "Output": "O", "Const": "C", "State": "S"}.get(us or "", "?")])
     n_opaque = conn.execute("SELECT count(*) FROM block WHERE is_opaque=1").fetchone()[0]
-    n_opaque_rec = conn.execute("SELECT count(DISTINCT block_id) FROM pin WHERE origin IS NOT NULL").fetchone()[0]
+    n_opaque_rec = conn.execute("SELECT count(DISTINCT p.block_id) FROM pin p JOIN block b ON b.id=p.block_id "
+                                "WHERE p.origin IS NOT NULL AND b.drawn=0").fetchone()[0]
     man = {
         "site": "Signal Atlas",
         "source": {"toolbox_version": get_meta(conn, "toolbox_version"), "indexed_at": get_meta(conn, "built_at"),

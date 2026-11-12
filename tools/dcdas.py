@@ -150,6 +150,9 @@ def cmd_build(a):
     if not a.no_post:
         from dcdas import resolve, direction
         log("[resolve]")
+        if a.ctrl:      # blocks drawn only on the printed sheets (other controllers' too) must not reach direction.run's
+            resolve.purge_drawn(conn, [r[0] for r in conn.execute("SELECT name FROM controller")])   # per-type aggregates
+            conn.commit()
         resolve.run(conn, root, ctrls, log)
         log("[direction]")
         direction.run(conn, HERE, log)

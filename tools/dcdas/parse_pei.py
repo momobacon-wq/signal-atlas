@@ -992,7 +992,11 @@ def scan(idx_conn, pconn, ctrls=None, pdf_dir: Path = None, pages=None, log=prin
         if ctrl not in vars_by_ctrl:
             vars_by_ctrl[ctrl] = {r[0] for r in idx_conn.execute(
                 "SELECT name FROM variable WHERE ctrl=?", (ctrl,))}
-            paths = {r[0] for r in idx_conn.execute("SELECT path FROM block WHERE ctrl=?", (ctrl,))}
+            # blocks the index itself took from these sheets (block.drawn, encrypted programs) are not part of what a
+            # sheet is resolved against: an encrypted program's sheets must keep map_method 'encrypted' on a re-scan
+            drawn = " AND drawn=0" if idx_conn.execute(
+                "SELECT 1 FROM pragma_table_info('block') WHERE name='drawn'").fetchone() else ""
+            paths = {r[0] for r in idx_conn.execute("SELECT path FROM block WHERE ctrl=?" + drawn, (ctrl,))}
             blocks_by_ctrl[ctrl] = (paths, {p.rsplit("/", 1)[0] for p in paths if "/" in p},
                                     {r[0]: r[1] for r in idx_conn.execute(
                                         "SELECT name, block_count FROM program WHERE ctrl=?", (ctrl,))})

@@ -104,9 +104,22 @@ def purge_recovered(conn, ctrl_names, log=print):
     rows and feed them into link_declared_pins / build_pin_mirror / direction)."""
     cur = conn.execute(f"DELETE FROM pin WHERE origin IS NOT NULL AND block_id IN (SELECT id FROM block WHERE ctrl IN ({_inlist(ctrl_names)}))")
     conn.execute(f"DELETE FROM pin_mirror WHERE pin_id NOT IN (SELECT id FROM pin)")
+    n_drawn = purge_drawn(conn, ctrl_names)
     conn.commit()
     if cur.rowcount:
-        log(f"  purged recovered pins: {cur.rowcount}")
+        log(f"  purged recovered pins: {cur.rowcount}" + (f" (and {n_drawn} blocks drawn only on the printed sheets)" if n_drawn else ""))
+
+
+def purge_drawn(conn, ctrl_names):
+    """Drop the blocks, tasks and pins load_print made for ENCRYPTED programs (block.drawn=1) on these controllers.
+    They are rebuilt from the print corpus by every load_print; nothing else may write them. -> blocks dropped."""
+    sel = f"SELECT id FROM block WHERE drawn=1 AND ctrl IN ({_inlist(ctrl_names)})"
+    conn.execute(f"DELETE FROM pin_cite WHERE pin_id IN (SELECT id FROM pin WHERE block_id IN ({sel}))")
+    conn.execute(f"DELETE FROM pin WHERE block_id IN ({sel})")
+    conn.execute(f"DELETE FROM block_cite WHERE block_id IN ({sel})")
+    conn.execute(f"DELETE FROM task WHERE id IN (SELECT task_id FROM block WHERE drawn=1 AND kind='task' "
+                 f"AND ctrl IN ({_inlist(ctrl_names)}))")
+    return conn.execute(f"DELETE FROM block WHERE drawn=1 AND ctrl IN ({_inlist(ctrl_names)})").rowcount
 
 
 def recover_opaque_pins(conn, ctrl_names, log=print):
@@ -816,10 +829,13 @@ def vote_io_directions(conn, ctrl_names, log=print):
     """I/O points still '?' after the name/parameter rules: decide from the logic that uses the linked variable.
     Only readers (direction I/S pins) and no ordinary-block writer -> the point feeds the logic -> 'I'; only ordinary-block
     writers and no reader -> the logic drives the point -> 'O'. Both or neither -> stays '?'. Source 'V' (vote) so the
-    `io` listing and the signal card can tell an inferred direction from a named one. Runs after direction.run."""
+    `io` listing and the signal card can tell an inferred direction from a named one. Runs after direction.run.
+    An earlier vote is taken back first: the pins it counted may have changed since (xref-reload re-promotes the
+    printed sheets), and a vote must be what a fresh build would give."""
     t0 = time.time()
     tot = {"I": 0, "O": 0}
     for ctrl in ctrl_names:
+        conn.execute("UPDATE io_point SET direction='?', dir_source='-' WHERE ctrl=? AND dir_source='V'", (ctrl,))
         upd = []
         for pid, nw, nr in conn.execute("""
                 SELECT i.id,
@@ -1116,12 +1132,195 @@ def load_print(conn, ctrl_names, log=print):
                     conn.execute("DELETE FROM pin WHERE id=?", (pid_,))
                     conn.execute("DELETE FROM pin_mirror WHERE pin_id=?", (pid_,))
                     tot["pair_dropped"] = tot.get("pair_dropped", 0) + 1
+        next_id = _load_drawn(conn, pconn, ctrl, waived_note.get(ctrl, ""), next_id, tot)
     pconn.close()
     conn.commit()
     log(f"  print promoted: new pins {tot['new']}, directions {tot['dir']}, corrected guesses {tot['fix']}, "
         f"disproved pair rows dropped {tot.get('pair_dropped', 0)} (sheets disagree: {tot['conflict']} left alone; "
         f"XML / verified conflicts never touched: {tot['skipped_xml']}); blocks with a printed execution order {tot['exec_order']}")
+    if tot.get("drawn_blocks"):
+        log(f"  encrypted programs drawn on the sheets: {tot['drawn_programs']} programs, {tot['drawn_tasks']} tasks, "
+            f"{tot['drawn_blocks']} blocks, {tot['drawn_pins']} pins ({tot['drawn_unnamed']} with no printed pin name, "
+            f"{tot['drawn_linknamed']} named by the link drawn to them; left out: {tot['drawn_skipped']} blocks with two "
+            f"execution orders, {tot['drawn_dup']} repeated pin rows)")
     return tot
+
+
+_DRAWN_ENUM = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_DRAWN_LINK = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$")
+_DRAWN_NUM = re.compile(r"^(.+)_\d+$")
+DRAWN_IN, DRAWN_OUT = "in~", "out~"      # placeholder pin names: the sheet prints no name on that stub
+
+
+def _load_drawn(conn, pconn, ctrl, waived, next_pin, tot):
+    """Blocks of ENCRYPTED programs, which only the printed sheets show (corpus map_method 'encrypted'): build them
+    as index rows so show / trace / the site can walk them like any other logic. Every row is marked: block.drawn=1,
+    pin.origin='print', dir_source 'G', and cited (block_cite / pin_cite) to its PDF page and grid cell - there is no
+    XML line behind any of it. program.encrypted and program.block_count are left as the XML states them.
+
+    container  the sheet's Software Path 'Program.Task[.UserBlock...]' -> a task row + a kind 'task' block for the
+               first level, a kind 'userblock' block below (the instance drawn on the parent sheet when it is there)
+    block      one per drawn label under its container; block_type only when the label is '<KNOWN TYPE>[_n]'
+               (the sheet prints no type). A label drawn with two execution orders is two blocks: left out.
+    pin        every stub. Left = input, right = output. A stub with no printed name is still a real pin and often the
+               one that matters (the output of a MOVE): the single unnamed output of a block takes the pin name a
+               link drawn to it states ('NOT_1.NOT_A') - unless the block's type is known and that name is one of
+               its INPUT pins (a link may read an input's value: 'LATCH_1.RESET'); every other one gets a placeholder
+               'in~k' / 'out~k' (k-th unnamed stub of that side, top to bottom) - never a guessed IN1/IN2.
+    wire       a variable of this controller -> V; 'Block.PIN' of a block in the same container -> L; inside a nested
+               user block a label that is a pin name printed on that instance -> P (its interface pin); literals and
+               RUNG equations -> N; an ALL-CAPS word on an INPUT that is no variable and that no block of the same
+               program writes -> E (enumeration: GT, MAX, FS_OP...); any other name is kept as text with no variable
+               (a name local to the encrypted program or macro, which the index has no row for - so a trace ends there).
+    -> the next free pin id."""
+    progs = {r[0]: r[1] for r in conn.execute(
+        "SELECT name, id FROM program WHERE ctrl=? AND encrypted=1 AND block_count=0", (ctrl,))}
+    if not progs:
+        return next_pin
+    cont = {}                        # (program, task path) -> {label: [rows]} in drawing order
+    for r in pconn.execute(
+            "SELECT s.program, s.task, q.block_label, q.exec_order, q.pin_name, q.side, q.wire_kind, q.wire_text, "
+            "q.var_name, f.name, s.page, q.cell FROM print_pin q JOIN print_sheet s ON s.id=q.sheet_id "
+            "JOIN print_pdf f ON f.id=s.pdf_id WHERE f.ctrl=? AND f.gate_status='pass' AND s.kind='sheet' "
+            "AND s.map_method='encrypted' AND s.program IS NOT NULL AND s.task IS NOT NULL ORDER BY s.page, q.id", (ctrl,)):
+        if r[0] in progs and r[2]:
+            cont.setdefault((r[0], r[1]), {}).setdefault(r[2], []).append(r)
+    if not cont:
+        return next_pin
+    for k in ("drawn_programs", "drawn_tasks", "drawn_blocks", "drawn_pins", "drawn_unnamed", "drawn_linknamed",
+              "drawn_skipped", "drawn_dup"):
+        tot.setdefault(k, 0)
+    known = {r[0] for r in conn.execute("SELECT DISTINCT block_type FROM block WHERE kind='block' AND drawn=0 AND block_type<>''")}
+    known |= {r[0] for r in conn.execute("SELECT DISTINCT block_type FROM pin_dir_table")}
+    not_out = {(r[0], r[1]) for r in conn.execute(
+        "SELECT block_type, pin_name FROM pin_dir WHERE block_type<>'' AND direction IN ('I','S')")}
+    var_id = dict(conn.execute("SELECT name, id FROM variable WHERE ctrl=?", (ctrl,)).fetchall())
+    next_block = (conn.execute("SELECT coalesce(max(id),0) FROM block").fetchone()[0] or 0) + 1
+    next_task = (conn.execute("SELECT coalesce(max(id),0) FROM task").fetchone()[0] or 0) + 1
+    bid, task_of = {}, {}            # drawn path -> block id; (program, top task) -> task id
+    INS = ("INSERT INTO block(id,ctrl,program_id,task_id,parent_id,path,name,block_type,kind,is_opaque,drawn) "
+           "VALUES(?,?,?,?,?,?,?,?,?,0,1)")
+
+    def btype(label):
+        m = _DRAWN_NUM.match(label)
+        if m and m.group(1) in known:
+            return m.group(1)
+        return label if label in known else ""
+
+    def container(prog, task):
+        nonlocal next_block, next_task
+        segs = task.split(".")
+        path = "%s/%s" % (prog, segs[0])
+        if path not in bid:
+            conn.execute("INSERT INTO task(id,program_id,name,block_type,logic_drg,is_task,line_no) VALUES(?,?,?,'',NULL,0,NULL)",
+                         (next_task, progs[prog], segs[0]))
+            conn.execute(INS, (next_block, ctrl, progs[prog], next_task, None, path, segs[0], "", "task"))
+            task_of[(prog, segs[0])], bid[path] = next_task, next_block
+            next_task, next_block = next_task + 1, next_block + 1
+            tot["drawn_tasks"] += 1
+        tid = task_of[(prog, segs[0])]
+        for seg in segs[1:]:
+            parent, path = bid[path], "%s/%s" % (path, seg)
+            if path in bid:              # the instance drawn on the parent sheet: it is a user block
+                conn.execute("UPDATE block SET kind='userblock' WHERE id=?", (bid[path],))
+            else:
+                conn.execute(INS, (next_block, ctrl, progs[prog], tid, parent, path, seg, "", "userblock"))
+                bid[path] = next_block
+                next_block += 1
+                tot["drawn_blocks"] += 1
+        return path, tid
+
+    tot["drawn_programs"] += len({k[0] for k in cont})
+    written = {}                     # program -> non-variable labels drawn on an output stub: names local to it, not literals
+    for (prog, _), labels in cont.items():
+        for rows in labels.values():
+            for x in rows:
+                if x[5] == "R" and x[7] and not x[8]:
+                    written.setdefault(prog, set()).add(x[7])
+    for (prog, task) in sorted(cont, key=lambda k: (k[1].count("."), k)):      # parents before the blocks inside them
+        labels = cont[(prog, task)]
+        cpath, tid = container(prog, task)
+        cid = bid[cpath]
+        up = task.rsplit(".", 1)
+        outer = set()                # pin names printed on this container's own instance (nested sheets only)
+        if len(up) == 2:
+            outer = {x[4] for x in cont.get((prog, up[0]), {}).get(up[1], []) if x[4]}
+        live = {}
+        for label, rows in labels.items():
+            eos = {x[3] for x in rows if x[3] is not None}
+            path = "%s/%s" % (cpath, label)
+            if len(eos) > 1 or path in bid:
+                tot["drawn_skipped"] += 1
+                continue
+            conn.execute(INS, (next_block, ctrl, progs[prog], tid, cid, path, label, btype(label), "block"))
+            if eos:
+                conn.execute("INSERT OR REPLACE INTO block_cite(block_id, exec_order, pdf, page, cell) VALUES(?,?,?,?,?)",
+                             (next_block, next(iter(eos)), rows[0][9], rows[0][10], rows[0][11]))
+            bid[path] = live[label] = next_block
+            next_block += 1
+            tot["drawn_blocks"] += 1
+        printed = {label: {x[4] for x in labels[label] if x[4]} for label in live}
+        refs = {}                    # label -> pin names a drawn link gives it that the block itself does not print
+        for rows in labels.values():
+            for x in rows:
+                m = _DRAWN_LINK.match(x[7] or "") if x[6] in ("link", "offpage", "var") and not x[8] else None
+                if m and m.group(1) in live and m.group(2) not in printed[m.group(1)]:
+                    refs.setdefault(m.group(1), set()).add(m.group(2))
+        for label, b in live.items():
+            rows = labels[label]
+            n_out = sum(1 for x in rows if not x[4] and x[5] == "R")
+            linkname = next(iter(refs[label])) if n_out == 1 and len(refs.get(label, ())) == 1 else None
+            if linkname and (btype(label), linkname) in not_out:
+                linkname = None      # the link reads one of this block's inputs: it does not name the output stub
+            seen, k_in, k_out = set(), 0, 0
+            for (_, _, _, _, pin, side, kind, text, vn, pdf, page, cell) in rows:
+                note = waived        # where it is drawn is in pin_cite; the description says only what is unusual
+                if not pin:
+                    if side == "R":
+                        k_out += 1
+                        pin = linkname or "%s%d" % (DRAWN_OUT, k_out)
+                    else:
+                        k_in += 1
+                        pin = "%s%d" % (DRAWN_IN, k_in)
+                    if linkname and side == "R":
+                        note = "圖上未印腳名，腳名取自接到它的連線標示 %s.%s%s" % (label, linkname, waived)
+                        tot["drawn_linknamed"] += 1
+                    else:
+                        note = "圖上未印腳名（%s側第 %d 支）%s" % ("右" if side == "R" else "左", k_out if side == "R" else k_in, waived)
+                        tot["drawn_unnamed"] += 1
+                if pin in seen:
+                    tot["drawn_dup"] += 1
+                    continue
+                seen.add(pin)
+                ck, cn, vid, tb, tp, val = "-", None, None, None, None, None
+                m = _DRAWN_LINK.match(text or "")
+                if pin == "EQN" and text and kind != "default":
+                    ck, cn = "N", "N:" + text
+                elif kind == "default":
+                    val = text
+                elif kind == "const" and text:
+                    ck, cn = "N", "N:" + text
+                elif kind in ("var", "field") and vn and vn in var_id:
+                    if kind == "field":
+                        ck, cn = "D", text
+                    else:
+                        ck, cn, vid = "V", vn, var_id[vn]
+                elif kind in ("var", "link", "offpage") and text:
+                    if m and m.group(1) in live:
+                        ck, cn, tb, tp = "L", "L:" + text, live[m.group(1)], m.group(2)
+                    elif text in outer:
+                        ck, cn, tb, tp = "P", "L:" + text, cid, text
+                    elif side == "L" and _DRAWN_ENUM.match(text) and text not in written.get(prog, ()):
+                        ck, cn = "E", "E:" + text
+                    else:
+                        ck, cn = ("D" if "." in text else "V"), text
+                conn.execute("INSERT INTO pin(id, block_id, name, direction, dir_source, conn_kind, connection, var_id, "
+                             "tgt_block_id, tgt_pin, value, description, line_no, origin) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL,'print')",
+                             (next_pin, b, pin, "I" if side == "L" else "O", PRINT_SOURCE, ck, cn, vid, tb, tp, val, note or None))
+                conn.execute("INSERT OR REPLACE INTO pin_cite(pin_id, pdf, page, cell) VALUES(?,?,?,?)", (next_pin, pdf, page, cell))
+                next_pin += 1
+                tot["drawn_pins"] += 1
+    return next_pin
 
 
 def _print_var(conn, ctrl, r):

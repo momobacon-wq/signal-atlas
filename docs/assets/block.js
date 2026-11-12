@@ -117,7 +117,8 @@
         D.h('button', { type: 'button', class: 'btn', text: '複製深連結', onclick: () => D.copy(location.href.split('#')[0] + D.hrefB(ctrl, path), '連結') }), seqBtn));
     const entry = segs.length > 1 ? await taskEntry(ctrl, program, segs[1]).catch(() => null) : null;
     const meta = D.h('table', { class: 'kv' }, D.h('tbody', null,
-      D.kv('原始檔', D.mono((b.file || '?') + ':' + (b.line == null ? '?' : b.line))),
+      b.dr ? D.kv('來源', D.frag(D.tag('列印邏輯圖', 'warn'), ' ', D.h('span', { class: 'muted small', text: '此程式的 XML 加密，方塊與腳位取自組態工具列印的邏輯圖（左側入、右側出）；圖上沒印腳名的腳以 in~N／out~N 表示，圖上沒畫的隱藏腳不在此列。' })))
+        : D.kv('原始檔', D.mono((b.file || '?') + ':' + (b.line == null ? '?' : b.line))),
       b.ver ? D.kv('版本', D.mono(b.ver)) : null,
       b.drg || b.pid ? D.kv('邏輯圖 / P&ID', D.frag(D.mono(D.val(b.drg)), '  ', D.mono(D.val(b.pid)))) : null,
       entry && entry.task.drg && entry.task.drg !== b.drg ? D.kv('所屬 Task 邏輯圖', D.frag(D.mono(entry.task.drg), ' ', D.h('span', { class: 'muted small', text: '（' + segs[1] + (entry.task.type ? ' · ' + entry.task.type : '') + '）' }))) : null,

@@ -702,7 +702,8 @@ def main(docs):
     (ok if not bbad else err)(f"sampled {len(bsample)} blocks ({n_pf_blocks} from prog_files programs), {bbad} mismatches (pins, file)")
     # ---- opaque macros with recovered interface pins: rc counts and per-pin origin
     obad = 0
-    orows = conn.execute("SELECT DISTINCT block_id FROM pin WHERE origin IS NOT NULL").fetchall()
+    orows = conn.execute("SELECT DISTINCT p.block_id FROM pin p JOIN block b ON b.id=p.block_id "
+                         "WHERE p.origin IS NOT NULL AND b.drawn=0").fetchall()
     for (bid,) in random.sample(orows, min(10, len(orows))):
         b = conn.execute("SELECT ctrl,path FROM block WHERE id=?", (bid,)).fetchone()
         key = f"{b[0]}|{b[1]}"
@@ -716,6 +717,61 @@ def main(docs):
             if obad <= 5:
                 err(f"opaque block {key}: rc {(blkj or {}).get('rc')} vs {want}, origins {len(got_org)} vs {len(want_org)}")
     (ok if not obad else err)(f"sampled {min(10, len(orows))} opaque blocks with recovered pins, {obad} mismatches")
+    # ---- blocks of encrypted programs, known only from the printed sheets (block.drawn): flagged, every pin from the
+    #      drawing and cited, no recovered-interface counters; the program entry counts them; card refs cite the sheet
+    dbad = 0
+    drows = conn.execute("SELECT id, ctrl, path, kind FROM block WHERE drawn=1").fetchall()
+    for bid, c_, path_, kind_ in random.sample(drows, min(30, len(drows))):
+        key = f"{c_}|{path_}"
+        ent = task_entry(tkey_of(c_, path_))
+        blkj = ent["b"].get(key) if ent else None
+        want_pins = sorted(r[0] for r in conn.execute("SELECT name FROM pin WHERE block_id=?", (bid,)))
+        got = (blkj or {}).get("pins", [])
+        pv = (ent or {}).get("pv") or {}
+        if (blkj is None or blkj.get("dr") != 1 or blkj.get("rc") or blkj.get("opaque") or blkj.get("line") is not None
+                or sorted(p[0] for p in got) != want_pins or any(p[11] != "g" or p[2] != "G" for p in got)
+                or any(f"{key}#{p[0]}" not in pv for p in got)):
+            dbad += 1
+            if dbad <= 5:
+                err(f"drawn block {key}: dr {(blkj or {}).get('dr')} rc {(blkj or {}).get('rc')} pins {len(got)} vs {len(want_pins)}")
+    n_dr_web = {}
+    for c_ in sorted({r[1] for r in drows}):
+        for p_ in load(data / "program" / f"{c_}.json")["programs"]:
+            if p_.get("dr"):
+                n_dr_web[(c_, p_["name"])] = p_["dr"]
+                if not p_.get("enc"):
+                    dbad += 1
+                    err(f"program {c_}/{p_['name']}: carries drawn blocks but is not flagged encrypted")
+    n_dr_db = {(r[0], r[1]): r[2] for r in conn.execute(
+        "SELECT b.ctrl, g.name, count(*) FROM block b JOIN program g ON g.id=b.program_id WHERE b.drawn=1 AND b.kind<>'task' GROUP BY 1,2")}
+    if n_dr_web != n_dr_db:
+        dbad += 1
+        err(f"program dr counts: web {len(n_dr_web)} programs / {sum(n_dr_web.values())} blocks vs DB {len(n_dr_db)} / {sum(n_dr_db.values())}")
+    # a card's ref into a drawn block cites the sheet (9th field), and that program is no longer in the card's `enc`
+    crows = conn.execute("SELECT v.full_name, b.ctrl, b.path, p.name, c.pdf, c.page, c.cell, g.name FROM pin p "
+                         "JOIN block b ON b.id=p.block_id AND b.drawn=1 JOIN variable v ON v.id=p.var_id "
+                         "JOIN program g ON g.id=b.program_id JOIN pin_cite c ON c.pin_id=p.id WHERE p.direction='O'").fetchall()
+    for full, c_, path_, pin_, pdf_, page_, cell_, prog_ in random.sample(crows, min(30, len(crows))):
+        s = sh(full)
+        if s not in shard_cache:
+            try:
+                shard_cache[s] = load(data / "var" / f"{s}.json")["v"]
+            except FileNotFoundError:
+                shard_cache[s] = {}
+        card = shard_cache[s].get(full) or {}
+        refs = [r for r in card.get("w", []) if r[0] == c_ and r[2] == path_ and r[4] == pin_]
+        if card.get("w_more") and not refs:
+            continue                              # beyond the card's ref cap
+        if len(refs) != 1 or len(refs[0]) < 9 or refs[0][8] != [pdf_, page_, cell_] or prog_ in (card.get("enc") or []):
+            dbad += 1
+            if dbad <= 5:
+                err(f"card {full}: writer ref {c_}|{path_}.{pin_} cite {refs[0][8:] if refs else None} vs {[pdf_, page_, cell_]}, enc {card.get('enc')}")
+    n_xml = conn.execute("SELECT count(*) FROM block b JOIN program g ON g.id=b.program_id WHERE b.drawn=1 AND g.block_count<>0").fetchone()[0]
+    if n_xml:
+        dbad += 1
+        err(f"{n_xml} drawn blocks sit in programs whose XML has blocks of its own")
+    (ok if not dbad else err)(f"sampled {min(30, len(drows))} of {len(drows)} blocks drawn only on the printed sheets "
+                               f"({len(n_dr_db)} encrypted programs), {dbad} mismatches")
     # ---- pins promoted from the printed sheets: the task's pv map cites where each is drawn
     pbad = 0
     prows = conn.execute("SELECT b.ctrl, b.path, p.name, c.pdf, c.page, c.cell FROM pin_cite c JOIN pin p ON p.id=c.pin_id AND (p.origin='print' OR p.dir_source='G') "

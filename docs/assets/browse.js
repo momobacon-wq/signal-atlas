@@ -20,12 +20,13 @@
         const blocks = t.blocks || [];
         return D.h('details', { class: 'grp task', open: tasks.length === 1 },
           D.h('summary', null, D.h('span', { text: (t.is_task ? 'Task ' : (t.type || 'UserBlock') + ' ') }), D.h('a', { href: D.hrefB(ctrl, p.name + '/' + t.name), class: 'lk mono b', text: t.name, onclick: (e) => e.stopPropagation() }),
-            t.drg ? D.frag(' ', D.tag(t.drg)) : null, D.h('span', { class: 'sec-n', text: String(blocks.length) }), ' ', D.h('a', { href: D.hrefD(ctrl, p.name, t.name), class: 'lk small', text: '圖', title: '邏輯方塊圖', onclick: (e) => e.stopPropagation() }), D.h('span', { class: 'muted small mono', text: ' :' + (t.line == null ? '?' : t.line) })),
+            t.drg ? D.frag(' ', D.tag(t.drg)) : null, D.h('span', { class: 'sec-n', text: String(blocks.length) }), ' ', D.h('a', { href: D.hrefD(ctrl, p.name, t.name), class: 'lk small', text: '圖', title: '邏輯方塊圖', onclick: (e) => e.stopPropagation() }), D.h('span', { class: 'muted small mono', text: p.dr && t.line == null ? ' 列印圖' : ' :' + (t.line == null ? '?' : t.line) })),
           D.h('div', { class: 'grp-body' }, blocks.length ? D.table(['方塊', '型式', '種類', ''], blocks.filter((r) => r[3] !== 'task').map(([k, name, type, kind, opaque]) => [D.h('a', { href: D.hrefBKey(k), class: 'lk mono', text: name }), D.mono(type || ''), kind || '', opaque ? D.tag('不透明', 'warn') : ''])) : D.empty('無方塊')));
       }) : D.h('p', { class: 'muted' }, p.enc ? D.h('span', { class: 'warn-text', text: '加密 — 無法追蹤：此程式內容加密，只索引變數宣告與 EGD。' }) : '沒有 task。');
       const det = D.section(p.name, D.frag(
-        D.h('p', { class: 'muted small' }, '檔案 ', D.mono(D.val(p.file)), p.lib ? D.frag(' · 函式庫 ', D.mono(p.lib)) : null, ' · ', D.int(p.n_tasks || 0), ' 個 task · ', D.int(p.n_blocks || 0), ' 個方塊', p.help ? D.frag(' · 說明檔 ', D.mono(p.help)) : null),
-        body), { count: p.n_blocks || 0, open: p.name === want, note: p.enc ? '加密' : (p.lib ? '函式庫 ' + p.lib : ''), cls: p.enc ? 'enc' : '' });
+        p.dr ? D.h('p', { class: 'warn-text small', text: '此程式的 XML 加密。以下 ' + tasks.length + ' 個 task、' + p.dr + ' 個方塊取自組態工具列印的邏輯圖（腳位標「圖」）：圖上沒印腳名的腳以 in~N／out~N 表示，沒畫的隱藏腳與沒列印的 task 不在此列。' }) : null,
+        D.h('p', { class: 'muted small' }, '檔案 ', D.mono(D.val(p.file)), p.lib ? D.frag(' · 函式庫 ', D.mono(p.lib)) : null, ' · ', D.int(p.dr ? tasks.length : (p.n_tasks || 0)), ' 個 task · ', D.int(p.dr || p.n_blocks || 0), ' 個方塊', p.help ? D.frag(' · 說明檔 ', D.mono(p.help)) : null),
+        body), { count: p.dr || p.n_blocks || 0, open: p.name === want, note: p.enc ? (p.dr ? '加密 · 取自列印圖' : '加密') : (p.lib ? '函式庫 ' + p.lib : ''), cls: p.enc ? 'enc' : '' });
       det.id = 'prog-' + p.name;
       return det;
     }

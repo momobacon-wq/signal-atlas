@@ -91,6 +91,7 @@ docs/<site>/                   子站（例 docs/u2/）：index.html（帶 <meta
        "xref":[[drawing_tag, plant_tag, service, source]],            // 選用：本機設備對照檔連到這個訊號（位號依控制器換機組前綴）
        "const":1,"local":1,"decl":["LubeOil",null,"G11/Variables.xml",45234],"device_name":"G11","producer":"G11.X","ref":["EGD","LubeOil"],"screen":"…cim"},
   "w":[[ctrl, program, block_path, block_type, pin, src, line, kind]], // 寫入者（direction O）；kind 'b' = 一般方塊（含不透明巨集的回推／登錄腳），'t' = task／巨集介面腳（與內部寫入者同一條路徑，不算多寫入）
+                                                                    // 加密程式、取自列印邏輯圖的方塊（方塊記錄 `dr:1`）沒有行號：line 為 null，並多第 9 欄 cite = [pdf, page, cell]（r、u 相同；其他 ref 仍是 8 欄）
   "r":[[...]],                                                       // 讀取者（direction I/S）
   "u":[[...]],                                                       // 方向未知的腳
   "w_more":0,"r_more":0,                                             // 超過 400 筆時的剩餘數
@@ -136,6 +137,11 @@ task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 
 }}}}
 ```
 - `b` 的鍵順序 = 原始 XML 文件順序，第一筆是 task 根（`kind:"task"`，其 `pins` 為介面腳）；巢狀 UserBlock 內的方塊同在此 entry（同 task）。
+- 加密程式的方塊（schema 16）：程式的 XML 沒有方塊，但組態工具的列印邏輯圖畫得出來；通過 gate 的圖面上每顆方塊成為一筆方塊記錄，帶 `dr:1`、
+  沒有 `line`（`file` 仍是該程式的 XML）、沒有 `rc`、`type` 只有標籤看得出型別時才有，每支腳 `src` 為 `G`、`org` 為 `g`，並在 task entry 的 `pv` 有圖面位置。
+  圖上沒印腳名的腳名為 `in~N`／`out~N`（佔位名，不是真實腳名）。這些程式的 task 因此有 entry；`program/<CTRL>.json` 該程式多 `dr`（圖面方塊數，
+  `enc` 仍為 1、`n_blocks`／`n_tasks` 仍是 XML 的 0，task 的 `line` 為 null）。訊號卡的 `enc` 只列「該訊號在其中沒有任何圖面腳位」的加密程式。
+  沒有 `dr` 的舊資料照舊顯示（前端所有 `dr`／cite 判斷都是選用欄位）。
 - 方塊記錄欄位同前（`ctrl program path name type kind ver opaque desc drg pid device hmi attrs pins line file`），新增可選 `lay`（`BlockLayoutData`，同層的 1-based 繪圖順序，含 UserBlock；缺值省略）；可選 `eo`（執行順序，取自列印邏輯圖標題旁的數字）與 `pc`（`[pdf, page, cell]`，該方塊在列印圖上的位置），只有列印圖通過 gate 且建置相符、圖頁路徑確定（exact／repair）的方塊才有。空欄位/空陣列/0 一律省略。
 - 腳位 tuple 第 11 欄 `desc` = 腳位自身的描述（`Pin@Description` 第一行；無則 `null`），例如產生器方塊 `L4TTRP_OVR.IN1` = "Generator LCI Trip"。
 - 腳位 tuple 第 12 欄 `org` = 腳位來源：`null` = XML 明文；`"d"` = **回推自宣告在該腳位的變數**；`"l"` = **回推自鄰近方塊的 `L:` 連線**；`"p"` = **同編號配對**（不透明 `AI_INT_k` 的 `IN` 接同層 `AI_k` 的 `{Device}` 輸出或 `FF_AI_k` 的 `OUT` 變數；`AI_k` 配對再依命名補 `OUT`→`ai_<stem>`、`DEVICE_STATUS`→`<stem>_DS`，且該變數的 `ReferencedIn` 須含此程式而程式內無可見引用；命名推斷、方向 I/O／`R`）；`"v"` = **三取二表決推斷**（不透明 `2oo3_Basic`，task `FNCTN_<stem>`：`INA/INB/INC` 接程式內只在加密方塊引用的 `(ai_)<stem>[_Alt]{A,B,C}[Crctd]` 變數、`BQA/BQB/BQC` 接 `<輸入>.BQ` 警報子變數或 `<輸入>_BQ` 變數（程式內加密引用者優先；皆無時才是無變數的 `conn_kind D` 欄位列）、`HYST` 接唯一的 `k_…<stem>…_HYST`；task 內只有一顆表決器時再補 `HI_LIMIT` ← 唯一的 `k_…_SP`、`OUT` → 唯一無寫入者的 `PRO_<stem>*Hi|Lo`；一顆實例經工具確認、其餘為推斷，方向來源 `R`）；`"x"` = **人工登錄**（`tools/xref_manual.csv`；`grade` 欄 tool = 使用者在組態工具的交互參照或邏輯圖看到 → 方向來源 `T`；mirror／infer = 從另一台控制器鏡射或依規律推論 → 方向來源 `M`，徽章同樣「登錄」但來源字母不同）；`"g"` = **圖面**（腳位列取自組態工具**列印的邏輯圖**：XML 隱藏、圖面畫在不透明巨集上的腳，或被圖面更正的推斷列；
@@ -160,12 +166,12 @@ task／方塊的腳位 `<訊號>.<後綴>`（方向來源 `U`；組態工具的 
 - `pv`（選用）= 列印邏輯圖出處：`{"<blockKey>#<pin>": [pdf, page, cell]}`，每支 org `g` 或方向來源 `G` 的腳一筆，blockKey 同 `b` 的鍵，
   例 `"G11|FFBInputs_7HA03/FF_IN_S18/AI_INT_12#IN": ["G11_P.pdf", 163, "G16"]`。前端在腳位 tooltip、側欄／方塊頁「來源」欄顯示 `圖面 G11_P.pdf p163 G16`。
 - `vd` = 該 task 所有腳位參照到的變數的描述（第一行；無描述者不列），供圖上標籤與腳位旁顯示說明；變數完整描述仍以訊號卡為準。
-- 單一方塊 = `task` entry 的 `b[key]`；前端 `D.block(key)` 先算 `D.taskKeyOf(key)`（路徑前兩段）再查。加密程式的 task 沒有 entry（前端以 `program/<CTRL>.json` 的 `enc` 解釋）。
+- 單一方塊 = `task` entry 的 `b[key]`；前端 `D.block(key)` 先算 `D.taskKeyOf(key)`（路徑前兩段）再查。加密程式沒有列印圖的 task 沒有 entry（前端以 `program/<CTRL>.json` 的 `enc` 解釋）；有列印圖的見上方 `dr`。
 - 尺寸：6,382 個 entry，明文 p50 15 KB、p95 98 KB（`vu` 擴到所有輸出腳變數後約 +36% 列）；兩個 MIS 資料表 task 約 2.2 MB（前端以規模分級處理）。
 
 ## `program/<CTRL>.json`、`io/<CTRL>.json`、`screen/<hh>.json`、`screens.json`、`alarm/<CTRL>.json`
 
-- `program`: `{"ctrl","programs":[{"name","lib","file","enc","help","n_blocks","n_tasks","tasks":[{"name","type","drg","is_task","line","blocks":[[key,name,type,kind,opaque]]}]}]}`
+- `program`: `{"ctrl","programs":[{"name","lib","file","enc","help","n_blocks","n_tasks","dr"?,"tasks":[{"name","type","drg","is_task","line","blocks":[[key,name,type,kind,opaque]]}]}]}`
 - `io`: `{"ctrl","modules":[{"name","id","cabinet","red","boards":[{"name","hw","pos","points":[[name,dir,conn,tag,addr,type,lo,hi,screws,var_full_name]]}],"internal":[[name,conn,addr,var_full_name]]}]}`（不含 IP）
 - `screen`: `{"s":{"X.cim":{"menu":["Block1 / … "],"points":[[full_point, source, st, card?]]}}}`；`screens.json = {"rows":[[screen, n_points, menu_path]]}`
   點的 `st` = `1` 對到索引內變數（有訊號卡，前端連結）｜`2` 標為外部（節點的點，或不在索引內的控制器；前端文字＋節點種類標籤）｜`0` 未解析（文字＋「未解析」）。舊的兩欄列視同 `st` = 1。

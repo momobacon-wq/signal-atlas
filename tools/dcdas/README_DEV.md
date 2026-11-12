@@ -6,7 +6,7 @@ Source checkout: `%LOCALAPPDATA%\dcdas\config.json` → `src_root` (or env `DCDA
 vendor names into the repo (code, comments, commit messages); site-specific facts live in the local config and the local
 checkout folder's `CLAUDE.md`.
 
-Pipeline (`tools/dcdas.py build`): vars → logic → lib → io → egd → hmi → ledger → resolve → direction → opaque (recover_opaque_pins, refresh_mirror_kinds) → fts. A `schema_version` mismatch in `meta` deletes the DB and rebuilds in full.
+Pipeline (`tools/dcdas.py build`): vars → logic → lib → io → egd → hmi → ledger → resolve → direction → opaque (recover_opaque_pins, refresh_mirror_kinds) → print (load_print: promotions + the blocks of encrypted programs, `block.drawn`) → fts. A `schema_version` mismatch in `meta` deletes the DB and rebuilds in full.
 Each stage module exposes `run(conn, root, ctrls, log)` (`ctrls` = list of `inventory.Controller`; project-wide stages
 take `run(conn, root, log)`). A stage must be idempotent for its scope: delete the rows it owns for that controller,
 then insert. Use `db.Batch` for bulk inserts, commit per controller/file, print one line per controller with count + time.
@@ -293,6 +293,17 @@ Build Major/Minor 兩個時間戳。其他格子有客戶、廠址與人員識�
 - 取代推斷列時保留 address／value／alias／描述，`pin_mirror` 跟著改指新列（刪掉會讓 94 個變數變成「無可見寫入者」）。
 - XML 明文腳只改方向，而且只在圖上的線就是它自己的變數時才改。
 `print_check`／`print_show` 用 `_PC_PINS_SQL` 看「不含升格列」的索引；已升格的腳在 print-check 計入 `promoted`，不再算 `new_pin`。
+
+schema 16：加密程式的方塊（`block.drawn=1`）。`load_print` 每台控制器收尾時呼叫 `_load_drawn`：語料 `map_method='encrypted'` 的圖頁
+（程式 `encrypted=1` 且 `block_count=0`）逐張建 task 列、容器方塊、方塊與腳位（origin `print`、來源 `G`、`pin_cite`／`block_cite`），
+規則寫在函式 docstring。生命週期：`purge_recovered` → `purge_drawn` 先整批刪除，所以 `link_declared_pins`、`build_pin_mirror`、
+`recover_*` 與 `direction.run` 都看不到這些列（`build --ctrl X` 另在 `[resolve]` 前清掉**所有**控制器的圖面方塊，避免佔位腳名進
+`pin_dir` 的型別彙總）；之後的 `load_xref`、`refresh_mirror_kinds`、`vote_io_directions` 看得到。`vote_io_directions` 每次先收回舊票
+（`dir_source='V'` → `?`）再投，`xref-reload` 的結果才會等於重新 build。會讀 block 表的其他地方凡是「拿圖面比索引」都要排除
+`drawn=1`：`parse_pei.scan` 的路徑集合、`_PsIndex.named`、`_ps_var` 的索引腳清單、`_ps_block`（把圖面方塊當成「不在索引」處理）。
+`query._PIN_SQL` 與 `_find_block`／`_block_by_id` 對圖面方塊把 `file_path` 換成引用字串 `<pdf> p<頁> <格>`、`line_no` 為 NULL，
+所以 `_fl()` 的所有呼叫端自動印出圖面位置。量測（預設站台）：一台 7,329 列方塊（含 333 個 task 容器）／30k 支腳，
+其中約 7.9k 支佔位腳名、1.9k 支由連線標示命名；明文程式的 block／pin／pin_cite／block_cite 與 schema 15 逐列相同。
 
 schema 15 起同一個 pass 另寫 `block_cite(block_id, exec_order, pdf, page, cell)`：列印圖標題旁的執行順序（網頁紅底黃字小框）與方塊畫在哪一頁。
 只收路徑確定的圖頁（`map_method` exact／repair），同一方塊只有一個數字才收。**不要用 `block.layout` 或同層檔案順序代替**：

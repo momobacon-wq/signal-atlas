@@ -169,9 +169,11 @@ def _ds(direction, source):
 _PIN_SQL = """SELECT p.id, p.name AS pin, p.direction, p.dir_source, p.conn_kind, p.connection, p.var_id,
                      p.tgt_block_id, p.tgt_pin, p.address, p.value, p.alias, p.usage_declared, p.line_no, p.origin, p.description,
                      b.id AS block_id, b.ctrl, b.path, b.name AS block_name, coalesce(b.block_type,'') AS block_type,
-                     b.kind, b.is_opaque, b.logic_drg, b.p_id, b.task_id, b.program_id,
-                     pr.name AS program, pr.file_path, pr.encrypted
+                     b.kind, b.is_opaque, b.logic_drg, b.p_id, b.task_id, b.program_id, b.drawn,
+                     pr.name AS program, CASE WHEN b.drawn=1 THEN (SELECT c.pdf||' p'||c.page||coalesce(' '||c.cell,'') FROM pin_cite c WHERE c.pin_id=p.id) ELSE pr.file_path END AS file_path, pr.encrypted
               FROM pin p JOIN block b ON b.id=p.block_id JOIN program pr ON pr.id=b.program_id """
+# file_path / line_no above: for a block of an encrypted program, known only from the printed sheets (block.drawn),
+# file_path is the citation '<CTRL>_P.pdf p<page> <cell>' and line_no is NULL, so _fl() prints the citation.
 
 
 ORIGIN_NOTE = {"decl": "(recovered: variable declared at this pin of an opaque macro)",
@@ -274,7 +276,7 @@ def _inner_pins(conn, block_id, pin_name, directions):
 
 
 def _block_by_id(conn, block_id):
-    return _row(conn, """SELECT b.*, pr.name AS program, pr.file_path, pr.encrypted FROM block b
+    return _row(conn, """SELECT b.*, pr.name AS program, CASE WHEN b.drawn=1 THEN coalesce((SELECT c.pdf||' p'||c.page||coalesce(' '||c.cell,'') FROM block_cite c WHERE c.block_id=b.id), '') ELSE pr.file_path END AS file_path, pr.encrypted FROM block b
                          JOIN program pr ON pr.id=b.program_id WHERE b.id=?""", (block_id,))
 
 
@@ -689,7 +691,6 @@ def show(conn, signal, all_rows=False):
     enc, hidden = [], []
     if refd:
         encset = {r[0] for r in conn.execute("SELECT name FROM program WHERE ctrl=? AND encrypted=1", (v["ctrl"],))}
-        enc = [p for p in refd if p in encset]
         # ReferencedIn lists a (non-encrypted) program but no pin of this variable is indexed there -> the reference can
         # only sit inside an encrypted block of that program (a candidate for the site's xref_manual.csv)
         progs = {r[0] for r in conn.execute("SELECT name FROM program WHERE ctrl=?", (v["ctrl"],))}
@@ -699,6 +700,8 @@ def show(conn, signal, all_rows=False):
         seen |= {r[0] for r in conn.execute("""SELECT DISTINCT pr.name FROM pin_mirror m JOIN pin p ON p.id=m.pin_id
                                                JOIN block b ON b.id=p.block_id JOIN program pr ON pr.id=b.program_id WHERE m.var_id=?""", (vid,))}
         hidden = [p for p in refd if p != "EGD" and p in progs and p not in encset and p not in seen]
+        # an encrypted program stays a blind spot unless its printed sheets show a pin on this variable (block.drawn)
+        enc = [p for p in refd if p in encset and p not in seen]
     # a published pin value: input pin -> source is the pin's wiring; output pin -> the block writes it
     if not writers and mirror and mirror["kind"] == "I" and mirror["src"]:
         w_entries.insert(0, {"ref": mirror["pin"]["ref"], "block_type": mirror["pin"]["block_type"], "dir": mirror["pin"]["dir"],
@@ -715,8 +718,10 @@ def show(conn, signal, all_rows=False):
         source = f"logic (output pin value): {mirror['pin']['ref']} [{mirror['pin']['block_type']}]"
     elif writers:
         source = (("logic (opaque macro output, verified cross-reference): " if writers[0]["origin"] == "xref"
+                   else "logic (encrypted program, drawn on the printed sheets): " if writers[0].get("drawn")
                    else "logic (opaque macro output, recovered interface): " if writers[0]["origin"] else "logic: ") + w_entries[0]["ref"]
-                  + (f" (+{len(writers)-1} more writers)" if len(writers) > 1 else ""))
+                  + (f" (+{len(writers)-1} more writers)" if len(writers) > 1 else "")
+                  + (f"; also referenced in encrypted program(s) with no drawn pin on it: {', '.join(enc)}" if enc else ""))
     elif iface and (iface["usage"] or "").lower() == "output":
         source = f"interface Output pin {iface['ref']} (no inner writer found" + ("; opaque macro" if iface["opaque"] else "") + ")"
     elif egd["source"]:
@@ -1045,12 +1050,12 @@ def trace(conn, signal, up=0, down=0, max_lines=60):
 
 # ---------------------------------------------------------------------------------------------- block/task
 def _find_block(conn, ctrl, path):
-    b = _row(conn, """SELECT b.*, pr.name AS program, pr.file_path, pr.encrypted FROM block b
+    b = _row(conn, """SELECT b.*, pr.name AS program, CASE WHEN b.drawn=1 THEN coalesce((SELECT c.pdf||' p'||c.page||coalesce(' '||c.cell,'') FROM block_cite c WHERE c.block_id=b.id), '') ELSE pr.file_path END AS file_path, pr.encrypted FROM block b
                       JOIN program pr ON pr.id=b.program_id WHERE b.ctrl=? AND b.path=?""", (ctrl, path))
     if b:
         return b, None
     # tolerate 'Task/Block' without the program, or a bare block name
-    cands = _rows(conn, """SELECT b.*, pr.name AS program, pr.file_path, pr.encrypted FROM block b
+    cands = _rows(conn, """SELECT b.*, pr.name AS program, CASE WHEN b.drawn=1 THEN coalesce((SELECT c.pdf||' p'||c.page||coalesce(' '||c.cell,'') FROM block_cite c WHERE c.block_id=b.id), '') ELSE pr.file_path END AS file_path, pr.encrypted FROM block b
                            JOIN program pr ON pr.id=b.program_id
                            WHERE b.ctrl=? AND (b.path LIKE ? OR b.name=?) ORDER BY b.path LIMIT %d""" % SECTION_CAP,
                   (ctrl, "%/" + path, path))
@@ -1086,7 +1091,7 @@ def block(conn, ctrl, path):
             "SELECT pin_name, usage FROM lib_pin_usage WHERE def_name=? AND pin_name<>'' GROUP BY pin_name ORDER BY usage, pin_name", (b["block_type"],))]
     attrs = _rows(conn, "SELECT name, value FROM block_attr WHERE block_id=? ORDER BY name", (b["id"],))
     children = _rows(conn, """SELECT path, name, coalesce(block_type,'') AS block_type, kind, is_opaque, description, line_no
-                              FROM block WHERE parent_id=? ORDER BY line_no""", (b["id"],))
+                              FROM block WHERE parent_id=? ORDER BY line_no, id""", (b["id"],))
     parent = _block_by_id(conn, b["parent_id"]) if b["parent_id"] else None
     task = _row(conn, "SELECT name, logic_drg, line_no FROM task WHERE id=?", (b["task_id"],)) if b["task_id"] else None
     help_row = _row(conn, "SELECT library, mht_path, def_file FROM library_help WHERE block_type=?", (b["block_type"],))
@@ -1115,7 +1120,7 @@ def task(conn, ctrl, program, task_name):
     blocks = _rows(conn, """SELECT path, name, coalesce(block_type,'') AS block_type, kind, is_opaque, description,
                                    logic_drg, p_id, line_no,
                                    (SELECT count(*) FROM pin WHERE pin.block_id=block.id) AS n_pins
-                            FROM block WHERE task_id=? AND kind<>'task' ORDER BY line_no""", (t["id"],))
+                            FROM block WHERE task_id=? AND kind<>'task' ORDER BY line_no, id""", (t["id"],))
     troot = _row(conn, "SELECT id FROM block WHERE task_id=? AND kind='task'", (t["id"],))
     iface = []
     if troot:
@@ -1234,7 +1239,7 @@ def find(conn, pattern, ctrl=None, kind="var", limit=40):
     lk = _like(pattern)
     if kind == "block":
         sql = """SELECT b.ctrl, b.path, coalesce(b.block_type,'') AS block_type, b.kind AS bkind, b.description,
-                        pr.file_path, b.line_no FROM block b JOIN program pr ON pr.id=b.program_id
+                        CASE WHEN b.drawn=1 THEN coalesce((SELECT c.pdf||' p'||c.page||coalesce(' '||c.cell,'') FROM block_cite c WHERE c.block_id=b.id), '') ELSE pr.file_path END AS file_path, b.line_no FROM block b JOIN program pr ON pr.id=b.program_id
                  WHERE (b.name LIKE ? ESCAPE '\\' OR b.path LIKE ? ESCAPE '\\' OR b.block_type LIKE ? ESCAPE '\\')"""
         args = [lk, lk, lk]
         if ctrl:
@@ -2009,10 +2014,18 @@ class _PsIndex:
             self._pins[path] = (pins, b[1] if b else None)
         return self._pins[path]
 
+    def drawn(self, path):
+        """True when the index carries this path as a block made from the printed sheets (encrypted program)."""
+        k = ("drawn", path)
+        if k not in self._named:
+            self._named[k] = bool(self.conn.execute(
+                "SELECT 1 FROM block WHERE ctrl=? AND path=? AND drawn=1", (self.ctrl, path)).fetchone())
+        return self._named[k]
+
     def named(self, label):
         if label not in self._named:
             self._named[label] = [r[0] for r in self.conn.execute(
-                "SELECT path FROM block WHERE ctrl=? AND name=?", (self.ctrl, label))]
+                "SELECT path FROM block WHERE ctrl=? AND name=? AND drawn=0", (self.ctrl, label))]
         return self._named[label]
 
     def place(self, row):
@@ -2091,6 +2104,9 @@ def _ps_verdict(ix, row):
         if not bp:
             row["verdict"] = "drawing_only"
             row["why"] = _PS_WHY.get(row["method"], _PS_WHY["exact"])
+            if row["method"] == "encrypted" and row.get("sw_path") and ix.drawn(
+                    "%s/%s" % (row["sw_path"].replace(".", "/"), row["label"])):
+                row["promoted"] = True
             return row
         row["block_path"], row["placed"] = bp, how
     pins, opaque = ix.pins(bp)
@@ -2211,7 +2227,7 @@ def _ps_var(conn, pconn, key, limit):
     out["rows"] = rows[:limit]
     idx = conn.execute(
         "SELECT b.path, p.name, p.direction, p.dir_source, p.origin FROM pin p JOIN block b ON b.id=p.block_id "
-        "WHERE p.var_id=? ORDER BY p.direction DESC, b.path", (v["id"],)).fetchall()
+        "WHERE p.var_id=? AND b.drawn=0 ORDER BY p.direction DESC, b.path", (v["id"],)).fetchall()
     seen = {(r["block_path"], r["pin"]) for r in rows}
     seen_blocks = {r["block_path"] for r in rows if r["pin"] is None}
     out["index_pins"] = len(idx)
@@ -2242,6 +2258,9 @@ def _ps_block(conn, pconn, ctrl, path, limit):
     if err and err.get("kind") == "ambiguous":
         return err
     ix = _PsIndex(conn, ctrl, pconn)
+    if b and b.get("drawn"):
+        # the index row was MADE from these sheets (encrypted program): show the drawing itself, matched by label
+        path, out["in_index_from_drawing"], b = b["path"], True, None
     if b:
         path = out["block_path"] = b["path"]
         out.update(block_type=b["block_type"], block_kind=b["kind"], is_opaque=b["is_opaque"],
